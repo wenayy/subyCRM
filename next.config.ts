@@ -1,6 +1,16 @@
 import type { NextConfig } from "next";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
+
 const nextConfig: NextConfig = {
+  // Proxy /api/auth/* through Next.js so auth cookies are set on the same
+  // domain as the frontend — eliminates cross-domain state_mismatch entirely.
+  rewrites: async () => [
+    {
+      source: "/api/auth/:path*",
+      destination: `${API_URL}/api/auth/:path*`,
+    },
+  ],
   headers: async () => {
     return [{ source: "/(.*)", headers: [
       { key: "X-Frame-Options", value: "DENY" },

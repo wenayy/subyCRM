@@ -22,22 +22,15 @@ const socialProviders =
       }
     : undefined;
 
-const isProd = process.env.NODE_ENV === "production";
-
 export const auth = betterAuth({
+  // AUTH_BASE_URL must be the FRONTEND (Vercel) URL in production.
+  // Auth is proxied through Next.js rewrites so cookies are set on the frontend domain.
   baseURL: process.env.AUTH_BASE_URL || "http://localhost:4002",
   secret: process.env.BETTER_AUTH_SECRET,
   trustedOrigins: (process.env.AUTH_TRUSTED_ORIGINS || "http://localhost:3005")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
-  advanced: {
-    // Cross-origin OAuth (Vercel frontend → Railway backend → Google → Railway callback)
-    // requires SameSite=None so Google's cross-site redirect sends the state cookie back.
-    defaultCookieAttributes: isProd
-      ? { sameSite: "none" as const, secure: true }
-      : {},
-  },
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
