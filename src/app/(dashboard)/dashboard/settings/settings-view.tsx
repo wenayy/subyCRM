@@ -760,7 +760,7 @@ export function SettingsView() {
     try {
       if (deep) await telegramPersonalApi.syncHistory();
       else await telegramPersonalApi.sync();
-      reload();
+      reload(userId);
     } catch (e: any) {
       alert(`Sync failed: ${e.message || "Unknown error"}`);
     } finally {
@@ -923,22 +923,22 @@ export function SettingsView() {
       {/* Modals */}
       {modal === "discord" && (
         <DiscordModal
-          onConnect={async (token) => { await discordApi.connect(token); reload(); }}
-          onClose={() => { setModal(null); reload(); }}
+          onConnect={async (token) => { await discordApi.connect(token); reload(userId); }}
+          onClose={() => { setModal(null); reload(userId); }}
         />
       )}
       {modal === "x" && (
         <XModal
           hasEnvCreds={xStatus?.hasEnvCreds}
-          onConnect={async (d) => { await xApi.connect(d); reload(); }}
-          onClose={() => { setModal(null); reload(); }}
+          onConnect={async (d) => { await xApi.connect(d); reload(userId); }}
+          onClose={() => { setModal(null); reload(userId); }}
         />
       )}
       {modal === "telegram_personal" && (
-        <TelegramPersonalModal hasEnvCreds={tgPersonal?.hasEnvCreds} onClose={() => { setModal(null); reload(); }} />
+        <TelegramPersonalModal hasEnvCreds={tgPersonal?.hasEnvCreds} onClose={() => { setModal(null); reload(userId); }} />
       )}
       {modal === "whatsapp" && (
-        <WhatsAppModal onClose={() => { setModal(null); reload(); }} />
+        <WhatsAppModal onClose={() => { setModal(null); reload(userId); }} />
       )}
     </div>
   );
