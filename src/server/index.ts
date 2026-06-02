@@ -38,6 +38,9 @@ import sequenceRouter from "./routes/sequence.routes";
 const app = express();
 const PORT = process.env.API_PORT || 4002;
 
+// Trust Railway/Render/Heroku proxy so req.protocol and req.secure reflect HTTPS
+app.set("trust proxy", 1);
+
 // ─── CORS ────────────────────────────────────────────────────
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(",").map((s) => s.trim())
