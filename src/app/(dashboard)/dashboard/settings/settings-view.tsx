@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { calendarApi, gmailApi, discordApi, slackApi, xApi, whatsappApi, telegramPersonalApi, linkedinApi } from "@/lib/api";
+import { authClient } from "@/lib/auth-client";
 
 type Status = "connected" | "disconnected" | "error";
 
@@ -634,8 +635,7 @@ function WhatsAppModal({ onClose }: { onClose: () => void }) {
 }
 
 // ─── Persist statuses in localStorage to avoid flicker on re-visit ───────────
-
-const CACHE_KEY = "suby_integration_status_v1";
+// Cache is scoped to userId so a new/different user always starts with a clean slate.
 
 type CachedStatuses = {
   gcal?: { connected: boolean; lastSync: string | null };
@@ -648,17 +648,24 @@ type CachedStatuses = {
   linkedin?: { connected: boolean; profileName: string | null };
 };
 
-function readCache(): CachedStatuses {
-  try { return JSON.parse(localStorage.getItem(CACHE_KEY) ?? "{}"); } catch { return {}; }
+function cacheKey(userId: string | undefined) {
+  return `suby_integration_status_v2_${userId ?? "anon"}`;
 }
 
-function writeCache(s: CachedStatuses) {
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify(s)); } catch {}
+function readCache(userId: string | undefined): CachedStatuses {
+  try { return JSON.parse(localStorage.getItem(cacheKey(userId)) ?? "{}"); } catch { return {}; }
+}
+
+function writeCache(userId: string | undefined, s: CachedStatuses) {
+  try { localStorage.setItem(cacheKey(userId), JSON.stringify(s)); } catch {}
 }
 
 // ─── Main settings view ───────────────────────────────────────────────────────
 
 export function SettingsView() {
+  const { data: session } = authClient.useSession();
+  const userId = session?.user?.id;
+
   const [pending, setPending] = useState<string | null>(null);
   const [modal, setModal] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
@@ -673,36 +680,37 @@ export function SettingsView() {
   const [tgPersonal, setTgPersonal] = useState<{ connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean } | null>(null);
   const [linkedin, setLinkedin] = useState<{ connected: boolean; profileName: string | null } | null>(null);
 
-  const reload = () => {
+  const reload = (uid: string | undefined) => {
     calendarApi.status()
-      .then((v) => { setGcal(v); writeCache({ ...readCache(), gcal: v }); })
+      .then((v) => { setGcal(v); writeCache(uid, { ...readCache(uid), gcal: v }); })
       .catch(() => setGcal((p) => p ?? { connected: false, lastSync: null }));
     gmailApi.status()
-      .then((v) => { setGmail(v); writeCache({ ...readCache(), gmail: v }); })
+      .then((v) => { setGmail(v); writeCache(uid, { ...readCache(uid), gmail: v }); })
       .catch(() => setGmail((p) => p ?? { connected: false, lastSync: null }));
     discordApi.status()
-      .then((v) => { setDiscord(v); writeCache({ ...readCache(), discord: v }); })
+      .then((v) => { setDiscord(v); writeCache(uid, { ...readCache(uid), discord: v }); })
       .catch(() => setDiscord((p) => p ?? { connected: false, lastSync: null }));
     slackApi.status()
-      .then((v) => { setSlack(v); writeCache({ ...readCache(), slack: v }); })
+      .then((v) => { setSlack(v); writeCache(uid, { ...readCache(uid), slack: v }); })
       .catch(() => setSlack((p) => p ?? { connected: false, lastSync: null }));
     xApi.status()
-      .then((v) => { setXStatus(v); writeCache({ ...readCache(), xStatus: v }); })
+      .then((v) => { setXStatus(v); writeCache(uid, { ...readCache(uid), xStatus: v }); })
       .catch(() => setXStatus((p) => p ?? { connected: false, lastSync: null }));
     whatsappApi.status()
-      .then((s) => { const v = { connected: s.connected, phoneNumber: s.phoneNumber }; setWhatsapp(v); writeCache({ ...readCache(), whatsapp: v }); })
+      .then((s) => { const v = { connected: s.connected, phoneNumber: s.phoneNumber }; setWhatsapp(v); writeCache(uid, { ...readCache(uid), whatsapp: v }); })
       .catch(() => setWhatsapp((p) => p ?? { connected: false, phoneNumber: null }));
     telegramPersonalApi.status()
-      .then((v) => { setTgPersonal(v); writeCache({ ...readCache(), tgPersonal: v }); })
+      .then((v) => { setTgPersonal(v); writeCache(uid, { ...readCache(uid), tgPersonal: v }); })
       .catch(() => setTgPersonal((p) => p ?? { connected: false, lastSync: null }));
     linkedinApi.status()
-      .then((v) => { setLinkedin(v); writeCache({ ...readCache(), linkedin: v }); })
+      .then((v) => { setLinkedin(v); writeCache(uid, { ...readCache(uid), linkedin: v }); })
       .catch(() => setLinkedin((p) => p ?? { connected: false, profileName: null }));
   };
 
   useEffect(() => {
-    // Restore from cache first — instant, no flicker
-    const c = readCache();
+    if (userId === undefined) return; // wait until session is resolved
+    // Restore from this user's cache first — instant, no flicker
+    const c = readCache(userId);
     if (c.gcal) setGcal(c.gcal);
     if (c.gmail) setGmail(c.gmail);
     if (c.discord) setDiscord(c.discord);
@@ -712,14 +720,14 @@ export function SettingsView() {
     if (c.tgPersonal) setTgPersonal(c.tgPersonal);
     if (c.linkedin) setLinkedin(c.linkedin);
     // Then fetch real state in background
-    reload();
+    reload(userId);
     const params = new URLSearchParams(window.location.search);
     if (params.get("slack") || params.get("calendar") || params.get("gmail") || params.get("x") || params.get("linkedin") || params.get("discord")) {
       window.history.replaceState({}, "", window.location.pathname);
-      setTimeout(reload, 2000);
+      setTimeout(() => reload(userId), 2000);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [userId]);
 
   const statusFor = (key: string): Status => {
     if (key === "google_calendar") return gcal?.connected ? "connected" : "disconnected";
