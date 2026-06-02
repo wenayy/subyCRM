@@ -559,6 +559,16 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     browser: Browsers.ubuntu("Chrome"),
     keepAliveIntervalMs: 25_000,
     maxMsgRetryCount: 3,
+    // Required for Baileys to resend messages when a recipient hits a pre-key decryption error.
+    // Without this, messages stay as "Waiting for this message" on the recipient's side.
+    getMessage: async (key) => {
+      const stored = await (prisma as any).inboxMessage.findFirst({
+        where: { platform: "whatsapp", externalId: key.id ?? "" },
+      });
+      if (!stored?.body) return undefined;
+      const { proto } = await getBaileys();
+      return proto.Message.fromObject({ conversation: stored.body });
+    },
   });
 
   state.sock   = sock;
