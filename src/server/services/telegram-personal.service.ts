@@ -620,22 +620,16 @@ export const telegramPersonalService = {
       contact = await prisma.contact.findUnique({ where: { id: contactId } }) ?? null;
     }
 
-    // Check if the text contains a markdown media tag: ![image](path) or [file](path)
-    const mediaMatch = text.match(/!?\[([^\]]*)\]\(([^)]+)\)/);
-    if (mediaMatch) {
-      const relativePath = mediaMatch[2];
-      const cleanText = text.replace(/!?\[([^\]]*)\]\(([^)]+)\)/, "").trim();
-
-      const path = await import("path");
+    // Check if the text contains a markdown media tag
+    const { parseMediaMarkdown } = await import("./inbox.service");
+    const media = parseMediaMarkdown(text);
+    if (media) {
       const fs = await import("fs/promises");
-      const filename = path.basename(relativePath);
-      const filePath = path.join(process.cwd(), "public", "media", filename);
-
       try {
-        await fs.access(filePath);
+        await fs.access(media.filePath);
         const sentMediaMsg = await client.sendFile(targetPeer, {
-          file: filePath,
-          caption: cleanText || undefined,
+          file: media.filePath,
+          caption: media.caption || undefined,
         });
 
         if (contact) {
@@ -645,7 +639,7 @@ export const telegramPersonalService = {
             contactId: contact.id,
             contactName: contact.name,
             senderId: peer,
-            preview: cleanText ? cleanText.slice(0, 120) : "[File]",
+            preview: media.caption ? media.caption.slice(0, 120) : "[File]",
             body: text,
             receivedAt: new Date(sentMediaMsg.date * 1000),
             needsReply: false,
@@ -709,6 +703,23 @@ export const telegramPersonalService = {
     let targetPeer: any = peer;
     if (/^-?\d+$/.test(peer)) {
       targetPeer = await resolveNumericPeer(userId, peer, client);
+    }
+
+    // Check if the text contains a markdown media tag
+    const { parseMediaMarkdown } = await import("./inbox.service");
+    const media = parseMediaMarkdown(text);
+    if (media) {
+      const fs = await import("fs/promises");
+      try {
+        await fs.access(media.filePath);
+        return await client.sendFile(targetPeer, {
+          file: media.filePath,
+          caption: media.caption || undefined,
+          replyTo,
+        });
+      } catch (err) {
+        console.warn(`[telegram-personal] Media file not accessible in sendOnly, sending as text link. error:`, err);
+      }
     }
 
     try {

@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma";
 import type { PlatformType } from "@prisma/client";
 import { broadcastInboxEvent } from "./sse.service";
 
-function parseMediaMarkdown(text: string): { filePath: string; caption: string } | null {
+export function parseMediaMarkdown(text: string): { filePath: string; caption: string } | null {
   const match = text.match(/!?\[([^\]]*)\]\((\/media\/[^)]+)\)/);
   if (!match) return null;
 

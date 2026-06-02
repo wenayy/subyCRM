@@ -321,5 +321,32 @@ export function stopBot() { bot?.stopPolling(); bot = null; g.__telegramBot = nu
 
 export async function sendBotReply(chatId: string, text: string): Promise<void> {
   if (!bot) throw new Error("Telegram bot not running");
-  await bot.sendMessage(Number(chatId), text);
+
+  const { parseMediaMarkdown } = await import("./inbox.service");
+  const media = parseMediaMarkdown(text);
+
+  if (media) {
+    const fs = await import("fs");
+    const path = await import("path");
+    const ext = path.extname(media.filePath).toLowerCase();
+    const imageBuffer = fs.readFileSync(media.filePath);
+
+    const isVideo = [".mp4", ".mov", ".avi", ".mkv"].includes(ext);
+    const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext);
+
+    if (isImage) {
+      await bot.sendPhoto(Number(chatId), imageBuffer, { caption: media.caption || undefined });
+    } else if (isVideo) {
+      await bot.sendVideo(Number(chatId), imageBuffer, { caption: media.caption || undefined });
+    } else {
+      await bot.sendDocument(
+        Number(chatId),
+        imageBuffer,
+        { caption: media.caption || undefined },
+        { filename: path.basename(media.filePath) }
+      );
+    }
+  } else {
+    await bot.sendMessage(Number(chatId), text);
+  }
 }
