@@ -118,16 +118,29 @@ Be proactive: choose the most specific matching category. Avoid using "other" un
     const notes = (contact.notes || []).slice(0, 10).map((n) => `- ${n.content.slice(0, 300)}`).join("\n");
     const tags = (contact.contactTags || []).map((ct) => ct.tag.name).join(", ");
 
+    const systemPrompt = `You are an expert personal CRM assistant for a founder of a payments infrastructure startup called "Suby".
+Suby is a payments infra company targeting payment processors (like Stripe, Adyen), crypto custodians (Coinbase, Ledger), VCs (Sequoia, a16z), AI/infra players (Mistral, Vercel, HF), and fintechs (Qonto, Ramp).
+
+Your task is to write a concise, professional, yet casual and highly specific 2-4 sentence CRM summary for a contact.
+Avoid generic placeholder text. Analyze the contact's name, company, role, platforms, tags, notes, and the actual log of recent interactions (DMs, emails, chats).
+
+Mention:
+1. Who they are (name, company, role) and their value to Suby.
+2. The current state of the relationship based on the interactions (how recently we spoke, on what platforms, or if the relationship is cold/new).
+3. The main focus of recent discussions or notes (e.g. EU rails, stablecoin off-ramps, hardware wallet integration specs, roadmaps, etc.).
+
+Return only the clean summary text. Do not add any headings or labels.`;
+
     const res = await getOpenAI().chat.completions.create({
       model: MODEL,
       temperature: 0.3,
-      messages: [{
-        role: "system",
-        content: "Write a concise 2-4 sentence professional CRM summary for this contact. Focus on who they are, the relationship status, and key points. Return only the summary text.",
-      }, {
-        role: "user",
-        content: `Name: ${contact.name}\nCompany: ${contact.company || "Unknown"}\nRole: ${contact.role || "Unknown"}\nPlatforms: ${platforms || "None"}\nTags: ${tags || "None"}\n\nInteractions:\n${interactions || "None"}\n\nNotes:\n${notes || "None"}`,
-      }],
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: `Name: ${contact.name}\nCompany: ${contact.company || "Unknown"}\nRole: ${contact.role || "Unknown"}\nPlatforms: ${platforms || "None"}\nTags: ${tags || "None"}\n\nInteractions:\n${interactions || "None"}\n\nNotes:\n${notes || "None"}`,
+        }
+      ],
     });
 
     return res.choices[0].message.content?.trim() ?? "";
@@ -143,17 +156,42 @@ Be proactive: choose the most specific matching category. Avoid using "other" un
     const notes = (contact.notes || []).slice(0, 10).map((n) => `- ${n.content.slice(0, 300)}`).join("\n");
     const tags = (contact.contactTags || []).map((ct) => ct.tag.name).join(", ");
 
+    const systemPrompt = `You are a high-value meeting prep assistant for a founder of a payments infrastructure startup called "Suby".
+Suby is a payments infra company targeting payment processors (like Stripe, Adyen), crypto custodians (Coinbase, Ledger), VCs (Sequoia, a16z), AI/infra players (Mistral, Vercel, HF), and fintechs (Qonto, Ramp).
+
+Your task is to analyze a contact's details and generate a highly specific, customized meeting prep briefing. Do not use generic placeholders. Use the actual name, company, role, tags, notes, and the log of recent interactions.
+
+Analyze the interactions carefully:
+- If there are recent interactions (e.g. WhatsApp chats, emails, DMs), summarize them accurately in 'recentActivity' (e.g., "Recently exchanged 27 messages on WhatsApp, discussing...").
+- If there are no interactions or only one-sided outbound messages, clearly state the status in 'recentActivity' (e.g., "No prior mutual exchanges; sent outbound messages on WhatsApp recently trying to connect.").
+- Tailor the 'talkingPoints' and 'suggestedActions' to their specific sector and company (e.g. if they are a payment processor, discuss settlement flows/stablecoin rails; if crypto, discuss custody/USDC/EU regulation; if VC, discuss metrics/runway; if partner, discuss integration/roadmap).
+
+Return a JSON object with this exact structure:
+{
+  "summary": "1-2 sentences summarizing who they are, their role/company, and why they are relevant to Suby.",
+  "recentActivity": "1-2 sentences summarizing the last time you interacted with them, the platform, the direction of the messages, and the frequency/status.",
+  "talkingPoints": [
+    "A specific talking point reference to your last exchange, notes, or platform.",
+    "A concrete topic to discuss tailored to their sector/company (e.g. settlement flows, hardware specs, stablecoin rails, runway projections).",
+    "A question or priority to ask them about regarding the upcoming quarter."
+  ],
+  "suggestedActions": [
+    "Action item 1 (e.g., send follow-up, propose a next step, share spec).",
+    "Action item 2 (e.g., update relationship status, schedule reminder)."
+  ]
+}`;
+
     const res = await getOpenAI().chat.completions.create({
       model: MODEL,
       response_format: { type: "json_object" },
       temperature: 0.3,
-      messages: [{
-        role: "system",
-        content: `Generate a meeting prep briefing. Return JSON: { "summary": "2-3 sentences", "talkingPoints": ["...","...","..."], "recentActivity": "1-2 sentences", "suggestedActions": ["...","..."] }`,
-      }, {
-        role: "user",
-        content: `Name: ${contact.name}\nCompany: ${contact.company || "Unknown"}\nRole: ${contact.role || "Unknown"}\nPlatforms: ${platforms}\nTags: ${tags || "None"}\n\nInteractions:\n${interactions || "None"}\n\nNotes:\n${notes || "None"}`,
-      }],
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: `Name: ${contact.name}\nCompany: ${contact.company || "Unknown"}\nRole: ${contact.role || "Unknown"}\nPlatforms: ${platforms}\nTags: ${tags || "None"}\n\nInteractions:\n${interactions || "None"}\n\nNotes:\n${notes || "None"}`,
+        }
+      ],
     });
 
     return JSON.parse(res.choices[0].message.content ?? "{}");

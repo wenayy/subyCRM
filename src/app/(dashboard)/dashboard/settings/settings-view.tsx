@@ -527,6 +527,50 @@ function TelegramPersonalModal({ hasEnvCreds, onClose }: { hasEnvCreds?: boolean
   );
 }
 
+function LinkedInCookieModal({ onSave, onClose }: { onSave: (cookie: string) => Promise<void>; onClose: () => void }) {
+  const [cookie, setCookie] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async () => {
+    if (!cookie.trim()) return;
+    setLoading(true); setError("");
+    try { await onSave(cookie.trim()); onClose(); }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed to save cookie"); }
+    finally { setLoading(false); }
+  };
+  return (
+    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>Connect LinkedIn Messages</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 py-2">
+          <p className="text-xs text-muted-foreground leading-normal">
+            LinkedIn doesn&apos;t offer a messaging API, so we use your browser session cookie (the same way Beeper works).<br /><br />
+            <strong>How to get your li_at cookie:</strong><br />
+            1. Open <strong>linkedin.com</strong> and log in<br />
+            2. Open DevTools → <strong>Application → Cookies → linkedin.com</strong><br />
+            3. Find the cookie named <strong>li_at</strong> and copy its value<br />
+            4. Paste it below
+          </p>
+          <input
+            value={cookie}
+            onChange={(e) => setCookie(e.target.value)}
+            placeholder="AQEDATeB... (li_at cookie value)"
+            className="w-full px-3 py-1.5 text-sm rounded-lg border border-border bg-muted/50 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+          />
+          {error && <p className="text-destructive text-xs">{error}</p>}
+          <p className="text-[10px] text-muted-foreground">Your cookie is stored securely and only used to fetch your LinkedIn DMs on your behalf.</p>
+        </div>
+        <div className="flex gap-2 justify-end mt-2">
+          <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={submit} disabled={loading || !cookie.trim()}>{loading && <Spinner />}{loading ? "Connecting…" : "Connect"}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function WhatsAppModal({ onClose }: { onClose: () => void }) {
   const [qr, setQr] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);

@@ -53,7 +53,7 @@ const STRENGTH_COLORS: Record<string, "green" | "yellow" | "blue" | "red" | "pur
 
 const PLATFORM_LINKS: Record<string, (id: string) => string | null> = {
   x: (id) => `https://x.com/${id}`,
-  linkedin: (id) => `https://linkedin.com/in/${id}`,
+  linkedin: (id) => id.includes("linkedin.com") ? (id.startsWith("http") ? id : `https://${id}`) : `https://linkedin.com/in/${id}`,
   telegram: (id) => `https://t.me/${id}`,
   whatsapp: (id) => `https://wa.me/${id.replace(/\D/g, "")}`,
   discord: () => null,
@@ -274,7 +274,7 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
   const handleSummary = async () => {
     setSummarizing(true);
     try {
-      await aiApi.summary(id); // polls until worker finishes
+      await aiApi.summary(id, true); // polls until worker finishes, forces refresh
       await reload();           // then re-fetch contact — aiSummary field is now populated
     } catch (e: any) {
       console.error("[summary]", e?.message);
@@ -285,7 +285,7 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     setPrepping(true);
     setPrepResult(null);
     try {
-      const res = await aiApi.prep(id); // polls until worker finishes, returns { briefing }
+      const res = await aiApi.prep(id, true); // polls until worker finishes, returns { briefing }, forces refresh
       setPrepResult(res?.briefing ?? "No briefing returned.");
     } catch {
       setPrepResult("Failed to generate prep. Try again.");
@@ -696,7 +696,7 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
   );
 }
 
-function UnifiedTimeline({
+export function UnifiedTimeline({
   contact, reminders,
   noteText, setNoteText, addingNote, onAddNote, onDeleteNote,
   reminderContent, setReminderContent, reminderDate, setReminderDate,

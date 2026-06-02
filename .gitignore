@@ -40,3 +40,9 @@ next-env.d.ts
 # editor
 .vscode/
 .idea/
+
+# WhatsApp session credentials (sensitive, machine-specific)
+.whatsapp-auth/
+
+# uploaded media files
+/public/media/

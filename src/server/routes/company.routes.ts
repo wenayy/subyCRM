@@ -3,21 +3,42 @@ import { prisma } from "../lib/prisma";
 
 const router = Router();
 
+// Link unlinked contacts (company string matches) to this company via FK
+async function autoLinkContacts(companyId: string, companyName: string) {
+  await prisma.contact.updateMany({
+    where: {
+      companyId: null,
+      company: { equals: companyName, mode: "insensitive" },
+    },
+    data: { companyId },
+  });
+}
+
 // GET /api/companies — list all companies with contact count
+// Count includes both FK-linked contacts AND contacts matched by company name string
 router.get("/", async (_req, res, next) => {
   try {
     const companies = await prisma.company.findMany({
       include: {
         _count: { select: { contacts: true } },
       },
-      orderBy: {
-        contacts: { _count: "desc" },
-      },
+      orderBy: { name: "asc" },
     });
+
+    // Count unlinked contacts matched by company name (case-insensitive)
+    const nameMatchGroups = await prisma.contact.groupBy({
+      by: ["company"],
+      where: { companyId: null, company: { not: null } },
+      _count: { _all: true },
+    });
+    const nameMatchMap = new Map(
+      nameMatchGroups.map((g) => [g.company!.toLowerCase(), g._count._all])
+    );
+
     res.json(
       companies.map((c) => ({
         ...c,
-        contactCount: c._count.contacts,
+        contactCount: c._count.contacts + (nameMatchMap.get(c.name.toLowerCase()) ?? 0),
         _count: undefined,
       }))
     );
@@ -26,10 +47,19 @@ router.get("/", async (_req, res, next) => {
   }
 });
 
-// GET /api/companies/:id — single company with all contacts
+// GET /api/companies/:id — single company with all contacts (auto-links by name first)
 router.get("/:id", async (req, res, next) => {
   try {
-    const company = await prisma.company.findUnique({
+    const company = await prisma.company.findUnique({ where: { id: req.params.id } });
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    // Auto-link any contacts that mention this company by name but lack companyId
+    await autoLinkContacts(company.id, company.name);
+
+    const full = await prisma.company.findUnique({
       where: { id: req.params.id },
       include: {
         contacts: {
@@ -40,11 +70,7 @@ router.get("/:id", async (req, res, next) => {
         },
       },
     });
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
-    }
-    res.json(company);
+    res.json(full);
   } catch (err) {
     next(err);
   }

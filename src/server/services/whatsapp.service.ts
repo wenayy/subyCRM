@@ -278,16 +278,58 @@ async function resolveContact(
 function extractText(msg: any): string {
   const m = msg.message;
   if (!m) return "";
-  return (
-    m.conversation ??
-    m.extendedTextMessage?.text ??
-    m.imageMessage?.caption ??
-    (m.stickerMessage  ? "[Sticker]"    :
-     m.audioMessage    ? "[Voice Note]" :
-     m.videoMessage    ? "[Video]"      :
-     m.documentMessage ? "[Document]"   :
-     m.imageMessage    ? "[Image]"      : "")
-  );
+  if (m.conversation) return m.conversation;
+  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
+  if (m.stickerMessage) return "[Sticker]";
+  if (m.audioMessage) return "[Voice Note]";
+  if (m.videoMessage) return m.videoMessage.caption || "[Video]";
+  if (m.documentMessage) return m.documentMessage.caption || m.documentMessage.fileName || "[Document]";
+  if (m.imageMessage) return m.imageMessage.caption || "[Image]";
+  return "";
+}
+
+function mimeToExt(mime: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+    "image/gif": ".gif", "image/webp": ".webp", "image/heic": ".heic",
+    "video/mp4": ".mp4", "video/quicktime": ".mov", "video/3gpp": ".3gp",
+    "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
+    "audio/opus": ".ogg",
+  };
+  return map[mime] ?? `.${mime.split("/")[1] ?? "bin"}`;
+}
+
+async function downloadAndSaveMedia(msg: any): Promise<string | null> {
+  const m = msg.message;
+  if (!m) return null;
+  const hasMedia = m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.stickerMessage;
+  if (!hasMedia) return null;
+  try {
+    const { downloadMediaMessage } = await getBaileys();
+    const buffer = await downloadMediaMessage(
+      msg,
+      "buffer",
+      {},
+      { logger: { level: "silent", trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, fatal: () => {}, child: () => ({ level: "silent", trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, fatal: () => {}, child: () => ({} as any) }) } as any,
+        reuploadRequest: state.sock?.updateMediaMessage?.bind(state.sock),
+      }
+    ) as Buffer;
+    if (!buffer || !buffer.length) return null;
+    const mime =
+      m.imageMessage?.mimetype ?? m.videoMessage?.mimetype ?? m.audioMessage?.mimetype ??
+      m.documentMessage?.mimetype ?? m.stickerMessage?.mimetype ?? "application/octet-stream";
+    const ext = m.documentMessage?.fileName
+      ? path.extname(m.documentMessage.fileName) || mimeToExt(mime)
+      : mimeToExt(mime);
+    const uniqueName = `${Date.now()}_${(msg.key?.id ?? "media").replace(/[^a-zA-Z0-9_-]/g, "")}${ext}`;
+    const mediaDir = path.join(process.cwd(), "public", "media");
+    await fs.promises.mkdir(mediaDir, { recursive: true });
+    await fs.promises.writeFile(path.join(mediaDir, uniqueName), buffer);
+    return `/media/${uniqueName}`;
+  } catch (e) {
+    console.error("[whatsapp] Media download failed:", e);
+    return null;
+  }
 }
 
 // ── Message processor ──────────────────────────────────────────────────────────
@@ -301,7 +343,7 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
   ) return;
   if (!msg.message) return;
 
-  const text = extractText(msg);
+  let text = extractText(msg);
   if (!text) return;
 
   const fromMe = !!msg.key.fromMe;
@@ -335,6 +377,28 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
       console.log(`[whatsapp] No CRM contact for ${jidDigits(remoteJid) || remoteJid} (pushName: ${msg.pushName ?? "none"})`);
     }
     return;
+  }
+
+  // Download media for live messages and store as markdown so the inbox renders it
+  if (!isHistorical) {
+    const m = msg.message;
+    const hasMedia = m?.imageMessage || m?.videoMessage || m?.audioMessage || m?.documentMessage || m?.stickerMessage;
+    if (hasMedia) {
+      const mediaUrl = await downloadAndSaveMedia(msg);
+      if (mediaUrl) {
+        const caption = m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || "";
+        const docName = m.documentMessage?.fileName || "file";
+        if (m.imageMessage || m.stickerMessage) {
+          text = caption ? `![${caption}](${mediaUrl})` : `![Image](${mediaUrl})`;
+        } else if (m.videoMessage) {
+          text = caption ? `![${caption}](${mediaUrl})` : `![Video](${mediaUrl})`;
+        } else if (m.audioMessage) {
+          text = `[Voice Note](${mediaUrl})`;
+        } else {
+          text = `[${docName}](${mediaUrl})`;
+        }
+      }
+    }
   }
 
   await inboxService.upsert({
@@ -591,29 +655,70 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     sock.ev.on("messages.upsert", async ({ messages: msgs }: any) => {
       if (state.generation !== myGen) return;
       for (const msg of msgs) {
-        try { await processMessage(msg); } catch (e) {
+        try {
+          // "Delete for everyone" arrives as a protocol message type=0 with a target key.
+          // Only skip processMessage when both conditions are confirmed — otherwise fall
+          // through so legitimate messages (including ones with a zeroed protocolMessage
+          // from some Baileys versions) are still saved.
+          const proto = msg.message?.protocolMessage;
+          const revokedId = proto?.type === 0 ? proto?.key?.id : null;
+          if (revokedId) {
+            const result = await (prisma as any).inboxMessage.deleteMany({
+              where: { platform: "whatsapp", externalId: revokedId },
+            });
+            if (result.count > 0) {
+              console.log(`[whatsapp] Reflected deletion of ${revokedId}`);
+              broadcastInboxEvent("message_deleted", { externalId: revokedId });
+            }
+            continue; // confirmed revoke — no need to run processMessage
+          }
+          await processMessage(msg);
+        } catch (e) {
           console.error("[whatsapp] Message error:", e);
         }
       }
     });
 
     // ── Revocations / deletions ───────────────────────────────
+    // Handles tombstones: Baileys sets message=null on the original when it's revoked
     sock.ev.on("messages.update", async (updates: any[]) => {
       if (state.generation !== myGen) return;
       for (const update of updates) {
         try {
-          const proto = update.update?.message?.protocolMessage;
-          if (proto?.type !== 0) continue; // 0 = REVOKE
-          const revokedId = proto.key?.id;
-          if (!revokedId) continue;
-          const result = await (prisma as any).inboxMessage.deleteMany({
-            where: { platform: "whatsapp", externalId: revokedId },
-          });
-          if (result.count > 0) {
-            console.log(`[whatsapp] Reflected deletion of ${revokedId}`);
-            broadcastInboxEvent("message_deleted", { externalId: revokedId });
+          if (update.update?.message === null) {
+            const revokedId = update.key?.id;
+            if (!revokedId) continue;
+            const result = await (prisma as any).inboxMessage.deleteMany({
+              where: { platform: "whatsapp", externalId: revokedId },
+            });
+            if (result.count > 0) {
+              console.log(`[whatsapp] Reflected deletion (tombstone) of ${revokedId}`);
+              broadcastInboxEvent("message_deleted", { externalId: revokedId });
+            }
           }
         } catch {}
+      }
+    });
+
+    // Handles direct message deletions/clears synced from the primary phone
+    sock.ev.on("messages.delete", async (item) => {
+      if (state.generation !== myGen) return;
+      try {
+        if ("keys" in item) {
+          for (const key of item.keys) {
+            if (key.id) {
+              const result = await (prisma as any).inboxMessage.deleteMany({
+                where: { platform: "whatsapp", externalId: key.id },
+              });
+              if (result.count > 0) {
+                console.log(`[whatsapp] Reflected deletion (messages.delete) of ${key.id}`);
+                broadcastInboxEvent("message_deleted", { externalId: key.id });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[whatsapp] Error handling messages.delete:", e);
       }
     });
 
@@ -654,7 +759,7 @@ export const whatsappService = {
     return connectSocket(userId);
   },
 
-  async sendMessage(jid: string, text: string): Promise<unknown> {
+  async ensureConnected(): Promise<void> {
     if (!state.connected) {
       const saved = await (prisma as any).whatsAppSession
         .findFirst({ where: { connected: true } })
@@ -663,13 +768,11 @@ export const whatsappService = {
         throw new Error("WhatsApp is not connected. Go to Settings → WhatsApp to connect.");
       }
       if (!state.reconnecting && !state.sock) {
-        // Connect directly — no backoff delay — so the send can proceed ASAP
         console.log("[whatsapp] Starting reconnect for pending send…");
         const uid = state.userId ?? saved.userId;
         state.userId = uid;
         connectSocket(uid).catch(console.error);
       }
-      // Wait up to 35s — Baileys handshake can easily take 15–25s on a fresh socket
       try {
         await waitForConnection(35_000);
       } catch {
@@ -677,6 +780,48 @@ export const whatsappService = {
       }
     }
     if (!state.sock) throw new Error("WhatsApp socket not initialized");
+  },
+
+  async sendMediaMessage(jid: string, filePath: string, caption?: string): Promise<unknown> {
+    await whatsappService.ensureConnected();
+    const resolved = resolveJid(jid);
+    if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
+    console.log(`[whatsapp] Sending image to ${resolved}`);
+
+    const imageBuffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const isVideo = [".mp4", ".mov", ".avi", ".mkv"].includes(ext);
+
+    let result: unknown;
+    try {
+      if (isVideo) {
+        result = await state.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" });
+      } else {
+        result = await state.sock.sendMessage(resolved, { image: imageBuffer, caption: caption ?? "" });
+      }
+    } catch (sendErr) {
+      if (!state.connected) {
+        console.log("[whatsapp] Socket closed during send — waiting for reconnect before retry…");
+        await waitForConnection(35_000);
+        if (!state.sock) throw new Error("WhatsApp socket unavailable after reconnect");
+        result = isVideo
+          ? await state.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" })
+          : await state.sock.sendMessage(resolved, { image: imageBuffer, caption: caption ?? "" });
+      } else {
+        throw sendErr;
+      }
+    }
+
+    const realId = (result as any)?.key?.id;
+    if (realId) {
+      sentCrmMessageIds.add(realId);
+      setTimeout(() => sentCrmMessageIds.delete(realId), 120_000);
+    }
+    return result;
+  },
+
+  async sendMessage(jid: string, text: string): Promise<unknown> {
+    await whatsappService.ensureConnected();
 
     const resolved = resolveJid(jid);
     if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
@@ -702,7 +847,7 @@ export const whatsappService = {
       sentCrmMessageIds.add(realId);
       setTimeout(() => sentCrmMessageIds.delete(realId), 120_000);
     }
-    
+
     return result;
   },
 

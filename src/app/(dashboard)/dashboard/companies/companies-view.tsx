@@ -52,6 +52,8 @@ export function CompaniesView() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedFull, setSelectedFull] = useState<Company | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -62,6 +64,19 @@ export function CompaniesView() {
       .catch(() => setCompanies(MOCK_COMPANIES))
       .finally(() => setLoading(false));
   }, []);
+
+  // Fetch full company (with contacts) whenever selection changes
+  useEffect(() => {
+    if (!selectedId) { setSelectedFull(null); return; }
+    setDetailLoading(true);
+    companiesApi.getById(selectedId)
+      .then(setSelectedFull)
+      .catch(() => {
+        const mock = MOCK_COMPANIES.find((m) => m.id === selectedId);
+        setSelectedFull(mock ?? null);
+      })
+      .finally(() => setDetailLoading(false));
+  }, [selectedId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -83,7 +98,7 @@ export function CompaniesView() {
     }
   }, [filtered, selectedId]);
 
-  const selected = companies.find((c) => c.id === selectedId) || null;
+  const selected = companies.find((c) => c.id === selectedId) || null; // list-level object (no contacts)
 
   if (loading) {
     return (
@@ -183,7 +198,13 @@ export function CompaniesView() {
 
         {/* Right pane: detail */}
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-y-auto px-7 py-6">
-          {selected ? (
+          {detailLoading ? (
+            <div className="flex items-center justify-center py-20">
+              <span className="inline-block size-5 rounded-full border-2 border-current border-t-transparent animate-spin text-muted-foreground" />
+            </div>
+          ) : selectedFull ? (
+            <CompanyDetailPanel company={selectedFull} onOpenContact={(id) => router.push(`/dashboard/contacts/${id}`)} />
+          ) : selected ? (
             <CompanyDetailPanel company={selected} onOpenContact={(id) => router.push(`/dashboard/contacts/${id}`)} />
           ) : (
             <div className="py-12 px-6 text-center text-muted-foreground text-sm">Select a company on the left.</div>

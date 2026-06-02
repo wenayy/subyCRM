@@ -9,6 +9,7 @@ import { startDailyBriefWorker } from "./daily-brief.worker";
 import { startOutcomePromptWorker } from "./outcome-prompt.worker";
 import { startGmailSyncWorker } from "./gmail-sync.worker";
 import { startXDmSyncWorker } from "./x-dm-sync.worker";
+import { startLinkedInSyncWorker } from "./linkedin-sync.worker";
 
 let workers: Worker[] = [];
 
@@ -26,6 +27,7 @@ export function startAllWorkers() {
     startOutcomePromptWorker(),
     startGmailSyncWorker(),
     startXDmSyncWorker(),
+    startLinkedInSyncWorker(),
   ];
 
   console.log(`[workers] ${workers.length} workers running`);

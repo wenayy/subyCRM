@@ -1,6 +1,25 @@
+import path from "path";
 import { prisma } from "../lib/prisma";
 import type { PlatformType } from "@prisma/client";
 import { broadcastInboxEvent } from "./sse.service";
+
+function parseMediaMarkdown(text: string): { filePath: string; caption: string } | null {
+  const match = text.match(/!?\[([^\]]*)\]\((\/media\/[^)]+)\)/);
+  if (!match) return null;
+
+  const [fullTag, name, url] = match;
+  const filename = url.replace("/media/", "");
+  const filePath = path.join(process.cwd(), "public", "media", filename);
+
+  let caption = text.replace(fullTag, "").trim();
+  if (!caption) {
+    const cleanName = name.trim();
+    const isGeneric = ["image", "video", "file", "photo", "media", "attachment"].includes(cleanName.toLowerCase());
+    caption = isGeneric ? "" : cleanName;
+  }
+
+  return { filePath, caption };
+}
 
 export const inboxService = {
   async getConversations() {
@@ -112,6 +131,50 @@ export const inboxService = {
       create: { platform, externalId, ...rest, ...(read !== undefined ? { read } : {}) },
       update: { contactId: rest.contactId, contactName: rest.contactName, preview: rest.preview, body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe, needsReply: rest.needsReply },
     });
+
+    if (rest.contactId) {
+      const direction = rest.fromMe ? "outbound" : "inbound";
+      const existingInteraction = await prisma.interaction.findFirst({
+        where: {
+          contactId: rest.contactId,
+          platform: platform as any,
+          direction,
+          occurredAt: rest.receivedAt,
+        },
+      });
+
+      if (!existingInteraction) {
+        await prisma.interaction.create({
+          data: {
+            contactId: rest.contactId,
+            platform: platform as any,
+            direction,
+            contentSnippet: rest.preview || rest.body || "",
+            occurredAt: rest.receivedAt,
+          },
+        });
+
+        const contact = await prisma.contact.findUnique({
+          where: { id: rest.contactId },
+          select: { lastContactDate: true, firstContactDate: true, contactFrequency: true },
+        });
+        if (contact) {
+          const updates: any = {};
+          if (!contact.lastContactDate || rest.receivedAt > contact.lastContactDate) {
+            updates.lastContactDate = rest.receivedAt;
+          }
+          if (!contact.firstContactDate || rest.receivedAt < contact.firstContactDate) {
+            updates.firstContactDate = rest.receivedAt;
+          }
+          updates.contactFrequency = (contact.contactFrequency || 0) + 1;
+          await prisma.contact.update({
+            where: { id: rest.contactId },
+            data: updates,
+          });
+        }
+      }
+    }
+
     broadcastInboxEvent("new_message", { platform, contactId: rest.contactId, fromMe: rest.fromMe });
     return result;
   },
@@ -120,66 +183,6 @@ export const inboxService = {
     const msg = await (prisma as any).inboxMessage.findUnique({ where: { id } });
     if (!msg) throw new Error("Message not found");
 
-    // ── Resolve destination ─────────────────────────────────────────────────────
-    let jid: string | null = null;
-    let telegramChatId: string | null = null;
-    let toEmail: string | null = null;
-
-    if (msg.platform === "whatsapp") {
-      // Prefer phone-based JID from the platform record — avoids @lid format which
-      // Baileys may not be able to resolve without a full contact sync
-      if (msg.contactId) {
-        const p = await prisma.platform.findFirst({ where: { contactId: msg.contactId, type: "whatsapp" } });
-        if (p) jid = p.platformId.includes("@") ? p.platformId : `${p.platformId}@s.whatsapp.net`;
-      }
-      // Fall back to senderId (may be @s.whatsapp.net or @lid — Baileys handles @s.whatsapp.net reliably)
-      if (!jid && msg.senderId && !msg.senderId.endsWith("@lid")) jid = msg.senderId;
-      // If senderId is @lid, strip to phone digits and build proper JID
-      if (!jid && msg.senderId?.endsWith("@lid")) {
-        const { resolveJid } = await import("./whatsapp.service");
-        jid = resolveJid(msg.senderId) ?? msg.senderId;
-      }
-      if (!jid) jid = `${msg.contactName}@s.whatsapp.net`;
-
-      if (jid) {
-        const { resolveJid } = await import("./whatsapp.service");
-        jid = resolveJid(jid) ?? jid;
-      }
-
-      // Last resort: if jid is still @lid (unresolvable), scan incoming messages from this
-      // contact to find a proper @s.whatsapp.net JID that Baileys can actually send to
-      if (jid?.endsWith("@lid") && msg.contactId) {
-        const incoming = await (prisma as any).inboxMessage.findFirst({
-          where: { contactId: msg.contactId, platform: "whatsapp", fromMe: false, senderId: { contains: "@s.whatsapp.net" } },
-          orderBy: { receivedAt: "desc" },
-        });
-        if (incoming?.senderId) {
-          jid = incoming.senderId;
-          console.log(`[inbox] Resolved @lid via incoming message senderId → ${jid}`);
-        }
-      }
-    } else if (msg.platform === "telegram") {
-      telegramChatId = msg.senderId;
-      if (!telegramChatId && msg.contactId) {
-        const p = await prisma.platform.findFirst({ where: { contactId: msg.contactId, type: "telegram" } });
-        if (p) telegramChatId = p.platformId;
-      }
-      if (!telegramChatId) throw new Error("No chat ID found for this Telegram contact");
-    } else if (msg.platform === "email") {
-      // Prefer the email stored in the contact's platform entry
-      if (msg.contactId) {
-        const p = await prisma.platform.findFirst({ where: { contactId: msg.contactId, type: "email" } });
-        if (p) toEmail = p.platformId;
-      }
-      // Fall back to senderId (stored as the contact's email on sync)
-      if (!toEmail && msg.senderId) toEmail = msg.senderId;
-      // Fall back to contactName (syncThreads stores contactEmail there)
-      if (!toEmail && msg.contactName?.includes("@")) toEmail = msg.contactName;
-      if (!toEmail) throw new Error("No email address found for this contact");
-    } else {
-      throw new Error(`Sending via ${msg.platform} is not yet supported`);
-    }
-
     // ── Save to DB immediately → SSE fires → UI updates in < 100ms ─────────────
     const tempId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     await inboxService.upsert({
@@ -187,7 +190,7 @@ export const inboxService = {
       externalId: tempId,
       contactId: msg.contactId,
       contactName: msg.contactName,
-      senderId: jid ?? telegramChatId ?? toEmail ?? undefined,
+      senderId: undefined, // Will be resolved and updated in background
       preview: text.slice(0, 120),
       body: text,
       receivedAt: new Date(),
@@ -204,12 +207,84 @@ export const inboxService = {
       await (prisma as any).inboxMessage.update({ where: { id }, data: { needsReply: false } });
     }
 
-    // ── Actually send in background — never blocks the HTTP response ─────────────
+    // ── Actually resolve and send in background — never blocks the HTTP response ─────────────
     void (async () => {
       try {
+        // ── Resolve destination in background ─────────────────────────────────────────
+        let jid: string | null = null;
+        let telegramChatId: string | null = null;
+        let toEmail: string | null = null;
+
+        if (msg.platform === "whatsapp") {
+          // Prefer phone-based JID from the platform record — avoids @lid format which
+          // Baileys may not be able to resolve without a full contact sync
+          if (msg.contactId) {
+            const p = await prisma.platform.findFirst({ where: { contactId: msg.contactId, type: "whatsapp" } });
+            if (p) jid = p.platformId.includes("@") ? p.platformId : `${p.platformId}@s.whatsapp.net`;
+          }
+          // Fall back to senderId (may be @s.whatsapp.net or @lid — Baileys handles @s.whatsapp.net reliably)
+          if (!jid && msg.senderId && !msg.senderId.endsWith("@lid")) jid = msg.senderId;
+          // If senderId is @lid, strip to phone digits and build proper JID
+          if (!jid && msg.senderId?.endsWith("@lid")) {
+            const { resolveJid } = await import("./whatsapp.service");
+            jid = resolveJid(msg.senderId) ?? msg.senderId;
+          }
+          if (!jid) jid = `${msg.contactName}@s.whatsapp.net`;
+
+          if (jid) {
+            const { resolveJid } = await import("./whatsapp.service");
+            jid = resolveJid(jid) ?? jid;
+          }
+
+          // Last resort: if jid is still @lid (unresolvable), scan incoming messages from this
+          // contact to find a proper @s.whatsapp.net JID that Baileys can actually send to
+          if (jid?.endsWith("@lid") && msg.contactId) {
+            const incoming = await (prisma as any).inboxMessage.findFirst({
+              where: { contactId: msg.contactId, platform: "whatsapp", fromMe: false, senderId: { contains: "@s.whatsapp.net" } },
+              orderBy: { receivedAt: "desc" },
+            });
+            if (incoming?.senderId) {
+              jid = incoming.senderId;
+              console.log(`[inbox] Resolved @lid via incoming message senderId → ${jid}`);
+            }
+          }
+        } else if (msg.platform === "telegram") {
+          telegramChatId = msg.senderId;
+          if (!telegramChatId && msg.contactId) {
+            const p = await prisma.platform.findFirst({ where: { contactId: msg.contactId, type: "telegram" } });
+            if (p) telegramChatId = p.platformId;
+          }
+          if (!telegramChatId) throw new Error("No chat ID found for this Telegram contact");
+        } else if (msg.platform === "email") {
+          // Prefer the email stored in the contact's platform entry
+          if (msg.contactId) {
+            const p = await prisma.platform.findFirst({ where: { contactId: msg.contactId, type: "email" } });
+            if (p) toEmail = p.platformId;
+          }
+          // Fall back to senderId (stored as the contact's email on sync)
+          if (!toEmail && msg.senderId) toEmail = msg.senderId;
+          // Fall back to contactName (syncThreads stores contactEmail there)
+          if (!toEmail && msg.contactName?.includes("@")) toEmail = msg.contactName;
+          if (!toEmail) throw new Error("No email address found for this contact");
+        } else {
+          throw new Error(`Sending via ${msg.platform} is not yet supported`);
+        }
+
+        // Update the message in DB to have the correct resolved destination
+        const resolvedSenderId = jid ?? telegramChatId ?? toEmail ?? undefined;
+        if (resolvedSenderId) {
+          await (prisma as any).inboxMessage.updateMany({
+            where: { platform: msg.platform, externalId: tempId },
+            data: { senderId: resolvedSenderId },
+          });
+        }
+
         if (msg.platform === "whatsapp" && jid) {
           const { whatsappService } = await import("./whatsapp.service");
-          const sentMsg = await whatsappService.sendMessage(jid, text);
+          const media = parseMediaMarkdown(text);
+          const sentMsg = media
+            ? await whatsappService.sendMediaMessage(jid, media.filePath, media.caption)
+            : await whatsappService.sendMessage(jid, text);
           // Update temp ID to real Baileys message ID so we don't get a duplicate from the echo
           const realId = (sentMsg as any)?.key?.id;
           if (realId) {
@@ -295,7 +370,7 @@ export const inboxService = {
     // For WhatsApp, senderId is usually <phone>@s.whatsapp.net. 
     // For Telegram, senderId is usually the ID.
     // For X, senderId is the numeric ID.
-    await (prisma as any).inboxMessage.updateMany({
+    const matchingMessages = await (prisma as any).inboxMessage.findMany({
       where: {
         platform: platformType,
         contactId: null,
@@ -304,7 +379,59 @@ export const inboxService = {
           { externalId: { contains: platformId } },
         ],
       },
-      data: { contactId },
     });
+
+    if (matchingMessages.length > 0) {
+      await (prisma as any).inboxMessage.updateMany({
+        where: {
+          id: { in: matchingMessages.map((m: any) => m.id) },
+        },
+        data: { contactId },
+      });
+
+      for (const msg of matchingMessages) {
+        const direction = msg.fromMe ? "outbound" : "inbound";
+        const existing = await prisma.interaction.findFirst({
+          where: {
+            contactId,
+            platform: platformType as any,
+            direction,
+            occurredAt: msg.receivedAt,
+          },
+        });
+
+        if (!existing) {
+          await prisma.interaction.create({
+            data: {
+              contactId,
+              platform: platformType as any,
+              direction,
+              contentSnippet: msg.preview || msg.body || "",
+              occurredAt: msg.receivedAt,
+            },
+          });
+        }
+      }
+
+      const contactInteractions = await prisma.interaction.findMany({
+        where: { contactId },
+        orderBy: { occurredAt: "asc" },
+      });
+
+      if (contactInteractions.length > 0) {
+        const firstContactDate = contactInteractions[0].occurredAt;
+        const lastContactDate = contactInteractions[contactInteractions.length - 1].occurredAt;
+        const contactFrequency = contactInteractions.length;
+
+        await prisma.contact.update({
+          where: { id: contactId },
+          data: {
+            firstContactDate,
+            lastContactDate,
+            contactFrequency,
+          },
+        });
+      }
+    }
   },
 };

@@ -238,6 +238,7 @@ model Interaction {
   contactId      String       @map("contact_id")
   platform       PlatformType
   direction      String       // inbound | outbound
+  starred        Boolean      @default(false)
   contentSnippet String?      @map("content_snippet")
   messageCount   Int          @default(1) @map("message_count")
   occurredAt     DateTime     @map("occurred_at")
@@ -497,6 +498,8 @@ model LinkedInToken {
   accessToken String    @map("access_token")
   profileId   String?   @map("profile_id")
   profileName String?   @map("profile_name")
+  liAtCookie  String?   @map("li_at_cookie")
+  lastSyncAt  DateTime? @map("last_sync_at")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 

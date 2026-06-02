@@ -152,6 +152,28 @@ discordService.autoReconnect();
 app.listen(PORT, async () => {
   console.log(`Suby Contacts API running on port ${PORT}`);
 
+  // ── Backfill: link contacts to companies by name string ────────
+  // Contacts created from the contacts page have company: "Acme" but no companyId.
+  // This one-time pass sets companyId on any such contacts so company detail pages
+  // correctly show their linked people.
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      const companies = await prisma.company.findMany({ select: { id: true, name: true } });
+      let linked = 0;
+      for (const c of companies) {
+        const { count } = await prisma.contact.updateMany({
+          where: { companyId: null, company: { equals: c.name, mode: "insensitive" } },
+          data: { companyId: c.id },
+        });
+        linked += count;
+      }
+      if (linked > 0) console.log(`[startup] Auto-linked ${linked} contact(s) to companies by name`);
+    } catch (e: any) {
+      console.error("[startup] Company backfill error:", e.message);
+    }
+  })();
+
   // X (Twitter) uses scheduled BullMQ sync — no persistent socket to reconnect
 
   const { telegramPersonalService } = await import("./services/telegram-personal.service");
@@ -210,6 +232,17 @@ app.listen(PORT, async () => {
     { repeat: { cron: "*/10 * * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
   console.log("[server] X DM sync scheduled every 10 minutes");
+
+  // ── BullMQ: LinkedIn message sync every 5 minutes ───────────
+  await queues.linkedinSync
+    .removeRepeatable("linkedin-sync", { cron: "*/5 * * * *" })
+    .catch(() => {});
+  await queues.linkedinSync.add(
+    "linkedin-sync",
+    {},
+    { repeat: { cron: "*/5 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+  );
+  console.log("[server] LinkedIn sync scheduled every 5 minutes");
 });
 
 export default app;

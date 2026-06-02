@@ -220,9 +220,10 @@ export const aiApi = {
     return res;
   },
 
-  summary: async (id: string) => {
+  summary: async (id: string, refresh = false) => {
+    const qs = refresh ? "?refresh=true" : "";
     const res = await apiFetch<{ jobId?: string; status?: string; summary?: string }>(
-      `/api/ai/summary/${id}`, { method: "POST" }
+      `/api/ai/summary/${id}${qs}`, { method: "POST" }
     );
     if (res.status === "queued" && res.jobId) {
       const result = await pollJob<{ summary: string }>("ai-summary", res.jobId);
@@ -231,9 +232,10 @@ export const aiApi = {
     return res as { summary: string };
   },
 
-  prep: async (id: string) => {
+  prep: async (id: string, refresh = false) => {
+    const qs = refresh ? "?refresh=true" : "";
     const res = await apiFetch<{ jobId?: string; status?: string; briefing?: string }>(
-      `/api/ai/prep/${id}`, { method: "POST" }
+      `/api/ai/prep/${id}${qs}`, { method: "POST" }
     );
     if (res.status === "queued" && res.jobId) {
       const raw = await pollJob<any>("ai-prep", res.jobId);

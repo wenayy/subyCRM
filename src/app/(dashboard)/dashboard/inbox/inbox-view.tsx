@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { getCached, setCached } from "@/lib/page-cache";
 
 // Sent messages only in local state (not persisted)
-interface SentMessage { id: string; body: string; sentAt: string; fromMe: true }
+interface SentMessage { id: string; body: string; sentAt: string; fromMe: true; status?: "sending" | "sent" | "failed" }
 
 type Filter = "all" | "unread" | "needs_reply" | "starred";
 
@@ -37,6 +37,17 @@ function renderMessageBody(text: string, onImageClick?: (url: string) => void) {
       const match = part.match(/!\[([^\]]*)\]\(([^)]+)\)/);
       if (match) {
         const [, alt, url] = match;
+        const isVideo = /\.(mp4|mov|avi|mkv|3gp|webm)(\?|$)/i.test(url);
+        if (isVideo) {
+          return (
+            <video
+              key={i}
+              src={url}
+              controls
+              style={{ maxWidth: "100%", maxHeight: 220, borderRadius: 8, marginTop: 6, display: "block" }}
+            />
+          );
+        }
         return (
           <img
             key={i}
@@ -84,6 +95,8 @@ function renderMessageBody(text: string, onImageClick?: (url: string) => void) {
 export function InboxView() {
   const router = useRouter();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const lastScrolledKeyRef = useRef<string | null>(null);
+  const threadLoadingRef = useRef(false);
 
   const cached = getCached<InboxConversationApi[]>("inbox:conversations");
   const [conversations, setConversations] = useState<InboxConversationApi[]>(cached ?? []);
@@ -94,8 +107,6 @@ export function InboxView() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
   const [reply, setReply] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState("");
   const [me, setMe] = useState<{ name: string | null; email: string | null }>({ name: null, email: null });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -234,8 +245,20 @@ export function InboxView() {
 
   // Scroll to bottom when new messages arrive
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [thread.length, thread[thread.length - 1]?.id]);
+    if (!selected) return;
+
+    const isNewConversation = lastScrolledKeyRef.current !== selected.key;
+    const loading = threadLoadingRef.current;
+
+    if (isNewConversation || loading) {
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      if (!loading) {
+        lastScrolledKeyRef.current = selected.key;
+      }
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [thread.length, thread[thread.length - 1]?.id, selected]);
 
   // Keep thread fresh when switching conversations (SSE handles live updates above)
   useEffect(() => {
@@ -269,14 +292,31 @@ export function InboxView() {
   const selectConversation = (conv: InboxConversationApi) => {
     setSelected(conv);
     setReply("");
-    setSent(false);
     setSendError("");
     setReplyingTo(null);
+    
+    // Clear & pre-populate thread with the latest message instantly
+    setThread([conv.latestMessage]);
+    threadLoadingRef.current = true;
     setThreadLoading(true);
+
     inboxApi.getThread(conv.contactId, conv.platform)
-      .then(setThread)
-      .catch(() => setThread([conv.latestMessage]))
-      .finally(() => setThreadLoading(false));
+      .then((res) => {
+        if (selectedRef.current?.key === conv.key) {
+          setThread(res);
+        }
+      })
+      .catch(() => {
+        if (selectedRef.current?.key === conv.key) {
+          setThread([conv.latestMessage]);
+        }
+      })
+      .finally(() => {
+        if (selectedRef.current?.key === conv.key) {
+          threadLoadingRef.current = false;
+          setThreadLoading(false);
+        }
+      });
 
     // Mark all messages in this conversation as read
     inboxApi.markConversationRead(conv.contactId, conv.platform).catch(() => {});
@@ -297,34 +337,45 @@ export function InboxView() {
   const totalStarred = conversations.filter((c) => c.starred).length;
 
   const handleSend = async () => {
-    if (!reply.trim() || !selected || sending) return;
+    if (!reply.trim() || !selected) return;
 
     const lastMsg = thread[thread.length - 1] ?? selected.latestMessage;
     const body = reply.trim();
+    const tempId = `sent-${Date.now()}`;
+    const replyToId = replyingTo?.id;
 
     // Optimistic UI update — show message instantly
-    const outgoing: SentMessage = { id: `sent-${Date.now()}`, body, sentAt: new Date().toISOString(), fromMe: true };
+    const outgoing: SentMessage = {
+      id: tempId,
+      body,
+      sentAt: new Date().toISOString(),
+      fromMe: true,
+      status: "sending"
+    };
     setSentMessages((prev) => ({ ...prev, [selected.key]: [...(prev[selected.key] ?? []), outgoing] }));
     setReply("");
     setReplyingTo(null);
     setSendError("");
-    setSending(true);
 
     try {
-      await inboxApi.reply(lastMsg.id, body, replyingTo?.id);
-      // HTTP returns fast now — message is already saved to DB + SSE fired
-      setSent(true);
+      await inboxApi.reply(lastMsg.id, body, replyToId);
+      setSentMessages((prev) => {
+        const list = prev[selected.key] ?? [];
+        return {
+          ...prev,
+          [selected.key]: list.map((m) => m.id === tempId ? { ...m, status: "sent" } : m),
+        };
+      });
       setConversations((prev) => prev.map((c) => c.key === selected.key ? { ...c, needsReply: false } : c));
-      setTimeout(() => { setSent(false); }, 1200);
     } catch (e: unknown) {
+      setSentMessages((prev) => {
+        const list = prev[selected.key] ?? [];
+        return {
+          ...prev,
+          [selected.key]: list.map((m) => m.id === tempId ? { ...m, status: "failed" } : m),
+        };
+      });
       setSendError(e instanceof Error ? e.message : "Failed to send");
-      setSentMessages((prev) => ({
-        ...prev,
-        [selected.key]: (prev[selected.key] ?? []).filter((m) => m.id !== outgoing.id),
-      }));
-      setReply(body);
-    } finally {
-      setSending(false);
     }
   };
 
@@ -507,6 +558,12 @@ export function InboxView() {
                     <PlatformIcon type={selected.platform as PlatformType} size={10} />
                     {PLATFORM_LABEL[selected.platform] ?? selected.platform}
                     {selected.messageCount > 1 && ` · ${selected.messageCount} messages`}
+                    {threadLoading && (
+                      <span 
+                        className="inline-block rounded-full border border-current border-t-transparent animate-spin ml-1.5" 
+                        style={{ width: 10, height: 10, borderWidth: "1.5px", color: "var(--t3)" }} 
+                      />
+                    )}
                   </div>
                 </div>
                 <div role="button" tabIndex={0}
@@ -536,9 +593,7 @@ export function InboxView() {
               {/* Messages thread */}
               <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex",
                 flexDirection: "column", gap: 12 }}>
-                {threadLoading ? (
-                  <div style={{ textAlign: "center", fontSize: 12, color: "var(--t3)", padding: 20 }}>Loading…</div>
-                ) : (() => {
+                {(() => {
                   // Merge DB thread + locally sent, sort by time
                   const contactInitials = initials(selected.contactName);
                   const myInitials = initials(me.name ?? me.email ?? "Me");
@@ -558,6 +613,10 @@ export function InboxView() {
                     const time = "sentAt" in msg ? msg.sentAt : (msg as InboxMessageApi).receivedAt;
                     const isHovered = hoveredMsgId === msg.id;
                     const canDelete = "receivedAt" in msg; // only DB messages, not local sent
+
+                    const status = "status" in msg ? (msg as SentMessage).status : "sent";
+                    const isSending = status === "sending";
+                    const isFailed = status === "failed";
 
                     return (
                       <div key={msg.id}
@@ -581,12 +640,25 @@ export function InboxView() {
                             color: isMe ? "#fff" : "var(--t1)",
                             borderRadius: isMe ? "12px 4px 12px 12px" : "4px 12px 12px 12px",
                             padding: "8px 12px", fontSize: 13, lineHeight: 1.5, wordBreak: "break-word",
+                            opacity: isSending ? 0.7 : 1,
                           }}>
                             {renderMessageBody(text, setLightboxUrl)}
                           </div>
                           <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 3,
                             display: "flex", gap: 5, alignItems: "center" }}>
                             {fmtAgo(time)}
+                            {isMe && (
+                              <span style={{ fontSize: 11, display: "inline-flex", alignItems: "center" }}>
+                                {isSending ? (
+                                  <span className="inline-block rounded-full border border-current border-t-transparent animate-spin"
+                                    style={{ width: 10, height: 10, opacity: 0.6 }} />
+                                ) : isFailed ? (
+                                  <span style={{ color: "var(--rc)", fontWeight: "bold" }} title="Delivery failed">⚠️</span>
+                                ) : (
+                                  <span style={{ color: "#2563eb", opacity: 0.8 }} title="Sent">✓</span>
+                                )}
+                              </span>
+                            )}
                           </div>
                         </div>
                         {/* Action buttons on hover — flex siblings right next to the bubble */}
@@ -676,9 +748,9 @@ export function InboxView() {
                     rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px",
                       borderRadius: 10, border: "1px solid var(--bd)", background: "var(--card)",
                       color: "var(--t1)", outline: "none", lineHeight: 1.4 }} />
-                  <Button size="sm" onClick={handleSend} disabled={!reply.trim() || sent || sending}
+                  <Button size="sm" onClick={handleSend} disabled={!reply.trim()}
                     style={{ flexShrink: 0, height: 36 }}>
-                    {sent ? "✓" : sending ? "…" : "Send"}
+                    Send
                   </Button>
                 </div>
                 {sendError && (

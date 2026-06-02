@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { remindersApi } from "@/lib/api";
+import { remindersApi, contactsApi } from "@/lib/api";
 import { MOCK_REMINDERS } from "@/lib/mock-reminders";
-import { MOCK_CONTACTS } from "@/lib/mock-contacts";
 import { PlatformIcon } from "@/components/platform-icon";
 import type { Reminder, ReminderStatus, PlatformType, Contact } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -60,21 +59,29 @@ function initials(name: string): string {
   return name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("");
 }
 
-const CONTACT_LOOKUP: Record<string, Contact> = Object.fromEntries(
-  MOCK_CONTACTS.map((c) => [c.id, c]),
-);
+function platformLink(type: string, id: string): string | null {
+  // Handle full URLs stored as platformId (e.g. www.linkedin.com/in/...)
+  if (id.includes("linkedin.com")) return id.startsWith("http") ? id : `https://${id}`;
+  switch (type) {
+    case "x": return `https://x.com/${id.replace(/^@/, "")}`;
+    case "linkedin": return `https://linkedin.com/in/${id.replace(/^@/, "")}`;
+    case "telegram": return `https://t.me/${id.replace(/^@/, "")}`;
+    case "whatsapp": return `https://wa.me/${id.replace(/\D/g, "")}`;
+    case "email": return `mailto:${id}`;
+    default: return null;
+  }
+}
 
-function lastChannel(contactId: string): PlatformType | null {
-  const c = CONTACT_LOOKUP[contactId];
-  if (!c) return null;
-  const interactions = c.interactions || [];
+function lastChannel(contact: Contact | null): PlatformType | null {
+  if (!contact) return null;
+  const interactions = contact.interactions || [];
   if (interactions.length > 0) {
     const latest = [...interactions].sort(
       (a, b) => +new Date(b.occurredAt) - +new Date(a.occurredAt),
     )[0];
     return latest.platform;
   }
-  return c.platforms?.[0]?.type || null;
+  return contact.platforms?.[0]?.type || null;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
@@ -86,6 +93,20 @@ export function RemindersView() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Bucket | null>(null);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [contactLoading, setContactLoading] = useState(false);
+  // Cache fetched contacts so re-opens are instant
+  const [contactCache, setContactCache] = useState<Record<string, Contact>>({});
+
+  const openContact = async (contactId: string) => {
+    if (contactCache[contactId]) { setSelectedContact(contactCache[contactId]); return; }
+    setContactLoading(true);
+    try {
+      const c = await contactsApi.getById(contactId);
+      setContactCache((prev) => ({ ...prev, [contactId]: c }));
+      setSelectedContact(c);
+    } catch { /* ignore */ }
+    finally { setContactLoading(false); }
+  };
 
   const fetchReminders = () =>
     remindersApi.getAll()
@@ -222,15 +243,12 @@ export function RemindersView() {
                     <ReminderCard
                       key={r.id}
                       reminder={r}
-                      channel={lastChannel(r.contactId)}
+                      channel={lastChannel(contactCache[r.contactId] ?? null)}
                       tone={tone}
                       onDragStart={() => setDraggedId(r.id)}
                       onDragEnd={() => { setDraggedId(null); setDragOver(null); }}
                       onDone={() => setStatus(r.id, "done")}
-                      onOpen={() => {
-                        const c = CONTACT_LOOKUP[r.contactId];
-                        if (c) setSelectedContact(c);
-                      }}
+                      onOpen={() => openContact(r.contactId)}
                     />
                   ))
                 )}
@@ -240,8 +258,13 @@ export function RemindersView() {
         })}
       </div>
 
-      <Dialog open={!!selectedContact} onOpenChange={(open) => { if (!open) setSelectedContact(null); }}>
+      <Dialog open={!!selectedContact || contactLoading} onOpenChange={(open) => { if (!open) { setSelectedContact(null); } }}>
         <DialogContent className="max-w-[560px] p-0 overflow-hidden gap-0">
+          {contactLoading && (
+            <div className="flex items-center justify-center py-20">
+              <span className="inline-block size-5 rounded-full border-2 border-current border-t-transparent animate-spin text-muted-foreground" />
+            </div>
+          )}
           {selectedContact && <ContactModal contact={selectedContact} />}
         </DialogContent>
       </Dialog>
@@ -356,15 +379,21 @@ function ContactModal({ contact }: { contact: Contact }) {
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-[0.04em] text-muted-foreground mb-2">Reach on</div>
             <div className="flex gap-1.5 flex-wrap">
-              {contact.platforms.map((p) => (
-                <span
-                  key={p.id}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary border border-border text-xs text-foreground"
-                >
-                  <PlatformIcon type={p.type as PlatformType} size={12} />
-                  <span className="font-mono text-[11px] tabular-nums">{p.platformId}</span>
-                </span>
-              ))}
+              {contact.platforms.map((p) => {
+                const href = platformLink(p.type, p.platformId);
+                const Chip = href ? "a" : "span";
+                return (
+                  <Chip
+                    key={p.id}
+                    {...(href ? { href, target: "_blank", rel: "noopener noreferrer" } : {})}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary border border-border text-xs text-foreground transition-colors hover:bg-accent hover:border-muted-foreground"
+                    style={href ? { cursor: "pointer", textDecoration: "none" } : undefined}
+                  >
+                    <PlatformIcon type={p.type as PlatformType} size={12} />
+                    <span className="font-mono text-[11px] tabular-nums">{p.platformId}</span>
+                  </Chip>
+                );
+              })}
             </div>
           </div>
         )}

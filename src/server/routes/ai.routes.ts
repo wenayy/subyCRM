@@ -60,7 +60,7 @@ router.post("/classify-batch", async (_req, res, next) => {
 });
 
 // ── POST /api/ai/summary/:id ──────────────────────────────────────────────────
-// Cache-first: return cached summary or enqueue generation job
+// Action endpoint: always bypasses/invalidates cache and triggers a fresh generation job
 router.post("/summary/:id", async (req, res, next) => {
   try {
     const contactId = req.params.id;
@@ -74,30 +74,14 @@ router.post("/summary/:id", async (req, res, next) => {
       return;
     }
 
-    // Check Redis cache first
-    const cached = await cache.get<{ summary: string }>(CACHE_KEYS.contactSummary(contactId));
-    if (cached) {
-      res.json({ summary: cached.summary, source: "cache" });
-      return;
-    }
+    // Explicit generation action — delete cached copy
+    await cache.del(CACHE_KEYS.contactSummary(contactId));
 
-    // If DB already has a summary, return it and refresh in background
-    if (exists.aiSummary) {
-      // Return existing, kick off background refresh
-      await queues.aiSummary.add(
-        "summary",
-        { contactId },
-        { ...DEFAULT_JOB_OPTIONS, jobId: `${contactId}-refresh` },
-      );
-      res.json({ summary: exists.aiSummary, source: "db" });
-      return;
-    }
-
-    // No summary — enqueue generation and return queued status
+    // Enqueue generation and return queued status (jobId uses timestamp to prevent cache hits on previous completed jobs)
     const job = await queues.aiSummary.add(
       "summary",
       { contactId },
-      { ...DEFAULT_JOB_OPTIONS, jobId: contactId },
+      { ...DEFAULT_JOB_OPTIONS, jobId: `${contactId}-${Date.now()}` },
     );
 
     res.json({ status: "queued", jobId: job.id });
@@ -107,7 +91,7 @@ router.post("/summary/:id", async (req, res, next) => {
 });
 
 // ── POST /api/ai/prep/:id ─────────────────────────────────────────────────────
-// Cache-first: return cached briefing or enqueue generation
+// Action endpoint: always bypasses/invalidates cache and triggers a fresh generation job
 router.post("/prep/:id", async (req, res, next) => {
   try {
     const contactId = req.params.id;
@@ -121,24 +105,14 @@ router.post("/prep/:id", async (req, res, next) => {
       return;
     }
 
-    // Check Redis cache first (1 hour TTL)
-    const cached = await cache.get<{
-      summary: string;
-      talkingPoints: string[];
-      recentActivity: string;
-      suggestedActions: string[];
-    }>(CACHE_KEYS.contactBriefing(contactId));
+    // Explicit generation action — delete cached copy
+    await cache.del(CACHE_KEYS.contactBriefing(contactId));
 
-    if (cached) {
-      res.json({ ...cached, source: "cache" });
-      return;
-    }
-
-    // Cache miss — enqueue and respond with queued status
+    // Enqueue and respond with queued status (jobId uses timestamp to prevent cache hits on previous completed jobs)
     const job = await queues.aiPrep.add(
       "prep",
       { contactId },
-      { ...DEFAULT_JOB_OPTIONS, jobId: contactId },
+      { ...DEFAULT_JOB_OPTIONS, jobId: `${contactId}-${Date.now()}` },
     );
 
     res.json({ status: "queued", jobId: job.id });

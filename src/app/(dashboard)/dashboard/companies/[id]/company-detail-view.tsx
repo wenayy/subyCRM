@@ -51,16 +51,13 @@ export function CompanyDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
       });
     };
 
-    const mock = MOCK_COMPANIES.find((m) => m.id === id);
-    if (mock) {
-      applyCompany(mock);
-      setLoading(false);
-      return;
-    }
-
     companiesApi.getById(id)
       .then(applyCompany)
-      .catch(() => {})
+      .catch(() => {
+        // Fall back to mock only if API fails (e.g. offline dev)
+        const mock = MOCK_COMPANIES.find((m) => m.id === id);
+        if (mock) applyCompany(mock);
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
