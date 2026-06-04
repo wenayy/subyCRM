@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
+const validApiUrl = API_URL.startsWith("http://") || API_URL.startsWith("https://") ? API_URL : "http://localhost:4002";
 
 const nextConfig: NextConfig = {
   // Proxy /api/auth/* through Next.js so auth cookies are set on the same
@@ -8,7 +9,7 @@ const nextConfig: NextConfig = {
   rewrites: async () => [
     {
       source: "/api/auth/:path*",
-      destination: `${API_URL}/api/auth/:path*`,
+      destination: `${validApiUrl}/api/auth/:path*`,
     },
   ],
   headers: async () => {
