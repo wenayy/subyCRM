@@ -8,7 +8,7 @@
     "build": "prisma generate && next build",
     "start": "next start -p 3005",
     "start:api": "dotenv -e .env.local -- tsx src/server/index.ts",
-    "start:railway": "prisma db push --accept-data-loss && tsx src/server/index.ts",
+    "start:railway": "tsx src/server/index.ts",
     "db:push": "dotenv -e .env.local -- prisma db push --schema=prisma/schema.prisma",
     "db:generate": "dotenv -e .env.local -- prisma generate --schema=prisma/schema.prisma",
     "db:seed:demo": "dotenv -e .env.local -- tsx prisma/seed-demo.ts"
