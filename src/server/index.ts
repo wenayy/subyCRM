@@ -37,7 +37,7 @@ import sequenceRouter from "./routes/sequence.routes";
 import pipelineRouter from "./routes/pipeline.routes";
 
 const app = express();
-const PORT = process.env.API_PORT || 4002;
+const PORT = process.env.PORT || process.env.API_PORT || 4002;
 
 // Trust Railway/Render/Heroku proxy so req.protocol and req.secure reflect HTTPS
 app.set("trust proxy", 1);
