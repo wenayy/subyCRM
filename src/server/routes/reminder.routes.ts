@@ -4,11 +4,12 @@ import { broadcastInboxEvent } from "../services/sse.service";
 
 const router = Router();
 
-// GET /api/reminders — list pending reminders sorted by dueDate asc
-router.get("/", async (_req, res, next) => {
+// GET /api/reminders — list pending reminders sorted by dueDate asc (scoped to user via contact)
+router.get("/", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const reminders = await prisma.reminder.findMany({
-      where: { status: "pending" },
+      where: { status: "pending", contact: { userId } },
       orderBy: { dueDate: "asc" },
       include: {
         contact: { select: { id: true, name: true } },
@@ -21,12 +22,14 @@ router.get("/", async (_req, res, next) => {
 });
 
 // GET /api/reminders/due — overdue reminders (dueDate <= now, status = pending)
-router.get("/due", async (_req, res, next) => {
+router.get("/due", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const reminders = await prisma.reminder.findMany({
       where: {
         status: "pending",
         dueDate: { lte: new Date() },
+        contact: { userId },
       },
       orderBy: { dueDate: "asc" },
       include: {

@@ -34,6 +34,7 @@ import whatsappRouter from "./routes/whatsapp.routes";
 import telegramPersonalRouter from "./routes/telegram-personal.routes";
 import linkedinRouter, { linkedinCallbackRouter } from "./routes/linkedin.routes";
 import sequenceRouter from "./routes/sequence.routes";
+import pipelineRouter from "./routes/pipeline.routes";
 
 const app = express();
 const PORT = process.env.API_PORT || 4002;
@@ -130,6 +131,7 @@ app.use("/api/whatsapp", whatsappRouter);
 app.use("/api/telegram-personal", telegramPersonalRouter);
 app.use("/api/linkedin", linkedinRouter);
 app.use("/api/sequences", sequenceRouter);
+app.use("/api/pipeline", pipelineRouter);
 
 // ─── Error handler ───────────────────────────────────────────
 app.use(errorMiddleware);
@@ -162,11 +164,11 @@ app.listen(PORT, async () => {
   void (async () => {
     try {
       const { prisma } = await import("./lib/prisma");
-      const companies = await prisma.company.findMany({ select: { id: true, name: true } });
+      const companies = await prisma.company.findMany({ select: { id: true, name: true, userId: true } });
       let linked = 0;
       for (const c of companies) {
         const { count } = await prisma.contact.updateMany({
-          where: { companyId: null, company: { equals: c.name, mode: "insensitive" } },
+          where: { userId: c.userId, companyId: null, company: { equals: c.name, mode: "insensitive" } },
           data: { companyId: c.id },
         });
         linked += count;
@@ -174,6 +176,33 @@ app.listen(PORT, async () => {
       if (linked > 0) console.log(`[startup] Auto-linked ${linked} contact(s) to companies by name`);
     } catch (e: any) {
       console.error("[startup] Company backfill error:", e.message);
+    }
+  })();
+
+  // ── Backfill: claim "default" contacts for the first real user ──
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      const defaultCount = await prisma.contact.count({ where: { userId: "default" } });
+      if (defaultCount === 0) return;
+      // Find the oldest user account (the app owner)
+      const firstUser = await (prisma as any).user.findFirst({ orderBy: { createdAt: "asc" } });
+      if (!firstUser) return;
+      const { count } = await prisma.contact.updateMany({
+        where: { userId: "default" },
+        data: { userId: firstUser.id },
+      });
+      if (count > 0) console.log(`[startup] Claimed ${count} default contacts for user ${firstUser.email}`);
+      // Also claim default inbox messages
+      await (prisma as any).inboxMessage.updateMany({
+        where: { userId: "default" },
+        data: { userId: firstUser.id },
+      });
+      // Also claim default tags and companies
+      await (prisma as any).tag.updateMany({ where: { userId: "default" }, data: { userId: firstUser.id } });
+      await (prisma as any).company.updateMany({ where: { userId: "default" }, data: { userId: firstUser.id } });
+    } catch (e: any) {
+      console.error("[startup] Default data claim error:", e.message);
     }
   })();
 
@@ -236,16 +265,27 @@ app.listen(PORT, async () => {
   );
   console.log("[server] X DM sync scheduled every 10 minutes");
 
-  // ── BullMQ: LinkedIn message sync every 5 minutes ───────────
-  await queues.linkedinSync
-    .removeRepeatable("linkedin-sync", { cron: "*/5 * * * *" })
+  // ── BullMQ: Slack DM sync every 5 minutes ──────────────────
+  await queues.slackSync
+    .removeRepeatable("slack-sync", { cron: "*/5 * * * *" })
     .catch(() => {});
-  await queues.linkedinSync.add(
-    "linkedin-sync",
+  await queues.slackSync.add(
+    "slack-sync",
     {},
     { repeat: { cron: "*/5 * * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
-  console.log("[server] LinkedIn sync scheduled every 5 minutes");
+  console.log("[server] Slack sync scheduled every 5 minutes");
+
+  // ── BullMQ: Discord sync every 15 minutes (fallback for bot) ─
+  await queues.discordSync
+    .removeRepeatable("discord-sync", { cron: "*/15 * * * *" })
+    .catch(() => {});
+  await queues.discordSync.add(
+    "discord-sync",
+    {},
+    { repeat: { cron: "*/15 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+  );
+  console.log("[server] Discord sync scheduled every 15 minutes");
 });
 
 export default app;

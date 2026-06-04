@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import type { Contact } from "@/lib/types";
+import { contactsApi } from "@/lib/api";
 import { MOCK_CONTACTS } from "@/lib/mock-contacts";
-import { MOCK_COMPANIES } from "@/lib/mock-companies";
 
 type Sector = "payment" | "blockchain" | "vc" | "infra" | "fintech" | "ai" | "other";
 type Filter = Sector | "all";
@@ -12,7 +13,7 @@ const SECTOR_META: Record<Sector, { label: string; color: string }> = {
   payment:    { label: "Payment",    color: "#16a34a" },
   blockchain: { label: "Blockchain", color: "#ea580c" },
   vc:         { label: "VC",         color: "#4f46e5" },
-  infra:      { label: "Infra",      color: "#0ea5e9" },
+  infra:      { label: "Infra / SaaS", color: "#0ea5e9" },
   fintech:    { label: "Fintech",    color: "#0d9488" },
   ai:         { label: "AI",         color: "#a855f7" },
   other:      { label: "Other",      color: "#9ca3af" },
@@ -20,30 +21,16 @@ const SECTOR_META: Record<Sector, { label: string; color: string }> = {
 
 const SECTORS: Sector[] = ["payment", "blockchain", "vc", "infra", "fintech", "ai"];
 
-const SECTOR_REMAP: Record<string, Sector> = {
-  payment: "payment",
-  crypto: "blockchain",
+const DOMAIN_TO_SECTOR: Record<string, Sector> = {
+  payment:    "payment",
   blockchain: "blockchain",
-  vc: "vc",
-  saas: "infra",
-  partner: "infra",
-  ai: "ai",
-  finance: "fintech",
-  insurance: "fintech",
-  healthtech: "fintech",
-};
-
-const COMPANY_OVERRIDES: Record<string, Sector> = {
-  "Mistral AI": "ai",
-  "Hugging Face": "ai",
-  "Linear": "infra",
-  "Vercel": "infra",
-  "Notion": "infra",
-  "Qonto": "fintech",
-  "Ramp": "fintech",
-  "Pennylane": "fintech",
-  "Alan": "fintech",
-  "Doctolib": "fintech",
+  saas:       "infra",
+  ecommerce:  "other",
+  ai:         "ai",
+  marketing:  "other",
+  legal:      "other",
+  finance:    "fintech",
+  other:      "other",
 };
 
 const STRENGTH_R: Record<string, number> = { hot: 16, warm: 12, cold: 9 };
@@ -66,15 +53,16 @@ function initials(name: string): string {
   return name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("");
 }
 
-function sectorOf(companyName: string | null): Sector {
-  if (!companyName) return "other";
-  if (COMPANY_OVERRIDES[companyName]) return COMPANY_OVERRIDES[companyName];
-  const co = MOCK_COMPANIES.find((c) => c.name === companyName);
-  if (!co || !co.sector) return "other";
-  return SECTOR_REMAP[co.sector] ?? "other";
+function sectorOf(c: Contact): Sector {
+  if (c.type === "vc") return "vc";
+  return DOMAIN_TO_SECTOR[c.domain] ?? "other";
 }
 
-function buildAllNodes(W: number, H: number): { nodes: Node[]; edges: Edge[]; clusters: Record<Sector, { cx: number; cy: number; r: number }> } {
+function buildAllNodes(
+  contacts: Contact[],
+  W: number,
+  H: number,
+): { nodes: Node[]; edges: Edge[]; clusters: Record<Sector, { cx: number; cy: number; r: number }> } {
   const cx = W / 2;
   const cy = H / 2;
   const all: Sector[] = [...SECTORS, "other"];
@@ -86,10 +74,10 @@ function buildAllNodes(W: number, H: number): { nodes: Node[]; edges: Edge[]; cl
     clusters[s] = { cx: cx + Math.cos(angle) * clusterDist, cy: cy + Math.sin(angle) * clusterDist, r: 0 };
   });
 
-  const grouped: Record<Sector, typeof MOCK_CONTACTS> = {
+  const grouped: Record<Sector, Contact[]> = {
     payment: [], blockchain: [], vc: [], infra: [], fintech: [], ai: [], other: [],
   };
-  for (const c of MOCK_CONTACTS) grouped[sectorOf(c.company)].push(c);
+  for (const c of contacts) grouped[sectorOf(c)].push(c);
 
   const nodes: Node[] = [];
   (Object.keys(grouped) as Sector[]).forEach((sector) => {
@@ -130,13 +118,17 @@ function buildAllNodes(W: number, H: number): { nodes: Node[]; edges: Edge[]; cl
   return { nodes, edges, clusters };
 }
 
-function buildFocusedNodes(sector: Sector, W: number, H: number): { nodes: Node[]; edges: Edge[] } {
+function buildFocusedNodes(
+  contacts: Contact[],
+  sector: Sector,
+  W: number,
+  H: number,
+): { nodes: Node[]; edges: Edge[] } {
   const cx = W / 2;
   const cy = H / 2;
-  const list = MOCK_CONTACTS.filter((c) => sectorOf(c.company) === sector);
+  const list = contacts.filter((c) => sectorOf(c) === sector);
 
-  // Group by company → multi-ring layout
-  const byCompany: Record<string, typeof MOCK_CONTACTS> = {};
+  const byCompany: Record<string, Contact[]> = {};
   for (const c of list) {
     const key = c.company || "—";
     (byCompany[key] = byCompany[key] || []).push(c);
@@ -184,36 +176,51 @@ function buildFocusedNodes(sector: Sector, W: number, H: number): { nodes: Node[
 
 export function NetworkView() {
   const router = useRouter();
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [loading, setLoading] = useState(true);
   const [hovered, setHovered] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const W = 920;
   const H = 620;
 
-  const sectorCounts = useMemo(() => {
-    const counts: Record<Sector, number> = { payment: 0, blockchain: 0, vc: 0, infra: 0, fintech: 0, ai: 0, other: 0 };
-    for (const c of MOCK_CONTACTS) counts[sectorOf(c.company)]++;
-    return counts;
+  useEffect(() => {
+    contactsApi.getAll({ limit: "500" })
+      .then((res) => setContacts(res.data.length > 0 ? res.data : MOCK_CONTACTS as unknown as Contact[]))
+      .catch(() => setContacts(MOCK_CONTACTS as unknown as Contact[]))
+      .finally(() => setLoading(false));
   }, []);
 
-  const allBuild = useMemo(() => buildAllNodes(W, H), []);
+  const sectorCounts = useMemo(() => {
+    const counts: Record<Sector, number> = { payment: 0, blockchain: 0, vc: 0, infra: 0, fintech: 0, ai: 0, other: 0 };
+    for (const c of contacts) counts[sectorOf(c)]++;
+    return counts;
+  }, [contacts]);
+
+  const allBuild = useMemo(() => buildAllNodes(contacts, W, H), [contacts]);
   const focusedBuild = useMemo(
-    () => (filter !== "all" ? buildFocusedNodes(filter, W, H) : null),
-    [filter],
+    () => (filter !== "all" ? buildFocusedNodes(contacts, filter, W, H) : null),
+    [filter, contacts],
   );
 
   const { nodes, edges } = filter === "all" ? allBuild : focusedBuild!;
-  const nodeById: Record<string, Node> = useMemo(() => Object.fromEntries(nodes.map((n) => [n.id, n])), [nodes]);
+  const nodeById: Record<string, Node> = useMemo(
+    () => Object.fromEntries(nodes.map((n) => [n.id, n])),
+    [nodes],
+  );
 
   const cx = W / 2;
   const cy = H / 2;
 
-  // Group nodes by company for the listing panel (only when filter set)
   const groupedForList = useMemo(() => {
     if (filter === "all") return null;
     const byCompany: Record<string, Node[]> = {};
     for (const n of nodes) (byCompany[n.company || "—"] = byCompany[n.company || "—"] || []).push(n);
     return byCompany;
   }, [filter, nodes]);
+
+  if (loading) {
+    return <div style={{ color: "var(--t3)", fontSize: 13, padding: 32 }}>Loading network…</div>;
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -222,7 +229,7 @@ export function NetworkView() {
         <div>
           <h1 className="text-xl font-bold tracking-tight">Network</h1>
           <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>
-            {MOCK_CONTACTS.length} contacts · {filter === "all" ? "all sectors" : `${SECTOR_META[filter].label.toLowerCase()} focus`}
+            {contacts.length} contacts · {filter === "all" ? "all sectors" : `${SECTOR_META[filter].label.toLowerCase()} focus`}
           </p>
         </div>
       </div>
@@ -247,13 +254,15 @@ export function NetworkView() {
             padding: "1px 6px", borderRadius: 999, fontSize: 10, fontWeight: 700,
             fontVariantNumeric: "tabular-nums",
           }}>
-            {MOCK_CONTACTS.length}
+            {contacts.length}
           </span>
         </button>
 
         {SECTORS.map((s) => {
           const active = filter === s;
           const meta = SECTOR_META[s];
+          const count = sectorCounts[s];
+          if (count === 0) return null;
           return (
             <button
               key={s}
@@ -278,7 +287,7 @@ export function NetworkView() {
                 padding: "1px 6px", borderRadius: 999, fontSize: 10, fontWeight: 700,
                 fontVariantNumeric: "tabular-nums",
               }}>
-                {sectorCounts[s]}
+                {count}
               </span>
             </button>
           );
@@ -292,17 +301,11 @@ export function NetworkView() {
       >
         <div className="rounded-xl border border-border bg-card shadow-sm p-3 overflow-auto">
           <svg width={W} height={H} style={{ display: "block" }}>
-            <defs>
-              <radialGradient id="hotPulse" cx="50%" cy="50%" r="50%">
-                <stop offset="40%" stopColor="white" stopOpacity={0} />
-                <stop offset="100%" stopColor="white" stopOpacity={0.4} />
-              </radialGradient>
-            </defs>
-
             {/* Cluster zones (only in All view) */}
             {filter === "all" && (Object.keys(allBuild.clusters) as Sector[]).map((s) => {
               const cl = allBuild.clusters[s];
               const meta = SECTOR_META[s];
+              if (sectorCounts[s] === 0) return null;
               return (
                 <g key={s}>
                   <circle
@@ -407,11 +410,11 @@ export function NetworkView() {
               );
             })}
 
-            {/* Hover tooltip — rendered last so it's on top */}
+            {/* Hover tooltip */}
             {hovered && nodeById[hovered] && (() => {
               const n = nodeById[hovered];
               const tx = Math.min(W - 160, Math.max(80, n.x));
-              const ty = n.y - n.r - 50;
+              const ty = Math.max(10, n.y - n.r - 50);
               return (
                 <g pointerEvents="none">
                   <rect
@@ -425,7 +428,7 @@ export function NetworkView() {
                     {n.name}
                   </text>
                   <text x={tx} y={ty + 32} textAnchor="middle" fontSize={10} fill="rgba(255,255,255,0.7)">
-                    {n.company} · {n.strength}
+                    {n.company || "—"} · {n.strength}
                   </text>
                 </g>
               );
@@ -440,11 +443,11 @@ export function NetworkView() {
               <span style={{ width: 10, height: 10, borderRadius: "50%", background: SECTOR_META[filter].color }} />
               <h3 style={{ fontSize: 13, fontWeight: 700 }}>{SECTOR_META[filter].label}</h3>
               <span style={{ fontSize: 11, color: "var(--t3)", marginLeft: "auto" }}>
-                {nodes.length} contacts · {Object.keys(groupedForList).length} compan{Object.keys(groupedForList).length === 1 ? "y" : "ies"}
+                {nodes.length} · {Object.keys(groupedForList).length} co.
               </span>
             </div>
             <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
-              {Object.entries(groupedForList).map(([company, members]) => (
+              {Object.entries(groupedForList).sort(([a], [b]) => a.localeCompare(b)).map(([company, members]) => (
                 <div key={company}>
                   <div style={{
                     fontSize: 10, fontWeight: 700, color: "var(--t3)",

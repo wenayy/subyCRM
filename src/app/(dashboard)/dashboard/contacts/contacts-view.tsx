@@ -126,6 +126,8 @@ export function ContactsView() {
 
   // Track if backend database contains real data to prevent incorrect mock fallback
   const [hasRealData, setHasRealData] = useState<boolean | null>(null);
+  // Track if the API responded successfully at least once (even with 0 results)
+  const [apiResponded, setApiResponded] = useState(false);
 
   // Filter contacts client-side instantly for 0ms UX latency as the user types
   const displayContacts = useMemo(() => {
@@ -257,8 +259,14 @@ export function ContactsView() {
       .then((res) => {
         if (!active) return;
         const hasData = !!(res.data && res.data.length > 0);
+        setApiResponded(true);
 
-        if (hasRealData || (hasRealData === null && hasData)) {
+        if (hasData) {
+          setHasRealData(true);
+        }
+
+        if (hasRealData || apiResponded || hasData) {
+          // API responded — show real data (may be empty for a new user)
           setContacts(res.data || []);
           setTotal(res.total || 0);
           if (isDefaultView) setCached("contacts:list", { data: res.data || [], total: res.total || 0 });
@@ -270,6 +278,10 @@ export function ContactsView() {
       })
       .catch(() => {
         if (!active) return;
+        if (apiResponded) {
+          // Already know the API works — don't fall back to mock on transient errors
+          return;
+        }
         const mock = filterMock(params);
         setContacts(mock.data);
         setTotal(mock.total);
@@ -409,6 +421,20 @@ export function ContactsView() {
       {classifyResult && (
         <div className="p-2.5 px-3.5 bg-status-green-bg text-status-green rounded-lg text-[13px] font-semibold">
           {classifyResult}
+        </div>
+      )}
+
+      {apiResponded && contacts.length === 0 && !tab && !domain && !debouncedSearch && !loading && (
+        <div className="p-4 px-5 rounded-xl border border-yellow-300 bg-yellow-50 text-yellow-900 text-[13px] flex items-start gap-3">
+          <span className="text-lg leading-none mt-0.5">★</span>
+          <div>
+            <p className="font-semibold mb-1">Your contacts list is empty.</p>
+            <p className="text-yellow-800">Import contacts or add them manually to get started.</p>
+            <div className="flex gap-2 mt-2">
+              <Button size="sm" onClick={() => setIsAddOpen(true)}>+ Add Contact</Button>
+              <Button size="sm" variant="outline" onClick={() => router.push("/dashboard/settings")}>Import from Platform</Button>
+            </div>
+          </div>
         </div>
       )}
 

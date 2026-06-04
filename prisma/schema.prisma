@@ -149,7 +149,8 @@ enum ReminderStatus {
 
 model Company {
   id          String   @id @default(uuid())
-  name        String   @unique
+  userId      String   @default("default") @map("user_id")
+  name        String
   domain      String?  // website domain
   sector      String?
   size        String?  // startup, scaleup, enterprise
@@ -161,7 +162,10 @@ model Company {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   contacts Contact[]
+  deals    Deal[]
 
+  @@unique([userId, name])
+  @@index([userId])
   @@index([name])
   @@map("companies")
   @@schema("contacts")
@@ -185,6 +189,7 @@ model Reminder {
 
 model Contact {
   id                   String               @id @default(uuid())
+  userId               String               @default("default") @map("user_id")
   name                 String
   avatar               String?
   type                 ContactType          @default(other)
@@ -206,7 +211,10 @@ model Contact {
   notes        Note[]
   contactTags  ContactTag[]
   reminders    Reminder[]
+  deals        Deal[]
+  sequences    Sequence[]
 
+  @@index([userId])
   @@index([type])
   @@index([domain])
   @@index([relationshipStrength])
@@ -268,12 +276,15 @@ model Note {
 
 model Tag {
   id        String       @id @default(uuid())
-  name      String       @unique
+  userId    String       @default("default") @map("user_id")
+  name      String
   color     String?
   createdAt DateTime     @default(now()) @map("created_at")
 
   contactTags ContactTag[]
 
+  @@unique([userId, name])
+  @@index([userId])
   @@map("tags")
   @@schema("contacts")
 }
@@ -399,6 +410,7 @@ model GmailThread {
 
 model InboxMessage {
   id          String       @id @default(uuid())
+  userId      String       @default("default") @map("user_id")
   platform    PlatformType
   externalId  String       @map("external_id")
   contactId   String?      @map("contact_id")
@@ -415,6 +427,7 @@ model InboxMessage {
   updatedAt   DateTime     @updatedAt @map("updated_at")
 
   @@unique([platform, externalId])
+  @@index([userId])
   @@index([receivedAt])
   @@index([contactId])
   @@map("inbox_messages")
@@ -540,33 +553,88 @@ enum EnrollmentStatus {
 
 model Sequence {
   id          String         @id @default(uuid())
-  name        String
-  description String?
+  name        String?
+  contactId   String?        @map("contact_id")
+  contactName String?        @map("contact_name")
+  company     String?
+  goal        String?
+  startedAt   DateTime?      @map("started_at")
   status      SequenceStatus @default(active)
   createdAt   DateTime       @default(now()) @map("created_at")
   updatedAt   DateTime       @updatedAt @map("updated_at")
 
+  contact     Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
   steps       SequenceStep[]
   enrollments SequenceEnrollment[]
 
+  @@index([contactId])
   @@map("sequences")
   @@schema("contacts")
 }
 
 model SequenceStep {
-  id         String           @id @default(uuid())
-  sequenceId String           @map("sequence_id")
-  stepNumber Int              @map("step_number")
-  type       SequenceStepType
-  delayDays  Int              @default(0) @map("delay_days")
-  subject    String?
-  body       String?
-  createdAt  DateTime         @default(now()) @map("created_at")
+  id           String           @id @default(uuid())
+  sequenceId   String           @map("sequence_id")
+  stepNumber   Int              @map("step_number")
+  type         SequenceStepType @default(email)
+  delayDays    Int              @default(0) @map("delay_days")
+  subject      String?
+  body         String?
+  draft        String?
+  rationale    String?
+  scheduledFor DateTime?        @map("scheduled_for")
+  stepStatus   String           @default("waiting") @map("step_status")
+  createdAt    DateTime         @default(now()) @map("created_at")
 
   sequence Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
 
   @@index([sequenceId])
   @@map("sequence_steps")
+  @@schema("contacts")
+}
+
+enum DealStage {
+  intro
+  first_call
+  tech_review
+  term_sheet
+  live
+  lost
+
+  @@schema("contacts")
+}
+
+enum DealSource {
+  outbound
+  inbound
+  referral
+  event
+
+  @@schema("contacts")
+}
+
+model Deal {
+  id             String     @id @default(uuid())
+  contactId      String?    @map("contact_id")
+  contactName    String     @map("contact_name")
+  companyId      String?    @map("company_id")
+  companyName    String?    @map("company_name")
+  stage          DealStage  @default(intro)
+  value          Float      @default(0)
+  probability    Int        @default(20)
+  enteredStageAt DateTime   @default(now()) @map("entered_stage_at")
+  nextStep       String?    @map("next_step")
+  source         DealSource @default(outbound)
+  userId         String     @default("default") @map("user_id")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([stage])
+  @@index([userId])
+  @@map("deals")
   @@schema("contacts")
 }
 

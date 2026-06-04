@@ -19,6 +19,7 @@ async function clearCache() {
 // GET /api/contacts — list all with filters
 router.get("/", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const filters = {
       type: req.query.type as string | undefined,
       domain: req.query.domain as string | undefined,
@@ -37,7 +38,7 @@ router.get("/", async (req, res, next) => {
       return;
     }
 
-    const result = await contactService.getAll(filters);
+    const result = await contactService.getAll(userId, filters);
     await cache.set(cacheKey, result, 300); // cache for 5 min
     res.json(result);
   } catch (err) {
@@ -48,6 +49,7 @@ router.get("/", async (req, res, next) => {
 // GET /api/contacts/stats — aggregated stats
 router.get("/stats", async (_req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const cacheKey = CACHE_KEYS.contactsStats();
     const cached = await cache.get(cacheKey);
     if (cached) {
@@ -55,7 +57,7 @@ router.get("/stats", async (_req, res, next) => {
       return;
     }
 
-    const stats = await contactService.getStats();
+    const stats = await contactService.getStats(userId);
     await cache.set(cacheKey, stats, 300); // cache for 5 min
     res.json(stats);
   } catch (err) {
@@ -66,7 +68,8 @@ router.get("/stats", async (_req, res, next) => {
 // GET /api/contacts/:id — single contact with relations
 router.get("/:id", async (req, res, next) => {
   try {
-    const contact = await contactService.getById(req.params.id);
+    const userId = res.locals.session?.user?.id ?? "default";
+    const contact = await contactService.getById(userId, req.params.id);
     if (!contact) {
       res.status(404).json({ error: "Contact not found" });
       return;
@@ -80,12 +83,13 @@ router.get("/:id", async (req, res, next) => {
 // POST /api/contacts — create contact
 router.post("/", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { name } = req.body;
     if (!name || typeof name !== "string") {
       res.status(400).json({ error: "Missing name" });
       return;
     }
-    const contact = await contactService.create(req.body);
+    const contact = await contactService.create(userId, req.body);
     await clearCache();
     res.status(201).json(contact);
   } catch (err) {
@@ -96,7 +100,8 @@ router.post("/", async (req, res, next) => {
 // PATCH /api/contacts/:id — update contact
 router.patch("/:id", async (req, res, next) => {
   try {
-    const contact = await contactService.update(req.params.id, req.body);
+    const userId = res.locals.session?.user?.id ?? "default";
+    const contact = await contactService.update(userId, req.params.id, req.body);
     await clearCache();
     res.json(contact);
   } catch (err) {
@@ -107,7 +112,8 @@ router.patch("/:id", async (req, res, next) => {
 // DELETE /api/contacts/:id — delete contact
 router.delete("/:id", async (req, res, next) => {
   try {
-    await contactService.delete(req.params.id);
+    const userId = res.locals.session?.user?.id ?? "default";
+    await contactService.delete(userId, req.params.id);
     await clearCache();
     res.json({ success: true });
   } catch (err) {
@@ -118,6 +124,7 @@ router.delete("/:id", async (req, res, next) => {
 // POST /api/contacts/:id/merge — merge another contact into this one
 router.post("/:id/merge", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { mergeWithId } = req.body;
     if (!mergeWithId || typeof mergeWithId !== "string") {
       res.status(400).json({ error: "Missing mergeWithId" });
@@ -127,7 +134,7 @@ router.post("/:id/merge", async (req, res, next) => {
       res.status(400).json({ error: "Cannot merge contact with itself" });
       return;
     }
-    const result = await contactService.merge(req.params.id, mergeWithId);
+    const result = await contactService.merge(userId, req.params.id, mergeWithId);
     await clearCache();
     res.json(result);
   } catch (err) {
@@ -165,12 +172,13 @@ router.get("/enrich-job/:jobId", async (req, res, next) => {
 // POST /api/contacts/bulk-delete
 router.post("/bulk-delete", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
       res.status(400).json({ error: "ids array required" });
       return;
     }
-    await prisma.contact.deleteMany({ where: { id: { in: ids } } });
+    await prisma.contact.deleteMany({ where: { id: { in: ids }, userId } });
     await clearCache();
     res.json({ deleted: ids.length });
   } catch (err) {
@@ -216,13 +224,14 @@ function normalizePlatformId(type: string, raw: string): string {
 // POST /api/contacts/:id/platforms — add a platform
 router.post("/:id/platforms", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { type, displayName, profileUrl } = req.body;
     const platformId = normalizePlatformId(type, req.body.platformId ?? "");
     if (!type || !platformId) {
       res.status(400).json({ error: "type and platformId are required" });
       return;
     }
-    const platform = await contactService.addPlatform(req.params.id, { type, platformId, displayName, profileUrl });
+    const platform = await contactService.addPlatform(userId, req.params.id, { type, platformId, displayName, profileUrl });
     await clearCache();
     if (type === "whatsapp") {
       const { invalidatePlatformCache } = await import("../services/whatsapp.service");
@@ -237,9 +246,10 @@ router.post("/:id/platforms", async (req, res, next) => {
 // PUT /api/contacts/:id/platforms/:pid — update a platform
 router.put("/:id/platforms/:pid", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { displayName, profileUrl } = req.body;
     const platformId = req.body.platformId ? normalizePlatformId(req.body.type ?? "", req.body.platformId) : undefined;
-    const platform = await contactService.updatePlatform(req.params.id, req.params.pid, { platformId, displayName, profileUrl });
+    const platform = await contactService.updatePlatform(userId, req.params.id, req.params.pid, { platformId, displayName, profileUrl });
     await clearCache();
     res.json(platform);
   } catch (err) {
@@ -250,7 +260,8 @@ router.put("/:id/platforms/:pid", async (req, res, next) => {
 // DELETE /api/contacts/:id/platforms/:pid — delete a platform
 router.delete("/:id/platforms/:pid", async (req, res, next) => {
   try {
-    await contactService.deletePlatform(req.params.id, req.params.pid);
+    const userId = res.locals.session?.user?.id ?? "default";
+    await contactService.deletePlatform(userId, req.params.id, req.params.pid);
     await clearCache();
     res.json({ success: true });
   } catch (err) {

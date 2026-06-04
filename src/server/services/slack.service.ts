@@ -5,7 +5,7 @@ import { inboxService } from "./inbox.service";
 const CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/slack/callback`;
-const SCOPES = ["im:read", "im:history", "channels:read", "users:read", "mpim:read"];
+const SCOPES = ["im:read", "im:history", "im:write", "chat:write", "channels:read", "users:read", "mpim:read", "mpim:write"];
 
 function buildState(userId: string): string {
   const payload = JSON.stringify({ userId, ts: Date.now() });
@@ -81,63 +81,82 @@ export const slackService = {
     const token = rec.accessToken;
     let synced = 0;
 
-    // Get all IM (DM) channels
+    // Get the current user's Slack ID so we can mark outgoing messages correctly
+    const authRes = await slackFetch<{ user_id: string }>("/auth.test", token).catch(() => ({ user_id: "" }));
+    const mySlackId = authRes.user_id;
+
+    // Get all DM channels (im = 1:1 DM, mpim = group DM)
     const convRes = await slackFetch<{ channels: Array<{ id: string; user?: string }> }>(
-      "/conversations.list", token, { types: "im,mpim", limit: "20" },
+      "/conversations.list", token, { types: "im,mpim", limit: "100" },
     ).catch(() => ({ channels: [] }));
 
     // Get user info map
     const usersRes = await slackFetch<{ members: Array<{ id: string; real_name?: string; name: string; profile?: { email?: string } }> }>(
-      "/users.list", token, { limit: "200" },
+      "/users.list", token, { limit: "500" },
     ).catch(() => ({ members: [] }));
     const userMap = new Map(usersRes.members.map((u) => [u.id, u]));
 
     for (const ch of convRes.channels) {
       try {
         const histRes = await slackFetch<{ messages: Array<{ ts: string; text: string; user?: string }> }>(
-          "/conversations.history", token, { channel: ch.id, limit: "20" },
+          "/conversations.history", token, { channel: ch.id, limit: "50" },
         );
         for (const msg of histRes.messages) {
           if (!msg.text || !msg.user) continue;
-          const slackUser = userMap.get(msg.user);
-          const displayName = slackUser?.real_name || slackUser?.name || msg.user;
-          const email = slackUser?.profile?.email;
-          const slackUserId = msg.user;
 
-          // Find CRM contact matching either the Slack user ID, their email, or their name
-          const plat = await prisma.platform.findFirst({
+          // For DM channels, the other user is stored in ch.user; for group DMs use msg.user
+          const otherUserId = ch.user && ch.user !== mySlackId ? ch.user : msg.user;
+          const slackUser = userMap.get(otherUserId) ?? userMap.get(msg.user);
+          const displayName = slackUser?.real_name || slackUser?.name || otherUserId;
+          const email = slackUser?.profile?.email;
+          const fromMe = msg.user === mySlackId;
+
+          // Find CRM contact matching Slack user ID, email, or name
+          const plat = await (prisma as any).platform.findFirst({
             where: {
               OR: [
-                { type: "slack", platformId: slackUserId },
+                { type: "slack", platformId: otherUserId },
                 ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
-                { contact: { name: { contains: displayName.split(" ")[0], mode: "insensitive" } } }
-              ]
+                { contact: { name: { contains: displayName.split(" ")[0], mode: "insensitive" } } },
+              ],
             },
             include: { contact: true },
           });
 
-          // Privacy filter: skip DMs that are not with a CRM contact
-          if (!plat) {
-            console.log(`[slack] Ignoring message from non-CRM user: ${displayName}`);
-            continue;
-          }
+          if (!plat) continue; // privacy filter — skip non-CRM contacts
 
           await inboxService.upsert({
             platform: "slack",
             externalId: `${ch.id}-${msg.ts}`,
+            userId,
             contactId: plat.contact.id,
             contactName: plat.contact.name,
+            senderId: ch.id, // channel ID — used by reply to post back
             preview: msg.text.slice(0, 120),
             body: msg.text,
             receivedAt: new Date(parseFloat(msg.ts) * 1000),
-            needsReply: false,
+            needsReply: !fromMe,
+            fromMe,
           });
           synced++;
         }
-      } catch { /* skip channel */ }
+      } catch { /* skip channel on error */ }
     }
 
     await (prisma as any).slackToken.update({ where: { userId }, data: { lastSyncAt: new Date() } });
     return { synced };
+  },
+
+  async sendMessage(userId: string, channelId: string, text: string): Promise<void> {
+    const rec = await (prisma as any).slackToken.findUnique({ where: { userId } });
+    if (!rec) throw new Error("Slack not connected");
+    await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${rec.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: channelId, text }),
+    }).then(async (r) => {
+      const data = await r.json() as { ok: boolean; error?: string };
+      if (!data.ok) throw new Error(`Slack send failed: ${data.error}`);
+    });
   },
 };

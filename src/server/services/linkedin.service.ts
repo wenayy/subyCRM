@@ -109,34 +109,29 @@ export const linkedinService = {
     await (prisma as any).linkedInToken.deleteMany({ where: { userId } });
   },
 
-  async saveCookie(userId: string, liAtCookie: string): Promise<void> {
-    // Validate cookie works before saving by calling Voyager API
-    const testRes = await fetch(
-      "https://www.linkedin.com/voyager/api/me",
-      {
-        headers: {
-          cookie: `li_at=${liAtCookie}`,
-          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "x-restli-protocol-version": "2.0.0",
-          "x-li-lang": "en_US",
-        },
-      }
-    );
-    if (!testRes.ok) {
-      throw new Error(`LinkedIn cookie validation failed (${testRes.status}) — make sure you copied the li_at cookie correctly`);
-    }
-    const profile = await testRes.json() as any;
-    const profileId = profile?.miniProfile?.entityUrn?.replace("urn:li:fs_miniProfile:", "") ?? null;
-    const firstName = profile?.miniProfile?.firstName ?? "";
-    const lastName = profile?.miniProfile?.lastName ?? "";
-    const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
-
+  async saveCookie(userId: string, liAtCookie: string, jsessionId?: string): Promise<void> {
+    // Store both cookies as JSON in the liAtCookie field — no schema migration needed.
+    // LinkedIn Voyager API requires JSESSIONID + csrf-token alongside li_at.
+    const stored = JSON.stringify({ liAt: liAtCookie, csrf: jsessionId ?? null });
     await (prisma as any).linkedInToken.upsert({
       where: { userId },
-      create: { userId, accessToken: "", liAtCookie, profileId, profileName: displayName },
-      update: { liAtCookie, profileId, profileName: displayName },
+      create: { userId, accessToken: "", liAtCookie: stored, profileId: null, profileName: null },
+      update: { liAtCookie: stored },
     });
-    console.log(`[linkedin] Cookie saved for userId=${userId}, profile: ${displayName}`);
+    console.log(`[linkedin] Cookie saved for userId=${userId} (csrf=${!!jsessionId})`);
+  },
+
+  // Parse the liAtCookie field — handles both legacy plain string and new JSON format
+  _parseCookieField(raw: string): { liAt: string; csrf: string | null } {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.liAt) {
+        // Strip surrounding quotes from JSESSIONID value in case user pasted with quotes
+        const csrf = parsed.csrf ? parsed.csrf.replace(/^"|"$/g, "").trim() : null;
+        return { liAt: parsed.liAt.trim(), csrf: csrf || null };
+      }
+    } catch {}
+    return { liAt: raw.trim(), csrf: null };
   },
 
   async syncMessages(userId: string): Promise<{ synced: number }> {
@@ -146,12 +141,26 @@ export const linkedinService = {
       return { synced: 0 };
     }
 
-    const headers = {
-      cookie: `li_at=${rec.liAtCookie}`,
-      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    const { liAt, csrf } = linkedinService._parseCookieField(rec.liAtCookie);
+    const cookieHeader = csrf
+      ? `li_at=${liAt}; JSESSIONID="${csrf}"`
+      : `li_at=${liAt}`;
+
+    const headers: Record<string, string> = {
+      cookie: cookieHeader,
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "accept": "application/vnd.linkedin.normalized+json+2.1",
+      "accept-language": "en-US,en;q=0.9",
+      "accept-encoding": "gzip, deflate, br",
       "x-restli-protocol-version": "2.0.0",
       "x-li-lang": "en_US",
-      accept: "application/vnd.linkedin.normalized+json+2.1",
+      "x-li-track": JSON.stringify({ clientVersion: "1.13.14879", mpVersion: "1.13.14879", osName: "web", timezoneOffset: -5.5, timezone: "Asia/Calcutta", mpName: "voyager-web" }),
+      "origin": "https://www.linkedin.com",
+      "referer": "https://www.linkedin.com/messaging/",
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      ...(csrf ? { "csrf-token": csrf } : {}),
     };
 
     // Fetch conversation list
@@ -159,16 +168,23 @@ export const linkedinService = {
       "https://www.linkedin.com/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=inbox",
       { headers }
     );
-    if (!convRes.ok) {
-      if (convRes.status === 401 || convRes.status === 403) {
-        console.warn(`[linkedin-sync] userId=${userId} — cookie expired (${convRes.status})`);
-        // Clear the invalid cookie so the user knows they need to re-enter it
+    if (!convRes.ok || convRes.status === 999) {
+      if (convRes.status === 401 || convRes.status === 403 || convRes.status === 999) {
+        console.warn(`[linkedin-sync] userId=${userId} — session invalid (${convRes.status}), clearing cookie`);
         await (prisma as any).linkedInToken.update({
           where: { userId },
           data: { liAtCookie: null },
         });
       }
       throw new Error(`LinkedIn conversations fetch failed: ${convRes.status}`);
+    }
+
+    // Detect challenge/login page (LinkedIn sometimes returns HTML instead of JSON)
+    const contentType = convRes.headers.get("content-type") ?? "";
+    if (!contentType.includes("json")) {
+      console.warn(`[linkedin-sync] userId=${userId} — got HTML response (challenge page), clearing cookie`);
+      await (prisma as any).linkedInToken.update({ where: { userId }, data: { liAtCookie: null } });
+      throw new Error("LinkedIn returned a challenge page — cookie has been invalidated");
     }
 
     const convData = await convRes.json() as any;
@@ -181,12 +197,6 @@ export const linkedinService = {
       try {
         const convId: string = conv.entityUrn?.replace("urn:li:fs_conversation:", "") ?? conv.id;
         if (!convId) continue;
-
-        // Get last message from the conversation element itself (no extra API call needed)
-        const lastActivityAt: number = conv.lastActivityAt ?? 0;
-        const events: any[] = conv["*events"]
-          ? [] // events are in a separate call — fetch them
-          : conv.events ?? [];
 
         // Fetch events (messages) for this conversation
         const eventsRes = await fetch(
@@ -206,6 +216,8 @@ export const linkedinService = {
           ? [otherParticipant.miniProfile?.firstName, otherParticipant.miniProfile?.lastName].filter(Boolean).join(" ")
           : null;
         const senderLinkedInId = otherParticipant?.miniProfile?.entityUrn?.replace("urn:li:fs_miniProfile:", "") ?? null;
+        // publicIdentifier is the public URL slug (e.g. "yogesh-vishwakarma-91b4a2326")
+        const senderPublicId: string | null = otherParticipant?.miniProfile?.publicIdentifier ?? null;
 
         for (const event of messages) {
           const msgId: string = event.entityUrn?.replace("urn:li:fs_event:", "") ?? event.id;
@@ -220,12 +232,14 @@ export const linkedinService = {
           const senderUrn: string = event.from?.["*actor"] ?? event.from?.actor ?? "";
           const isFromMe = rec.profileId && senderUrn.includes(rec.profileId);
 
-          // Resolve or create contact for the LinkedIn sender
+          // Resolve or create contact for the LinkedIn sender.
+          // Match by internal URN id OR public slug — users typically save the public slug.
           let contactId: string | null = null;
           let contactName: string | null = senderName;
-          if (senderLinkedInId) {
+          const lookupIds = [senderLinkedInId, senderPublicId].filter((x): x is string => !!x);
+          if (lookupIds.length > 0) {
             const platform = await prisma.platform.findFirst({
-              where: { type: "linkedin", platformId: senderLinkedInId },
+              where: { type: "linkedin", platformId: { in: lookupIds } },
             });
             if (platform) {
               contactId = platform.contactId;
@@ -239,7 +253,7 @@ export const linkedinService = {
             externalId: msgId,
             contactId,
             contactName,
-            senderId: senderLinkedInId,
+            senderId: senderLinkedInId ?? senderPublicId,
             preview: body.slice(0, 120),
             body,
             receivedAt: new Date(createdAt),

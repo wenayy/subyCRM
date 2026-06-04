@@ -72,14 +72,14 @@ const INTEGRATIONS: IntegrationDef[] = [
   {
     key: "x",
     name: "X / Twitter",
-    description: "Read DMs from founders and investors. Connect via OAuth — requires an X Developer app with DM access.",
+    description: "Connect via OAuth for contact enrichment. Note: DM sync requires the $100/mo X Basic API plan.",
     color: "var(--t1)", bg: "var(--al)",
     iconPath: "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z",
   },
   {
     key: "linkedin",
     name: "LinkedIn",
-    description: "Connect your LinkedIn profile for contact enrichment. Click Connect and authorize in one step.",
+    description: "Connect via OAuth to enrich contact profiles — name, company, and photo.",
     color: "#0A66C2", bg: "#0A66C215",
     iconPath: "M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z",
   },
@@ -528,49 +528,6 @@ function TelegramPersonalModal({ hasEnvCreds, onClose }: { hasEnvCreds?: boolean
   );
 }
 
-function LinkedInCookieModal({ onSave, onClose }: { onSave: (cookie: string) => Promise<void>; onClose: () => void }) {
-  const [cookie, setCookie] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const submit = async () => {
-    if (!cookie.trim()) return;
-    setLoading(true); setError("");
-    try { await onSave(cookie.trim()); onClose(); }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed to save cookie"); }
-    finally { setLoading(false); }
-  };
-  return (
-    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-[460px]">
-        <DialogHeader>
-          <DialogTitle>Connect LinkedIn Messages</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-4 py-2">
-          <p className="text-xs text-muted-foreground leading-normal">
-            LinkedIn doesn&apos;t offer a messaging API, so we use your browser session cookie (the same way Beeper works).<br /><br />
-            <strong>How to get your li_at cookie:</strong><br />
-            1. Open <strong>linkedin.com</strong> and log in<br />
-            2. Open DevTools → <strong>Application → Cookies → linkedin.com</strong><br />
-            3. Find the cookie named <strong>li_at</strong> and copy its value<br />
-            4. Paste it below
-          </p>
-          <input
-            value={cookie}
-            onChange={(e) => setCookie(e.target.value)}
-            placeholder="AQEDATeB... (li_at cookie value)"
-            className="w-full px-3 py-1.5 text-sm rounded-lg border border-border bg-muted/50 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-          />
-          {error && <p className="text-destructive text-xs">{error}</p>}
-          <p className="text-[10px] text-muted-foreground">Your cookie is stored securely and only used to fetch your LinkedIn DMs on your behalf.</p>
-        </div>
-        <div className="flex gap-2 justify-end mt-2">
-          <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={submit} disabled={loading || !cookie.trim()}>{loading && <Spinner />}{loading ? "Connecting…" : "Connect"}</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 function WhatsAppModal({ onClose }: { onClose: () => void }) {
   const [qr, setQr] = useState<string | null>(null);
@@ -755,6 +712,39 @@ export function SettingsView() {
     return undefined;
   };
 
+  const syncX = async () => {
+    setSyncing("x");
+    try {
+      await xApi.sync();
+      reload(userId);
+    } catch (e: any) {
+      alert(`X sync failed: ${e.message || "Unknown error"}`);
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  const syncGmail = async () => {
+    setSyncing("gmail");
+    try { await gmailApi.sync(); reload(userId); }
+    catch (e: any) { alert(`Gmail sync failed: ${e.message || "Unknown error"}`); }
+    finally { setSyncing(null); }
+  };
+
+  const syncSlack = async () => {
+    setSyncing("slack");
+    try { await slackApi.sync(); reload(userId); }
+    catch (e: any) { alert(`Slack sync failed: ${e.message || "Unknown error"}`); }
+    finally { setSyncing(null); }
+  };
+
+  const syncDiscord = async () => {
+    setSyncing("discord");
+    try { await discordApi.sync(); reload(userId); }
+    catch (e: any) { alert(`Discord sync failed: ${e.message || "Unknown error"}`); }
+    finally { setSyncing(null); }
+  };
+
   const syncTelegram = async (deep = false) => {
     setSyncing("telegram_personal");
     try {
@@ -875,6 +865,21 @@ export function SettingsView() {
 
                   {!isBotOnly && (
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      {k === "gmail" && isConnected && (
+                        <Button size="sm" variant="outline" onClick={syncGmail} disabled={syncing === "gmail"} className="min-w-[70px]">
+                          {syncing === "gmail" && <Spinner />}{syncing === "gmail" ? "Syncing…" : "Sync"}
+                        </Button>
+                      )}
+                      {k === "slack" && isConnected && (
+                        <Button size="sm" variant="outline" onClick={syncSlack} disabled={syncing === "slack"} className="min-w-[70px]">
+                          {syncing === "slack" && <Spinner />}{syncing === "slack" ? "Syncing…" : "Sync"}
+                        </Button>
+                      )}
+                      {k === "discord" && isConnected && (
+                        <Button size="sm" variant="outline" onClick={syncDiscord} disabled={syncing === "discord"} className="min-w-[70px]">
+                          {syncing === "discord" && <Spinner />}{syncing === "discord" ? "Syncing…" : "Sync"}
+                        </Button>
+                      )}
                       {k === "telegram_personal" && isConnected && (
                         <>
                           <Button size="sm" variant="outline" onClick={() => syncTelegram(false)} disabled={syncing === "telegram_personal"} className="min-w-[70px]">

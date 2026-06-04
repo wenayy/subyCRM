@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { inboxApi, meApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
+import { inboxApi, meApi, gmailApi, slackApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
 import { PlatformIcon } from "@/components/platform-icon";
 import { Star } from "lucide-react";
 import type { PlatformType } from "@/lib/types";
@@ -106,7 +106,8 @@ export function InboxView() {
   const [loading, setLoading] = useState(!cached);
   const [threadLoading, setThreadLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
-  const [reply, setReply] = useState("");
+  // Uncontrolled textarea — no React state on keystrokes, eliminates typing lag
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState("");
   const [me, setMe] = useState<{ name: string | null; email: string | null }>({ name: null, email: null });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -114,6 +115,9 @@ export function InboxView() {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<InboxMessageApi | null>(null);
+  const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
+
+  const REACTIONS = ["👍", "❤️", "😂", "🙏", "😮", "😢"];
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -137,8 +141,12 @@ export function InboxView() {
         const markdownTag = isImage
           ? `![${file.name}](${res.url})`
           : `[${file.name}](${res.url})`;
-        
-        setReply((prev) => (prev ? `${prev} ${markdownTag}` : markdownTag));
+        if (textareaRef.current) {
+          textareaRef.current.value = textareaRef.current.value
+            ? `${textareaRef.current.value} ${markdownTag}`
+            : markdownTag;
+          textareaRef.current.focus();
+        }
       } catch (err: any) {
         setSendError(err.message || "Failed to upload attachment");
       } finally {
@@ -157,6 +165,13 @@ export function InboxView() {
 
   useEffect(() => {
     meApi.get().then((u) => setMe(u)).catch(() => {});
+  }, []);
+
+  // Kick off a background sync for Gmail and Slack on mount so messages are fresh immediately.
+  // These are fire-and-forget — SSE will push new messages as they arrive.
+  useEffect(() => {
+    gmailApi.sync().catch(() => {});
+    slackApi.sync().catch(() => {});
   }, []);
 
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -198,21 +213,46 @@ export function InboxView() {
     const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
     const es = new EventSource(`${API_BASE}/api/inbox/events`, { withCredentials: true });
 
-    es.addEventListener("new_message", () => {
+    es.addEventListener("new_message", (e) => {
+      // Refresh sidebar conversation list
       fetchConvsRef.current?.();
-      if (selectedRef.current) {
-        inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
-          .then(setThread)
-          .catch(() => {});
+
+      try {
+        const data = JSON.parse((e as MessageEvent).data || "{}");
+        const msg = data.message;
+        const sel = selectedRef.current;
+
+        if (msg && sel && data.contactId === sel.contactId && data.platform === sel.platform) {
+          // Message is for the open conversation — append instantly, no round-trip
+          setThread((prev) => prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]);
+        } else if (sel) {
+          // Message is for a different conversation — just refresh thread in case
+          inboxApi.getThread(sel.contactId, sel.platform).then(setThread).catch(() => {});
+        }
+      } catch {
+        // Fallback: full thread refresh
+        if (selectedRef.current) {
+          inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
+            .then(setThread).catch(() => {});
+        }
       }
     });
 
-    es.addEventListener("message_deleted", () => {
+    es.addEventListener("message_deleted", (e) => {
       fetchConvsRef.current?.();
-      if (selectedRef.current) {
-        inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
-          .then(setThread)
-          .catch(() => {});
+      try {
+        const data = JSON.parse((e as MessageEvent).data || "{}");
+        if (data.id) {
+          setThread((prev) => prev.filter((m) => m.id !== data.id));
+        } else if (selectedRef.current) {
+          inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
+            .then(setThread).catch(() => {});
+        }
+      } catch {
+        if (selectedRef.current) {
+          inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
+            .then(setThread).catch(() => {});
+        }
       }
     });
 
@@ -229,12 +269,16 @@ export function InboxView() {
       } catch {}
     });
 
-    es.onerror = () => {
-      // SSE disconnected — fall back to polling every 10s until it reconnects
-    };
+    // On SSE reconnect, re-fetch thread so we don't miss messages sent during disconnect
+    es.addEventListener("open", () => {
+      if (selectedRef.current) {
+        inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
+          .then(setThread).catch(() => {});
+      }
+    });
 
-    // Fallback polling every 10s (SSE already handles real-time; this is just a safety net)
-    const iv = setInterval(fetchConvs, 10_000);
+    // Fallback polling every 5s — SSE handles real-time, this catches any gaps
+    const iv = setInterval(fetchConvs, 5_000);
 
     return () => {
       es.close();
@@ -260,14 +304,14 @@ export function InboxView() {
     }
   }, [thread.length, thread[thread.length - 1]?.id, selected]);
 
-  // Keep thread fresh when switching conversations (SSE handles live updates above)
+  // Safety-net polling: catches any messages missed during SSE gaps
   useEffect(() => {
     if (!selected) return;
     const iv = setInterval(() => {
       inboxApi.getThread(selected.contactId, selected.platform)
-        .then(setThread)
+        .then((msgs) => setThread((prev) => msgs.length >= prev.length ? msgs : prev))
         .catch(() => {});
-    }, 10_000);
+    }, 3_000);
     return () => clearInterval(iv);
   }, [selected]);
 
@@ -291,7 +335,7 @@ export function InboxView() {
 
   const selectConversation = (conv: InboxConversationApi) => {
     setSelected(conv);
-    setReply("");
+    if (textareaRef.current) textareaRef.current.value = "";
     setSendError("");
     setReplyingTo(null);
     
@@ -336,47 +380,32 @@ export function InboxView() {
   const totalNeedsReply = conversations.filter((c) => c.needsReply).length;
   const totalStarred = conversations.filter((c) => c.starred).length;
 
-  const handleSend = async () => {
-    if (!reply.trim() || !selected) return;
+  const handleSend = () => {
+    const body = textareaRef.current?.value.trim();
+    if (!body || !selected) return;
 
     const lastMsg = thread[thread.length - 1] ?? selected.latestMessage;
-    const body = reply.trim();
     const tempId = `sent-${Date.now()}`;
     const replyToId = replyingTo?.id;
 
-    // Optimistic UI update — show message instantly
-    const outgoing: SentMessage = {
-      id: tempId,
-      body,
-      sentAt: new Date().toISOString(),
-      fromMe: true,
-      status: "sending"
-    };
-    setSentMessages((prev) => ({ ...prev, [selected.key]: [...(prev[selected.key] ?? []), outgoing] }));
-    setReply("");
+    // Clear input and quote immediately — feels instant
+    if (textareaRef.current) textareaRef.current.value = "";
     setReplyingTo(null);
     setSendError("");
 
-    try {
-      await inboxApi.reply(lastMsg.id, body, replyToId);
+    // Show as sent immediately — no spinner
+    const outgoing: SentMessage = { id: tempId, body, sentAt: new Date().toISOString(), fromMe: true, status: "sent" };
+    setSentMessages((prev) => ({ ...prev, [selected.key]: [...(prev[selected.key] ?? []), outgoing] }));
+    setConversations((prev) => prev.map((c) => c.key === selected.key ? { ...c, needsReply: false } : c));
+
+    // Fire and forget — only revert to ⚠️ if it actually fails
+    inboxApi.reply(lastMsg.id, body, replyToId).catch((e: unknown) => {
       setSentMessages((prev) => {
         const list = prev[selected.key] ?? [];
-        return {
-          ...prev,
-          [selected.key]: list.map((m) => m.id === tempId ? { ...m, status: "sent" } : m),
-        };
-      });
-      setConversations((prev) => prev.map((c) => c.key === selected.key ? { ...c, needsReply: false } : c));
-    } catch (e: unknown) {
-      setSentMessages((prev) => {
-        const list = prev[selected.key] ?? [];
-        return {
-          ...prev,
-          [selected.key]: list.map((m) => m.id === tempId ? { ...m, status: "failed" } : m),
-        };
+        return { ...prev, [selected.key]: list.map((m) => m.id === tempId ? { ...m, status: "failed" } : m) };
       });
       setSendError(e instanceof Error ? e.message : "Failed to send");
-    }
+    });
   };
 
   const handleDeleteMsg = async (msgId: string) => {
@@ -621,7 +650,7 @@ export function InboxView() {
                     return (
                       <div key={msg.id}
                         onMouseEnter={() => setHoveredMsgId(msg.id)}
-                        onMouseLeave={() => setHoveredMsgId(null)}
+                        onMouseLeave={() => { setHoveredMsgId(null); setReactionPickerId(null); }}
                         style={{ display: "flex", alignItems: "flex-end", gap: 6,
                           flexDirection: isMe ? "row-reverse" : "row" }}>
                         {/* Avatar */}
@@ -661,33 +690,58 @@ export function InboxView() {
                             )}
                           </div>
                         </div>
-                        {/* Action buttons on hover — flex siblings right next to the bubble */}
+                        {/* Action buttons on hover */}
                         {isHovered && canDelete && (
-                          <div style={{ flexShrink: 0, alignSelf: "center", display: "flex", flexDirection: isMe ? "row-reverse" : "row", gap: 2 }}>
+                          <div style={{ flexShrink: 0, alignSelf: "center", display: "flex", flexDirection: isMe ? "row-reverse" : "row", gap: 2, position: "relative" }}>
                             {/* Reply button */}
                             <button
                               onClick={() => setReplyingTo(msg as InboxMessageApi)}
                               title="Reply to this message"
-                              style={{ background: "transparent", color: "var(--t3)",
-                                border: "none", borderRadius: 4, width: 24, height: 24,
-                                fontSize: 13, cursor: "pointer", display: "flex",
-                                alignItems: "center", justifyContent: "center" }}
+                              style={{ background: "transparent", color: "var(--t3)", border: "none",
+                                borderRadius: 4, width: 24, height: 24, fontSize: 13, cursor: "pointer",
+                                display: "flex", alignItems: "center", justifyContent: "center" }}
                               onMouseEnter={(e) => (e.currentTarget.style.color = "#2563eb")}
                               onMouseLeave={(e) => (e.currentTarget.style.color = "var(--t3)")}>
                               ↩
                             </button>
-                            {/* Delete button */}
-                            <button
-                              onClick={() => handleDeleteMsg(msg.id)}
-                              title="Delete message"
-                              style={{ background: "transparent", color: "var(--t3)",
-                                border: "none", borderRadius: 4, width: 24, height: 24,
-                                fontSize: 15, cursor: "pointer", display: "flex",
-                                alignItems: "center", justifyContent: "center" }}
-                              onMouseEnter={(e) => (e.currentTarget.style.color = "#ef4444")}
-                              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--t3)")}>
-                              ×
-                            </button>
+                            {/* Emoji reaction button */}
+                            <div style={{ position: "relative" }}>
+                              <button
+                                onClick={() => setReactionPickerId(reactionPickerId === msg.id ? null : msg.id)}
+                                title="React with emoji"
+                                style={{ background: "transparent", color: "var(--t3)", border: "none",
+                                  borderRadius: 4, width: 24, height: 24, fontSize: 13, cursor: "pointer",
+                                  display: "flex", alignItems: "center", justifyContent: "center" }}
+                                onMouseEnter={(e) => (e.currentTarget.style.color = "#f59e0b")}
+                                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--t3)")}>
+                                😊
+                              </button>
+                              {/* Emoji picker popup */}
+                              {reactionPickerId === msg.id && (
+                                <div style={{
+                                  position: "absolute", bottom: 30,
+                                  [isMe ? "right" : "left"]: 0,
+                                  background: "var(--card)", border: "1px solid var(--bd)",
+                                  borderRadius: 10, padding: "6px 8px", display: "flex", gap: 4,
+                                  boxShadow: "0 4px 16px rgba(0,0,0,0.15)", zIndex: 50,
+                                }}>
+                                  {REACTIONS.map((emoji) => (
+                                    <button key={emoji}
+                                      onClick={() => {
+                                        setReactionPickerId(null);
+                                        inboxApi.react(msg.id, emoji).catch(() => {});
+                                      }}
+                                      style={{ background: "transparent", border: "none", cursor: "pointer",
+                                        fontSize: 20, padding: "2px 3px", borderRadius: 6,
+                                        transition: "transform 0.1s" }}
+                                      onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.3)")}
+                                      onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}>
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -742,14 +796,13 @@ export function InboxView() {
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     )}
                   </button>
-                  <textarea value={reply} onChange={(e) => setReply(e.target.value)}
+                  <textarea ref={textareaRef}
                     onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSend(); }}
                     placeholder={`Message ${selected.contactName ?? ""}… (⌘↵ to send)`}
                     rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px",
                       borderRadius: 10, border: "1px solid var(--bd)", background: "var(--card)",
                       color: "var(--t1)", outline: "none", lineHeight: 1.4 }} />
-                  <Button size="sm" onClick={handleSend} disabled={!reply.trim()}
-                    style={{ flexShrink: 0, height: 36 }}>
+                  <Button size="sm" onClick={handleSend} style={{ flexShrink: 0, height: 36 }}>
                     Send
                   </Button>
                 </div>

@@ -151,7 +151,7 @@ export const xService = {
           include: { contact: true },
         });
 
-        // Privacy filter: skip DMs that are not with a CRM contact
+        // Only show DMs from contacts who have an X platform entry
         if (!plat) {
           console.log(`[x] Ignoring message from non-CRM user: ${username || senderId}`);
           continue;
@@ -160,12 +160,15 @@ export const xService = {
         await inboxService.upsert({
           platform: "x",
           externalId: event.id,
+          userId,
           contactId: plat.contact.id,
           contactName: plat.contact.name,
+          senderId,
           preview: text.slice(0, 120),
           body: text,
           receivedAt: createdAt,
           needsReply: !isFromMe,
+          fromMe: isFromMe,
         });
         synced++;
       }
@@ -174,8 +177,8 @@ export const xService = {
       return { synced };
     } catch (err: any) {
       console.error("[x-sync-error]", err);
-      if (err.status === 403) {
-        throw new Error("X DM Sync failed: The free X developer API tier does not allow access to Direct Messages. A Basic or higher developer tier is required.");
+      if (err.status === 402 || err.status === 403) {
+        throw new Error("X DM access requires the Basic plan ($100/month) on developer.twitter.com. The free tier does not include DM reading. Upgrade your app's plan to use this feature.");
       }
       throw new Error(err.message || "Failed to sync DMs with X");
     }

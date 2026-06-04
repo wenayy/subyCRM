@@ -3,210 +3,166 @@ import { prisma } from "../lib/prisma";
 
 const router = Router();
 
-// ── GET /api/sequences ────────────────────────────────────────────────────────
+const TYPE_TO_CHANNEL: Record<string, string> = {
+  email: "email",
+  linkedin_message: "linkedin",
+  twitter_dm: "x",
+  telegram_message: "telegram",
+  whatsapp_message: "whatsapp",
+  wait: "wait",
+  task: "task",
+};
+
+const CHANNEL_TO_TYPE: Record<string, string> = {
+  email: "email",
+  linkedin: "linkedin_message",
+  x: "twitter_dm",
+  telegram: "telegram_message",
+  whatsapp: "whatsapp_message",
+};
+
+function fmtStep(s: any) {
+  return {
+    id: s.id,
+    index: s.stepNumber,
+    channel: TYPE_TO_CHANNEL[s.type] ?? s.type,
+    delayDays: s.delayDays,
+    scheduledFor: s.scheduledFor?.toISOString() ?? new Date().toISOString(),
+    status: s.stepStatus ?? "waiting",
+    draft: s.draft ?? s.body ?? "",
+    rationale: s.rationale ?? "",
+  };
+}
+
+function fmtSeq(seq: any) {
+  return {
+    id: seq.id,
+    contactId: seq.contactId ?? null,
+    contactName: seq.contactName ?? seq.name ?? "",
+    company: seq.company ?? null,
+    goal: seq.goal ?? seq.name ?? "",
+    startedAt: seq.startedAt?.toISOString() ?? seq.createdAt.toISOString(),
+    paused: seq.status === "paused",
+    steps: (seq.steps ?? []).map(fmtStep),
+  };
+}
+
+// GET /api/sequences
 router.get("/", async (_req, res, next) => {
   try {
     const sequences = await (prisma as any).sequence.findMany({
-      include: {
-        steps: { orderBy: { stepNumber: "asc" } },
-        _count: { select: { enrollments: true } },
-      },
+      include: { steps: { orderBy: { stepNumber: "asc" } } },
       orderBy: { createdAt: "desc" },
     });
-    res.json(sequences);
-  } catch (err) {
-    next(err);
-  }
+    res.json(sequences.map(fmtSeq));
+  } catch (err) { next(err); }
 });
 
-// ── GET /api/sequences/:id ────────────────────────────────────────────────────
+// GET /api/sequences/:id
 router.get("/:id", async (req, res, next) => {
   try {
-    const sequence = await (prisma as any).sequence.findUnique({
+    const seq = await (prisma as any).sequence.findUnique({
       where: { id: req.params.id },
-      include: {
-        steps: { orderBy: { stepNumber: "asc" } },
-        enrollments: {
-          include: {
-            // contact relation will be accessible once Prisma schema is updated
-          },
-          orderBy: { enrolledAt: "desc" },
-        },
-      },
+      include: { steps: { orderBy: { stepNumber: "asc" } } },
     });
-    if (!sequence) {
-      res.status(404).json({ error: "Sequence not found" });
-      return;
-    }
-    res.json(sequence);
-  } catch (err) {
-    next(err);
-  }
+    if (!seq) { res.status(404).json({ error: "Not found" }); return; }
+    res.json(fmtSeq(seq));
+  } catch (err) { next(err); }
 });
 
-// ── POST /api/sequences ───────────────────────────────────────────────────────
+// POST /api/sequences
 router.post("/", async (req, res, next) => {
   try {
-    const { name, description, steps } = req.body as {
-      name: string;
-      description?: string;
-      steps?: Array<{
-        stepNumber: number;
-        type: string;
-        delayDays?: number;
-        subject?: string;
-        body?: string;
-      }>;
+    const { contactId, contactName, company, goal, steps } = req.body as {
+      contactId?: string; contactName: string; company?: string; goal: string;
+      steps?: Array<{ channel: string; delayDays?: number; draft?: string; rationale?: string; scheduledFor?: string }>;
     };
-
-    if (!name) {
-      res.status(400).json({ error: "name is required" });
-      return;
+    if (!contactName?.trim() || !goal?.trim()) {
+      res.status(400).json({ error: "contactName and goal are required" }); return;
     }
 
-    const sequence = await (prisma as any).sequence.create({
+    // Try to auto-link a contact by name
+    let resolvedContactId = contactId || null;
+    if (!resolvedContactId && contactName) {
+      const found = await prisma.contact.findFirst({
+        where: { name: { contains: contactName, mode: "insensitive" } },
+        select: { id: true },
+      });
+      if (found) resolvedContactId = found.id;
+    }
+
+    const seq = await (prisma as any).sequence.create({
       data: {
-        name,
-        description,
-        steps: steps
-          ? {
-              create: steps.map((s) => ({
-                stepNumber: s.stepNumber,
-                type: s.type,
-                delayDays: s.delayDays ?? 0,
-                subject: s.subject,
-                body: s.body,
-              })),
-            }
-          : undefined,
+        name: goal,
+        contactId: resolvedContactId,
+        contactName: contactName.trim(),
+        company: company?.trim() || null,
+        goal: goal.trim(),
+        startedAt: new Date(),
+        status: "active",
+        steps: steps?.length ? {
+          create: steps.map((s, i) => ({
+            stepNumber: i + 1,
+            type: CHANNEL_TO_TYPE[s.channel] ?? "email",
+            delayDays: s.delayDays ?? 0,
+            draft: s.draft ?? "",
+            rationale: s.rationale ?? "",
+            scheduledFor: s.scheduledFor ? new Date(s.scheduledFor) : new Date(Date.now() + (s.delayDays ?? 0) * 86400000),
+            stepStatus: "waiting",
+          })),
+        } : undefined,
       },
       include: { steps: { orderBy: { stepNumber: "asc" } } },
     });
-
-    res.status(201).json(sequence);
-  } catch (err) {
-    next(err);
-  }
+    res.status(201).json(fmtSeq(seq));
+  } catch (err) { next(err); }
 });
 
-// ── PATCH /api/sequences/:id ──────────────────────────────────────────────────
+// PATCH /api/sequences/:id  (pause/resume, update goal)
 router.patch("/:id", async (req, res, next) => {
   try {
-    const { name, description, status } = req.body as {
-      name?: string;
-      description?: string;
-      status?: string;
+    const { paused, goal, contactName, company } = req.body as {
+      paused?: boolean; goal?: string; contactName?: string; company?: string;
     };
-
-    const sequence = await (prisma as any).sequence.update({
+    const data: any = {};
+    if (paused !== undefined) data.status = paused ? "paused" : "active";
+    if (goal !== undefined) { data.goal = goal; data.name = goal; }
+    if (contactName !== undefined) data.contactName = contactName;
+    if (company !== undefined) data.company = company;
+    const seq = await (prisma as any).sequence.update({
       where: { id: req.params.id },
-      data: { name, description, status },
+      data,
       include: { steps: { orderBy: { stepNumber: "asc" } } },
     });
-
-    res.json(sequence);
-  } catch (err) {
-    next(err);
-  }
+    res.json(fmtSeq(seq));
+  } catch (err) { next(err); }
 });
 
-// ── DELETE /api/sequences/:id ─────────────────────────────────────────────────
+// PATCH /api/sequences/:id/steps/:stepId
+router.patch("/:id/steps/:stepId", async (req, res, next) => {
+  try {
+    const { status, draft, rationale, scheduledFor } = req.body as {
+      status?: string; draft?: string; rationale?: string; scheduledFor?: string;
+    };
+    const data: any = {};
+    if (status !== undefined) data.stepStatus = status;
+    if (draft !== undefined) data.draft = draft;
+    if (rationale !== undefined) data.rationale = rationale;
+    if (scheduledFor !== undefined) data.scheduledFor = new Date(scheduledFor);
+    const step = await (prisma as any).sequenceStep.update({
+      where: { id: req.params.stepId },
+      data,
+    });
+    res.json(fmtStep(step));
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/sequences/:id
 router.delete("/:id", async (req, res, next) => {
   try {
     await (prisma as any).sequence.delete({ where: { id: req.params.id } });
     res.status(204).send();
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ── POST /api/sequences/:id/enroll ───────────────────────────────────────────
-// Enroll a contact in a sequence
-router.post("/:id/enroll", async (req, res, next) => {
-  try {
-    const { contactId } = req.body as { contactId: string };
-    if (!contactId) {
-      res.status(400).json({ error: "contactId is required" });
-      return;
-    }
-
-    // Verify sequence and contact exist
-    const [sequence, contact] = await Promise.all([
-      (prisma as any).sequence.findUnique({
-        where: { id: req.params.id },
-        include: { steps: { orderBy: { stepNumber: "asc" }, take: 1 } },
-      }),
-      prisma.contact.findUnique({ where: { id: contactId }, select: { id: true, name: true } }),
-    ]);
-
-    if (!sequence) {
-      res.status(404).json({ error: "Sequence not found" });
-      return;
-    }
-    if (!contact) {
-      res.status(404).json({ error: "Contact not found" });
-      return;
-    }
-
-    // Compute first step due date
-    const firstStep = sequence.steps[0];
-    const nextStepDue = firstStep
-      ? new Date(Date.now() + (firstStep.delayDays ?? 0) * 86400_000)
-      : null;
-
-    const enrollment = await (prisma as any).sequenceEnrollment.upsert({
-      where: { sequenceId_contactId: { sequenceId: req.params.id, contactId } },
-      create: {
-        sequenceId: req.params.id,
-        contactId,
-        currentStep: 0,
-        status: "active",
-        nextStepDue,
-      },
-      update: {
-        status: "active",
-        currentStep: 0,
-        nextStepDue,
-        completedAt: null,
-      },
-    });
-
-    res.status(201).json({ enrollment, contact });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ── DELETE /api/sequences/:id/enroll/:contactId ───────────────────────────────
-// Remove a contact from a sequence (exit)
-router.delete("/:id/enroll/:contactId", async (req, res, next) => {
-  try {
-    await (prisma as any).sequenceEnrollment.update({
-      where: {
-        sequenceId_contactId: {
-          sequenceId: req.params.id,
-          contactId: req.params.contactId,
-        },
-      },
-      data: { status: "exited" },
-    });
-    res.status(204).send();
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ── GET /api/sequences/:id/enrollments ────────────────────────────────────────
-router.get("/:id/enrollments", async (req, res, next) => {
-  try {
-    const enrollments = await (prisma as any).sequenceEnrollment.findMany({
-      where: { sequenceId: req.params.id },
-      orderBy: { enrolledAt: "desc" },
-    });
-    res.json(enrollments);
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 export default router;

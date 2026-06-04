@@ -1,8 +1,17 @@
 import { prisma } from "../lib/prisma";
 import type { Prisma } from "@prisma/client";
 
+function normalizePlatformId(type: string, id: string): string {
+  if (type === "linkedin") {
+    // Accept: full URL, URL without protocol, or just slug — always store the slug
+    const match = id.match(/linkedin\.com\/in\/([^/?#\s]+)/i);
+    if (match) return match[1];
+  }
+  return id.trim();
+}
+
 export const contactService = {
-  async getAll(filters: {
+  async getAll(userId: string, filters: {
     type?: string;
     domain?: string;
     strength?: string;
@@ -14,7 +23,7 @@ export const contactService = {
   } = {}) {
     const page = filters.page ? Math.max(0, filters.page - 1) : 0;
     const limit = filters.limit ?? 20;
-    const where: Prisma.ContactWhereInput = {};
+    const where: Prisma.ContactWhereInput = { userId };
     const whereAnd: Prisma.ContactWhereInput[] = [];
 
     if (filters.type) where.type = filters.type as any;
@@ -108,7 +117,7 @@ export const contactService = {
     };
   },
 
-  async getStats() {
+  async getStats(userId: string) {
     const now = new Date();
     const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
     const d60 = new Date(now); d60.setDate(d60.getDate() - 60);
@@ -116,18 +125,18 @@ export const contactService = {
 
     const [total, byType, byDomain, byStrength, stale30, stale60, stale90] =
       await Promise.all([
-        prisma.contact.count(),
-        prisma.contact.groupBy({ by: ["type"], _count: true }),
-        prisma.contact.groupBy({ by: ["domain"], _count: true }),
-        prisma.contact.groupBy({ by: ["relationshipStrength"], _count: true }),
+        prisma.contact.count({ where: { userId } }),
+        prisma.contact.groupBy({ by: ["type"], where: { userId }, _count: true }),
+        prisma.contact.groupBy({ by: ["domain"], where: { userId }, _count: true }),
+        prisma.contact.groupBy({ by: ["relationshipStrength"], where: { userId }, _count: true }),
         prisma.contact.count({
-          where: { OR: [{ lastContactDate: { lt: d30 } }, { lastContactDate: null }] },
+          where: { userId, OR: [{ lastContactDate: { lt: d30 } }, { lastContactDate: null }] },
         }),
         prisma.contact.count({
-          where: { OR: [{ lastContactDate: { lt: d60 } }, { lastContactDate: null }] },
+          where: { userId, OR: [{ lastContactDate: { lt: d60 } }, { lastContactDate: null }] },
         }),
         prisma.contact.count({
-          where: { OR: [{ lastContactDate: { lt: d90 } }, { lastContactDate: null }] },
+          where: { userId, OR: [{ lastContactDate: { lt: d90 } }, { lastContactDate: null }] },
         }),
       ]);
 
@@ -142,9 +151,9 @@ export const contactService = {
     };
   },
 
-  async getById(id: string) {
-    return prisma.contact.findUnique({
-      where: { id },
+  async getById(userId: string, id: string) {
+    return prisma.contact.findFirst({
+      where: { id, userId },
       include: {
         platforms: true,
         notes: { orderBy: { createdAt: "desc" }, take: 20 },
@@ -154,7 +163,7 @@ export const contactService = {
     });
   },
 
-  async create(data: {
+  async create(userId: string, data: {
     name: string;
     type?: string;
     domain?: string;
@@ -172,6 +181,7 @@ export const contactService = {
     return prisma.contact.create({
       data: {
         ...contactData as any,
+        userId,
         platforms: platforms?.length
           ? { create: platforms as any }
           : undefined,
@@ -180,23 +190,30 @@ export const contactService = {
     });
   },
 
-  async update(id: string, data: Record<string, unknown>) {
+  async update(userId: string, id: string, data: Record<string, unknown>) {
     // Strip relations from update
     const { platforms, notes, contactTags, interactions, ...fields } = data;
     return prisma.contact.update({
-      where: { id },
+      where: { id, userId },
       data: fields as any,
       include: { platforms: true },
     });
   },
 
-  async delete(id: string) {
-    return prisma.contact.delete({ where: { id } });
+  async delete(userId: string, id: string) {
+    return prisma.contact.delete({ where: { id, userId } });
   },
 
-  async merge(keepId: string, mergeWithId: string) {
+  async merge(userId: string, keepId: string, mergeWithId: string) {
     // Move all related records from mergeWithId to keepId, then delete mergeWithId
     return prisma.$transaction(async (tx) => {
+      // Verify both contacts belong to userId
+      const [keep, mergeWith] = await Promise.all([
+        tx.contact.findFirst({ where: { id: keepId, userId } }),
+        tx.contact.findFirst({ where: { id: mergeWithId, userId } }),
+      ]);
+      if (!keep || !mergeWith) throw new Error("Contact not found or access denied");
+
       // Move platforms (skip duplicates by catching unique constraint errors)
       await tx.platform.updateMany({
         where: { contactId: mergeWithId },
@@ -283,9 +300,10 @@ export const contactService = {
     });
   },
 
-  async addPlatform(contactId: string, data: { type: string; platformId: string; displayName?: string; profileUrl?: string }) {
+  async addPlatform(userId: string, contactId: string, data: { type: string; platformId: string; displayName?: string; profileUrl?: string }) {
+    const normalizedId = normalizePlatformId(data.type, data.platformId);
     const existing = await prisma.platform.findFirst({
-      where: { type: data.type as any, platformId: data.platformId },
+      where: { type: data.type as any, platformId: normalizedId, contact: { userId } },
     });
     let platform;
     if (existing) {
@@ -297,7 +315,7 @@ export const contactService = {
       }
     } else {
       platform = await prisma.platform.create({
-        data: { contactId, type: data.type as any, platformId: data.platformId, displayName: data.displayName, profileUrl: data.profileUrl },
+        data: { contactId, type: data.type as any, platformId: normalizedId, displayName: data.displayName, profileUrl: data.profileUrl },
       });
     }
 
@@ -309,14 +327,21 @@ export const contactService = {
     return platform;
   },
 
-  async updatePlatform(contactId: string, platformDbId: string, data: { platformId?: string; displayName?: string; profileUrl?: string }) {
+  async updatePlatform(userId: string, contactId: string, platformDbId: string, data: { platformId?: string; displayName?: string; profileUrl?: string; type?: string }) {
+    const normalizedId = data.platformId && data.type ? normalizePlatformId(data.type, data.platformId) : data.platformId;
+    // Verify the contact belongs to userId
+    const contact = await prisma.contact.findFirst({ where: { id: contactId, userId } });
+    if (!contact) throw new Error("Contact not found or access denied");
     return prisma.platform.update({
       where: { id: platformDbId, contactId },
-      data: { ...(data.platformId && { platformId: data.platformId }), displayName: data.displayName, profileUrl: data.profileUrl },
+      data: { ...(normalizedId && { platformId: normalizedId }), displayName: data.displayName, profileUrl: data.profileUrl },
     });
   },
 
-  async deletePlatform(contactId: string, platformDbId: string) {
+  async deletePlatform(userId: string, contactId: string, platformDbId: string) {
+    // Verify the contact belongs to userId
+    const contact = await prisma.contact.findFirst({ where: { id: contactId, userId } });
+    if (!contact) throw new Error("Contact not found or access denied");
     await prisma.platform.delete({ where: { id: platformDbId, contactId } });
   },
 };

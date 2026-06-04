@@ -102,8 +102,9 @@ export async function syncThreads(userId: string): Promise<number> {
   const client = await authedClient(userId);
   const gmail = google.gmail({ version: "v1", auth: client });
 
-  // Build contact email map
+  // Build contact email map (scoped to this user)
   const contacts = await prisma.contact.findMany({
+    where: { userId },
     include: { platforms: { where: { type: "email" } } },
   });
   const emailMap = new Map<string, { id: string; name: string }>();
@@ -208,6 +209,7 @@ export async function syncThreads(userId: string): Promise<number> {
     await inboxService.upsert({
       platform: "email",
       externalId: row.threadId,
+      userId,
       contactId: row.contactId,
       contactName: row.contactEmail ?? row.fromEmail ?? "Unknown",
       preview: row.subject ?? row.snippet ?? "",

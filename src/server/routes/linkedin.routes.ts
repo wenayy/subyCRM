@@ -43,29 +43,4 @@ router.delete("/disconnect", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post("/cookie", async (req, res, next) => {
-  try {
-    const userId = res.locals.session?.user?.id ?? "default";
-    const { cookie } = req.body as { cookie?: string };
-    if (!cookie?.trim()) {
-      res.status(400).json({ error: "cookie is required" });
-      return;
-    }
-    await linkedinService.saveCookie(userId, cookie.trim());
-    // Trigger an immediate sync after saving cookie
-    const { queues, DEFAULT_JOB_OPTIONS } = await import("../lib/queues");
-    await queues.linkedinSync.add("linkedin-sync-immediate", { userId }, DEFAULT_JOB_OPTIONS);
-    res.json({ ok: true });
-  } catch (err: any) { next(err); }
-});
-
-router.post("/sync", async (req, res, next) => {
-  try {
-    const userId = res.locals.session?.user?.id ?? "default";
-    const { queues, DEFAULT_JOB_OPTIONS } = await import("../lib/queues");
-    await queues.linkedinSync.add("linkedin-sync-manual", { userId }, DEFAULT_JOB_OPTIONS);
-    res.json({ ok: true, message: "Sync queued" });
-  } catch (err) { next(err); }
-});
-
 export default router;

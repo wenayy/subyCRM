@@ -12,7 +12,8 @@ export const QUEUE_NAMES = {
   OUTCOME_PROMPT: "outcome-prompt",
   GMAIL_SYNC: "gmail-sync",
   X_DM_SYNC: "x-dm-sync",
-  LINKEDIN_SYNC: "linkedin-sync",
+  SLACK_SYNC: "slack-sync",
+  DISCORD_SYNC: "discord-sync",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -28,7 +29,8 @@ export const queues = {
   outcomePrompt: new Queue(QUEUE_NAMES.OUTCOME_PROMPT, redisConnection),
   gmailSync: new Queue(QUEUE_NAMES.GMAIL_SYNC, redisConnection),
   xDmSync: new Queue(QUEUE_NAMES.X_DM_SYNC, redisConnection),
-  linkedinSync: new Queue(QUEUE_NAMES.LINKEDIN_SYNC, redisConnection),
+  slackSync: new Queue(QUEUE_NAMES.SLACK_SYNC, redisConnection),
+  discordSync: new Queue(QUEUE_NAMES.DISCORD_SYNC, redisConnection),
 };
 
 /** Default job options for all queues */

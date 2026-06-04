@@ -344,6 +344,8 @@ export const inboxApi = {
     apiFetch<{ success: boolean }>(`/api/inbox/${id}`, { method: "DELETE" }),
   reply: (id: string, body: string, replyToId?: string) =>
     apiFetch<{ ok: boolean }>(`/api/inbox/${id}/reply`, { method: "POST", body: JSON.stringify({ body, replyToId }) }),
+  react: (id: string, emoji: string) =>
+    apiFetch<{ ok: boolean }>(`/api/inbox/${id}/react`, { method: "POST", body: JSON.stringify({ emoji }) }),
   upload: (filename: string, fileData: string) =>
     apiFetch<{ url: string }>("/api/inbox/upload", {
       method: "POST",
@@ -409,6 +411,23 @@ export const linkedinApi = {
   status: () => apiFetch<{ connected: boolean; profileName: string | null }>("/api/linkedin/status"),
   connectUrl: () => apiFetch<{ url: string }>("/api/linkedin/connect-url"),
   disconnect: () => apiFetch<{ ok: boolean }>("/api/linkedin/disconnect", { method: "DELETE" }),
+};
+
+// ─── Pipeline API ────────────────────────────────────────────
+export const pipelineApi = {
+  list: () => apiFetch<any[]>("/api/pipeline"),
+  create: (data: Record<string, any>) => apiFetch<any>("/api/pipeline", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: Record<string, any>) => apiFetch<any>(`/api/pipeline/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  remove: (id: string) => apiFetch<void>(`/api/pipeline/${id}`, { method: "DELETE" }),
+};
+
+// ─── Sequences API ───────────────────────────────────────────
+export const sequenceApi = {
+  list: () => apiFetch<any[]>("/api/sequences"),
+  create: (data: Record<string, any>) => apiFetch<any>("/api/sequences", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: Record<string, any>) => apiFetch<any>(`/api/sequences/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  updateStep: (seqId: string, stepId: string, data: Record<string, any>) => apiFetch<any>(`/api/sequences/${seqId}/steps/${stepId}`, { method: "PATCH", body: JSON.stringify(data) }),
+  remove: (id: string) => apiFetch<void>(`/api/sequences/${id}`, { method: "DELETE" }),
 };
 
 // ─── Voice API ──────────────────────────────────────────────

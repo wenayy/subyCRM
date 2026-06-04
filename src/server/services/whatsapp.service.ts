@@ -107,6 +107,8 @@ const state: {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectDelay: number;
   reconnecting: boolean;
+  consecutive440s: number;
+  lastConnectedAt: number;
   // Monotonically-increasing counter. Each call to connectSocket gets its own
   // generation number. Event handlers check that their generation still matches
   // before acting — this prevents a closing socket from triggering scheduleReconnect
@@ -121,6 +123,8 @@ const state: {
   reconnectTimer: null,
   reconnectDelay: 0,
   reconnecting: false,
+  consecutive440s: 0,
+  lastConnectedAt: 0,
   generation: 0,
 };
 
@@ -404,6 +408,7 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
   await inboxService.upsert({
     platform: "whatsapp",
     externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
+    userId: state.userId ?? "default",
     contactId: contact.contactId,
     contactName: contact.contactName,
     senderId: remoteJid,
@@ -458,13 +463,13 @@ function endSocketForLogout(): void {
 
 function scheduleReconnect(gen: number): void {
   if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
-  // Always wait at least 3 s — firing at 0 ms races WhatsApp's server-side session cleanup
-  // and causes immediate 440 (connectionReplaced) on the next socket.
+  // Always wait at least 3 s to avoid racing WhatsApp's server-side cleanup.
+  // Honour the delay already set by the 440 handler — don't double it here.
   const delay = Math.max(state.reconnectDelay, 3_000);
-  state.reconnectDelay = Math.min(delay * 2, 30_000);
   console.log(`[whatsapp] Reconnecting in ${delay / 1000}s…`);
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null;
+    state.reconnectDelay = 0; // reset after the wait
     // Only proceed if no newer socket has been created since this was scheduled
     if (state.generation === gen && state.userId && !state.connected) {
       connectSocket(state.userId).catch(console.error);
@@ -600,7 +605,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
 
       if (connection === "open") {
         state.connected    = true;
-        state.reconnectDelay = 0;
+        state.lastConnectedAt = Date.now();
         state.qr           = null;
         state.phoneNumber  = sock.user?.id?.split(":")[0] ?? null;
         console.log(`[whatsapp] Connected as ${state.phoneNumber}`);
@@ -629,11 +634,23 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
           settle({ connected: false });
         } else {
           settle({ connected: false });
-          // 440 = connectionReplaced: WhatsApp server hasn't released the previous TCP session yet.
-          // Back off to 10 s so the server can finish cleaning up before we reconnect.
           if (code === DisconnectReason.connectionReplaced || code === 440) {
-            state.reconnectDelay = 10_000;
-            console.log("[whatsapp] Connection replaced (440) — waiting 10 s before reconnect");
+            // 440 = another client (usually the phone) replaced this connection.
+            // If we stayed connected < 5s, count it as a consecutive failure.
+            const stayedMs = Date.now() - state.lastConnectedAt;
+            if (stayedMs < 5_000) {
+              state.consecutive440s++;
+            } else {
+              state.consecutive440s = 0; // stayed alive long enough — reset
+            }
+            // Exponential backoff: 10s → 20s → 40s → 60s cap
+            // After 3+ fast 440s, use 60s to let the competing client stabilise
+            const base = state.consecutive440s >= 3 ? 60_000 : 10_000 * Math.pow(2, Math.max(0, state.consecutive440s - 1));
+            state.reconnectDelay = Math.min(base, 60_000);
+            console.log(`[whatsapp] Connection replaced (440) — consecutive=${state.consecutive440s}, waiting ${state.reconnectDelay / 1000}s before reconnect`);
+          } else {
+            state.consecutive440s = 0;
+            state.reconnectDelay = 0;
           }
           // Pass myGen so scheduleReconnect won't fire if a newer socket already exists
           scheduleReconnect(myGen);
@@ -828,6 +845,15 @@ export const whatsappService = {
       setTimeout(() => sentCrmMessageIds.delete(realId), 120_000);
     }
     return result;
+  },
+
+  async sendReaction(jid: string, messageId: string, fromMe: boolean, emoji: string): Promise<void> {
+    await whatsappService.ensureConnected();
+    const resolved = resolveJid(jid);
+    if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
+    await state.sock.sendMessage(resolved, {
+      react: { text: emoji, key: { remoteJid: resolved, fromMe, id: messageId } },
+    });
   },
 
   async sendMessage(jid: string, text: string): Promise<unknown> {

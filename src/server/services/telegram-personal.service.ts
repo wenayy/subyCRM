@@ -8,42 +8,57 @@ const clients: Map<string, unknown> = new Map();
 // Populated on dialog load so sends to numeric IDs don't reload all dialogs every time
 const entityCache: Map<string, Map<string, any>> = new Map();
 
+// Tracks in-progress cache warm so concurrent calls don't stack up
+const warmingCache = new Map<string, Promise<void>>();
+
 async function warmEntityCache(userId: string, client: any) {
-  try {
-    const dialogs = await client.getDialogs({ limit: 200 });
-    const cache = new Map<string, any>();
-    for (const d of dialogs) {
-      if (d.entity?.id) cache.set(d.entity.id.toString(), d.entity);
+  // Deduplicate concurrent warm calls for the same user
+  const existing = warmingCache.get(userId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      // Fetch enough dialogs to cover all CRM contacts
+      const dialogs = await client.getDialogs({ limit: 500 });
+      const cache = entityCache.get(userId) ?? new Map<string, any>();
+      for (const d of dialogs) {
+        if (d.entity?.id) cache.set(d.entity.id.toString(), d.entity);
+      }
+      entityCache.set(userId, cache);
+      console.log(`[telegram-personal] Entity cache warmed: ${cache.size} entities`);
+    } catch (err) {
+      console.error("[telegram-personal] Failed to warm entity cache:", err);
+    } finally {
+      warmingCache.delete(userId);
     }
-    entityCache.set(userId, cache);
-    console.log(`[telegram-personal] Entity cache warmed: ${cache.size} entities`);
-  } catch (err) {
-    console.error("[telegram-personal] Failed to warm entity cache:", err);
-  }
+  })();
+
+  warmingCache.set(userId, promise);
+  return promise;
 }
 
 // Resolve a numeric peer ID to a GramJS entity (needs access hash to actually send).
-// Tries entity cache first, warms cache on miss, then falls back to getInputEntity API call.
+// Order: local cache → warm cache → getEntity (network, always works for known contacts).
 async function resolveNumericPeer(userId: string, peer: string, client: any): Promise<any> {
+  // 1. Check local entity cache
   let cached = entityCache.get(userId)?.get(peer);
-  if (!cached) {
-    await warmEntityCache(userId, client);
-    cached = entityCache.get(userId)?.get(peer);
-  }
   if (cached) return cached;
 
-  // Final fallback: ask Telegram directly — this works for any user the account has interacted with
+  // 2. Warm cache (waits if already in progress)
+  await warmEntityCache(userId, client);
+  cached = entityCache.get(userId)?.get(peer);
+  if (cached) return cached;
+
+  // 3. Network fetch via getEntity — works for any user the account has ever interacted with
   try {
-    const entity = await client.getInputEntity(BigInt(peer));
-    // Store in cache for next time
+    const entity = await client.getEntity(peer);
     const cache = entityCache.get(userId) ?? new Map<string, any>();
     cache.set(peer, entity);
     entityCache.set(userId, cache);
     return entity;
   } catch (err) {
     console.error(`[telegram-personal] Could not resolve entity for peer ${peer}:`, err);
-    // Last resort: bare BigInt (will likely fail with "input entity" error at send time)
-    return BigInt(peer);
+    throw new Error(`Cannot find Telegram entity for peer ${peer} — try syncing Telegram in Settings.`);
   }
 }
 const pendingCodes: Map<string, { phoneCodeHash: string; phoneNumber: string }> = new Map();
@@ -472,6 +487,7 @@ export const telegramPersonalService = {
           await inboxService.upsert({
             platform: "telegram",
             externalId: `personal-${msg.id}`,
+            userId,
             contactId: contact.id,
             contactName,
             senderId: entity.id.toString(),
@@ -542,6 +558,7 @@ export const telegramPersonalService = {
             await inboxService.upsert({
               platform: "telegram",
               externalId: `personal-${msg.id}`,
+              userId,
               contactId: contact.id,
               contactName: contact.name,
               senderId: chatEntity.id.toString(),
@@ -591,10 +608,11 @@ export const telegramPersonalService = {
     let client = clients.get(userId) as any;
     if (!client) {
       try {
-        client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, { connectionRetries: 3 });
+        client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, { connectionRetries: 5 });
         await client.connect();
         clients.set(userId, client);
         telegramPersonalService._attachListener(userId, client);
+        warmEntityCache(userId, client);
       } catch (err) {
         if (isSessionExpired(err)) {
           await clearSession(userId);
@@ -608,6 +626,8 @@ export const telegramPersonalService = {
     let targetPeer: any = peer;
     if (/^-?\d+$/.test(peer)) {
       targetPeer = await resolveNumericPeer(userId, peer, client);
+    } else {
+      targetPeer = peer.replace(/^@/, "");
     }
 
     // Try to find contact by platformId (username), then by numeric senderId, then by contactId passed from the reply chain
@@ -687,10 +707,16 @@ export const telegramPersonalService = {
     let client = clients.get(userId) as any;
     if (!client) {
       try {
-        client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, { connectionRetries: 3 });
+        client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, {
+          connectionRetries: 5,
+          requestRetries: 3,
+          floodSleepThreshold: 60,
+        });
         await client.connect();
         clients.set(userId, client);
         telegramPersonalService._attachListener(userId, client);
+        // Warm entity cache in background so subsequent sends are faster
+        warmEntityCache(userId, client);
       } catch (err) {
         if (isSessionExpired(err)) {
           await clearSession(userId);
@@ -703,6 +729,9 @@ export const telegramPersonalService = {
     let targetPeer: any = peer;
     if (/^-?\d+$/.test(peer)) {
       targetPeer = await resolveNumericPeer(userId, peer, client);
+    } else {
+      // Username peer — strip leading @ for consistency
+      targetPeer = peer.replace(/^@/, "");
     }
 
     // Check if the text contains a markdown media tag
@@ -724,13 +753,53 @@ export const telegramPersonalService = {
 
     try {
       return await client.sendMessage(targetPeer, { message: text, replyTo });
-    } catch (err) {
+    } catch (err: any) {
       if (isSessionExpired(err)) {
         await clearSession(userId);
         throw new Error("Telegram session expired — go to Settings → Telegram to reconnect.");
       }
+      // TIMEOUT or connection drop — reconnect and retry once
+      const msg = err?.message ?? String(err);
+      if (msg === "TIMEOUT" || msg.includes("CONNECTION") || msg.includes("disconnect")) {
+        console.warn(`[telegram-personal] sendOnly hit ${msg} — reconnecting and retrying once`);
+        clients.delete(userId);
+        try { await client.disconnect(); } catch {}
+        const { TelegramClient: TC, StringSession: SS } = await getTelegramLib();
+        const freshClient = new TC(new SS(rec.sessionStr), rec.apiId!, rec.apiHash!, { connectionRetries: 5 });
+        await freshClient.connect();
+        clients.set(userId, freshClient);
+        return await freshClient.sendMessage(
+          /^-?\d+$/.test(peer) ? await resolveNumericPeer(userId, peer, freshClient) : peer.replace(/^@/, ""),
+          { message: text, replyTo }
+        );
+      }
       throw err;
     }
+  },
+
+  async sendReaction(userId: string, peer: string, messageId: number, emoji: string): Promise<void> {
+    // Reuse sendOnly's reconnect logic by ensuring client is alive
+    let client = clients.get(userId) as any;
+    if (!client) {
+      const { TelegramClient, StringSession } = await getTelegramLib();
+      const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+      if (!rec?.sessionStr) throw new Error("Telegram not connected");
+      client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, { connectionRetries: 5 });
+      await client.connect();
+      clients.set(userId, client);
+    }
+    const { Api } = await import("telegram");
+    let targetPeer: any = peer;
+    if (/^-?\d+$/.test(peer)) {
+      targetPeer = await resolveNumericPeer(userId, peer, client);
+    } else {
+      targetPeer = peer.replace(/^@/, "");
+    }
+    await client.invoke(new (Api as any).messages.SendReaction({
+      peer: targetPeer,
+      msgId: messageId,
+      reaction: [new (Api as any).ReactionEmoji({ emoticon: emoji })],
+    }));
   },
 
   async disconnect(userId: string) {
@@ -750,7 +819,9 @@ export const telegramPersonalService = {
         console.log(`[telegram-personal] Auto-reconnecting session for user ${session.userId}...`);
         const { TelegramClient, StringSession } = await getTelegramLib();
         const client = new TelegramClient(new StringSession(session.sessionStr), session.apiId, session.apiHash, {
-          connectionRetries: 3,
+          connectionRetries: 5,
+          requestRetries: 3,
+          floodSleepThreshold: 60,
         });
         await client.connect();
         clients.set(session.userId, client);

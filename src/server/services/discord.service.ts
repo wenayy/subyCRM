@@ -44,14 +44,14 @@ async function findContactForDiscord(author: { id: string; username: string; glo
   const username = author.username;
   const globalName = author.globalName;
 
-  const plat = await prisma.platform.findFirst({
+  const plat = await (prisma as any).platform.findFirst({
     where: {
       OR: [
         { type: "discord", platformId: discordUserId },
         { type: "discord", platformId: { equals: username, mode: "insensitive" } },
         ...(globalName ? [{ type: "discord", platformId: { equals: globalName, mode: "insensitive" } }] : []),
-        { contact: { name: { contains: username.split(" ")[0], mode: "insensitive" } } }
-      ]
+        { contact: { name: { contains: username.split(" ")[0], mode: "insensitive" } } },
+      ],
     },
     include: { contact: true },
   });
@@ -96,9 +96,13 @@ function startBot() {
           return;
         }
 
+        // Look up userId from the discord token record
+        const discordTokenRec = await (prisma as any).discordToken.findFirst();
+        const botUserId = discordTokenRec?.userId ?? "default";
         await inboxService.upsert({
           platform: "discord",
           externalId: message.id,
+          userId: botUserId,
           contactId: contact.id,
           contactName: contact.name,
           senderId: message.channelId,
@@ -251,6 +255,7 @@ export const discordService = {
               await inboxService.upsert({
                 platform: "discord",
                 externalId: msg.id,
+                userId,
                 contactId: contact.id,
                 contactName: contact.name,
                 preview: msg.content.slice(0, 120),
@@ -267,6 +272,21 @@ export const discordService = {
 
     await (prisma as any).discordToken.update({ where: { userId }, data: { lastSyncAt: new Date() } });
     return { synced };
+  },
+
+  async sendMessage(userId: string, channelId: string, text: string): Promise<void> {
+    const rec = await (prisma as any).discordToken.findUnique({ where: { userId } });
+    const botToken = rec?.botToken || process.env.DISCORD_BOT_TOKEN;
+    if (!botToken) throw new Error("Discord not connected — no bot token");
+    const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bot ${botToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ content: text }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { message?: string };
+      throw new Error(`Discord send failed: ${err.message ?? res.status}`);
+    }
   },
 
   async importContacts(userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
