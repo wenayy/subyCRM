@@ -474,10 +474,10 @@ export function InboxView() {
       </div>
 
       {/* Two-panel layout */}
-      <div className="grid flex-1 min-h-0 gap-3 [grid-template-columns:300px_1fr]">
+      <div className="grid flex-1 min-h-0 gap-3 [grid-template-columns:1fr] md:[grid-template-columns:300px_1fr]">
 
-        {/* Left: Conversation list */}
-        <div className="rounded-xl border border-border bg-card shadow-sm flex flex-col overflow-y-auto">
+        {/* Left: Conversation list — hidden on mobile when thread is open */}
+        <div className={`rounded-xl border border-border bg-card shadow-sm flex flex-col overflow-y-auto ${selected ? "hidden md:flex" : "flex"}`}>
           {loading && conversations.length === 0 ? (
             <div style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--t3)" }}>Loading…</div>
           ) : filtered.length === 0 ? (
@@ -560,8 +560,8 @@ export function InboxView() {
             }))}
         </div>
 
-        {/* Right: Thread view */}
-        <div className="rounded-xl border border-border bg-card shadow-sm flex flex-col overflow-hidden">
+        {/* Right: Thread view — hidden on mobile when no thread selected */}
+        <div className={`rounded-xl border border-border bg-card shadow-sm flex flex-col overflow-hidden ${!selected ? "hidden md:flex" : "flex"}`}>
           {!selected ? (
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 13, color: "var(--t3)" }}>
@@ -574,6 +574,12 @@ export function InboxView() {
               {/* Thread header */}
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--bd)",
                 display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                {/* Back button — mobile only */}
+                <button className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg hover:bg-muted"
+                  onClick={() => setSelected(null)}
+                  style={{ border: "none", background: "transparent", cursor: "pointer", flexShrink: 0, color: "var(--t1)", fontSize: 18 }}>
+                  ←
+                </button>
                 <div style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--al)",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 13, fontWeight: 700, color: "var(--t1)", flexShrink: 0 }}>
