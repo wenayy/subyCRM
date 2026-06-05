@@ -36,6 +36,7 @@ import linkedinRouter, { linkedinCallbackRouter } from "./routes/linkedin.routes
 import sequenceRouter from "./routes/sequence.routes";
 import pipelineRouter from "./routes/pipeline.routes";
 import telegramBotRouter from "./routes/telegram-bot.routes";
+import matrixRouter from "./routes/matrix.routes";
 
 const app = express();
 const PORT = process.env.PORT || process.env.API_PORT || 4002;
@@ -83,6 +84,7 @@ app.use("/api/slack", slackCallbackRouter);       // callback must bypass requir
 app.use("/api/x", xCallbackRouter);              // callback must bypass requireAuth
 app.use("/api/linkedin", linkedinCallbackRouter); // callback must bypass requireAuth
 app.use("/api/discord", discordCallbackRouter);   // callback must bypass requireAuth
+app.use("/api/matrix", matrixRouter);             // Matrix appservice webhook — no user auth
 
 app.use(express.json({ limit: "20mb" }));
 
