@@ -701,7 +701,7 @@ export function SettingsView() {
     if (key === "whatsapp") return whatsapp?.connected ? "connected" : "disconnected";
     if (key === "telegram_personal") return tgPersonal?.connected ? "connected" : "disconnected";
     if (key === "linkedin") return linkedin?.connected ? "connected" : "disconnected";
-    if (key === "subyassist_bot") return "connected"; // always on (bot is running)
+    if (key === "subyassist_bot") return botLink?.linked ? "connected" : "disconnected";
     return "disconnected";
   };
 
@@ -714,7 +714,7 @@ export function SettingsView() {
     if (key === "whatsapp") return whatsapp?.phoneNumber ? `+${whatsapp.phoneNumber}` : undefined;
     if (key === "telegram_personal") return tgPersonal?.phone ? tgPersonal.phone : undefined;
     if (key === "linkedin") return linkedin?.profileName ? linkedin.profileName : undefined;
-    if (key === "subyassist_bot") return "@subyassistant_bot · active";
+    if (key === "subyassist_bot") return botLink?.linked ? "@subyassistant_bot · linked" : undefined;
     return undefined;
   };
 
