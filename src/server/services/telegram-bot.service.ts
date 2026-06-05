@@ -258,9 +258,13 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   const send = (text: string) => bot!.sendMessage(chatId, text, { parse_mode: "Markdown" });
 
-  // ── Account linking ──────────────────────────────────────
-  if (msg.text?.match(/^LINK-[A-F0-9]{8}$/)) {
-    const token = msg.text.trim();
+  // ── Account linking (manual code OR /start deep link) ────
+  const linkPayload = msg.text?.match(/^LINK-[A-F0-9]{8}$/)
+    ? msg.text.trim()
+    : msg.text?.match(/^\/start (LINK-[A-F0-9]{8})$/)?.[1] ?? null;
+
+  if (linkPayload) {
+    const token = linkPayload;
     const record = await (prisma as any).telegramBotLinkToken.findUnique({ where: { token } });
     if (!record) {
       await send("❌ Invalid or expired code. Generate a new one in Settings → Voice Bot.");
@@ -281,12 +285,12 @@ async function handleMessage(msg: TelegramBot.Message) {
     return;
   }
 
-  if (msg.text?.startsWith("/start")) {
+  if (msg.text === "/start") {
     const isLinked = await (prisma as any).telegramBotLink.findUnique({ where: { chatId: String(chatId) } });
     if (isLinked) {
       await send("✅ Already linked to your CRM account. Send a voice note to get started!");
     } else {
-      await send("👋 Welcome to Suby CRM Bot!\n\nTo link your account:\n1. Open the app → *Settings → Voice Bot*\n2. Click *Generate Code*\n3. Send the code here");
+      await send("👋 Welcome to Suby CRM Bot!\n\nTo link your account, go to *Settings → Voice Assistant* in the app and click *Connect your account*.");
     }
     return;
   }

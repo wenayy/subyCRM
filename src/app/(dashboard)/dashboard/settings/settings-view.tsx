@@ -639,6 +639,7 @@ export function SettingsView() {
   const [botLink, setBotLink] = useState<{ linked: boolean; chatId: string | null; linkedAt: string | null } | null>(null);
   const [botToken, setBotToken] = useState<string | null>(null);
   const [botTokenLoading, setBotTokenLoading] = useState(false);
+  const [botPolling, setBotPolling] = useState(false);
 
   const reload = (uid: string | undefined) => {
     calendarApi.status()
@@ -691,6 +692,26 @@ export function SettingsView() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
+
+  // Poll for bot link confirmation after token is generated
+  useEffect(() => {
+    if (!botToken || botLink?.linked) return;
+    setBotPolling(true);
+    const interval = setInterval(async () => {
+      try {
+        const status = await telegramBotApi.status();
+        if (status.linked) {
+          setBotLink(status);
+          setBotToken(null);
+          setBotPolling(false);
+          clearInterval(interval);
+        }
+      } catch { /* ignore */ }
+    }, 2500);
+    const timeout = setTimeout(() => { clearInterval(interval); setBotPolling(false); }, 15 * 60 * 1000);
+    return () => { clearInterval(interval); clearTimeout(timeout); setBotPolling(false); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [botToken]);
 
   const statusFor = (key: string): Status => {
     if (key === "google_calendar") return gcal?.connected ? "connected" : "disconnected";
@@ -923,12 +944,24 @@ export function SettingsView() {
                       )}
                       {botToken && !botLink?.linked && (
                         <div style={{ marginTop: 4, padding: "10px 12px", borderRadius: "var(--r)", background: "var(--al)", border: "1px solid var(--bd)", minWidth: 260 }}>
-                          <div style={{ fontSize: 11, color: "var(--t2)", marginBottom: 4 }}>Send this to <strong>@subyassistant_bot</strong>:</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <code style={{ fontSize: 16, fontWeight: 700, letterSpacing: 2, color: "var(--pc)", fontFamily: "monospace", flex: 1 }}>{botToken}</code>
-                            <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(botToken)}>Copy</Button>
+                          <a
+                            href={`https://t.me/subyassistant_bot?start=${botToken}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                              padding: "8px 14px", borderRadius: "var(--r)", background: "#229ED9",
+                              color: "#fff", fontWeight: 600, fontSize: 13, textDecoration: "none",
+                            }}
+                          >
+                            Open Telegram to connect
+                          </a>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+                            {botPolling && <Spinner />}
+                            <span style={{ fontSize: 10, color: "var(--t3)" }}>
+                              {botPolling ? "Waiting for confirmation…" : "Expires in 15 min."}
+                            </span>
                           </div>
-                          <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Expires in 15 min. Refresh after sending.</div>
                         </div>
                       )}
                     </div>
