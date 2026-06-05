@@ -8,8 +8,8 @@ const nextConfig: NextConfig = {
   // domain as the frontend — eliminates cross-domain state_mismatch entirely.
   rewrites: async () => [
     {
-      source: "/api/auth/:path*",
-      destination: `${validApiUrl}/api/auth/:path*`,
+      source: "/api/:path*",
+      destination: `${validApiUrl}/api/:path*`,
     },
   ],
   headers: async () => {
