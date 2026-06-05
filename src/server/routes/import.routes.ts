@@ -14,10 +14,12 @@ prisma.importJob.updateMany({
   data: { status: "failed", errorLog: { error: "Interrupted by server restart" }, completedAt: new Date() },
 }).catch(() => {});
 
-// GET /api/imports — list all import jobs
-router.get("/", async (_req, res, next) => {
+// GET /api/imports — list import jobs for current user
+router.get("/", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const jobs = await prisma.importJob.findMany({
+      where: { userId },
       orderBy: { createdAt: "desc" },
     });
     res.json(jobs);
@@ -73,10 +75,11 @@ router.post("/manual", async (req, res, next) => {
 });
 
 // POST /api/imports/beeper — trigger Beeper import
-router.post("/beeper", async (_req, res, next) => {
+router.post("/beeper", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const job = await prisma.importJob.create({
-      data: { source: "beeper", status: "running", startedAt: new Date() },
+      data: { userId, source: "beeper", status: "running", startedAt: new Date() },
     });
     res.json({ status: "started", jobId: job.id });
     importService.runBeeperImport(job.id).catch(console.error);
@@ -98,8 +101,9 @@ router.post("/telegram", async (req, res, next) => {
       return;
     }
 
+    const userId = res.locals.session?.user?.id ?? "default";
     const job = await prisma.importJob.create({
-      data: { source: "telegram_api", status: "running", startedAt: new Date() },
+      data: { userId, source: "telegram_api", status: "running", startedAt: new Date() },
     });
 
     res.json({ status: "started", jobId: job.id });
@@ -144,7 +148,7 @@ router.post("/discord", async (req, res, next) => {
     }
 
     const job = await prisma.importJob.create({
-      data: { source: "discord_api", status: "running", startedAt: new Date() },
+      data: { userId, source: "discord_api", status: "running", startedAt: new Date() },
     });
 
     res.json({ status: "started", jobId: job.id });
@@ -189,7 +193,7 @@ router.post("/whatsapp", async (req, res, next) => {
     }
 
     const job = await prisma.importJob.create({
-      data: { source: "whatsapp_export", status: "running", startedAt: new Date() },
+      data: { userId, source: "whatsapp_export", status: "running", startedAt: new Date() },
     });
 
     res.json({ status: "started", jobId: job.id });

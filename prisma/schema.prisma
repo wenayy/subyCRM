@@ -305,6 +305,7 @@ model ContactTag {
 
 model ImportJob {
   id           String          @id @default(uuid())
+  userId       String          @default("default") @map("user_id")
   source       ImportSource
   status       ImportJobStatus @default(pending)
   totalFound   Int?            @map("total_found")
@@ -317,6 +318,7 @@ model ImportJob {
   completedAt  DateTime?       @map("completed_at")
   createdAt    DateTime        @default(now()) @map("created_at")
 
+  @@index([userId])
   @@index([status])
   @@index([createdAt])
   @@map("import_jobs")
