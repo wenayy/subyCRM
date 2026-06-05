@@ -122,10 +122,10 @@ router.post("/prep/:id", async (req, res, next) => {
 });
 
 // ── GET /api/ai/alerts ────────────────────────────────────────────────────────
-// Still synchronous (uses its own in-memory cache in ai.service)
-router.get("/alerts", async (_req, res, next) => {
+router.get("/alerts", async (req, res, next) => {
   try {
-    const alerts = await aiService.getAlerts();
+    const userId = res.locals.session?.user?.id ?? "default";
+    const alerts = await aiService.getAlerts(userId);
     res.json(alerts);
   } catch (err) {
     next(err);

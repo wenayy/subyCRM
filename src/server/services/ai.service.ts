@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { prisma } from "../lib/prisma";
+import { cache } from "../lib/cache";
 
 let _openai: OpenAI | null = null;
 function getOpenAI() {
@@ -8,10 +9,9 @@ function getOpenAI() {
 }
 const MODEL = "gpt-4o-mini";
 
-// Cache alerts result for 5 min — prevents a GPT call on every dashboard load
 type AlertItem = { type: string; contactId: string; contactName: string; reason: string; urgency: "high" | "medium" | "low"; draftMessage: string; channel: string | null; channelHandle: string | null };
-let alertsCache: { data: AlertItem[]; ts: number } | null = null;
-const ALERTS_TTL = 5 * 60_000;
+const ALERTS_CACHE_KEY = (userId: string) => `alerts:${userId}`;
+const ALERTS_TTL_SECONDS = 4 * 60 * 60; // 4 hours — stale contacts don't change minute to minute
 
 interface ClassifyResult { type: string; domain: string; confidence: number; }
 interface ContactForAI {
@@ -197,25 +197,28 @@ Return a JSON object with this exact structure:
     return JSON.parse(res.choices[0].message.content ?? "{}");
   },
 
-  async getAlerts(): Promise<AlertItem[]> {
+  async getAlerts(userId: string): Promise<AlertItem[]> {
+    const cacheKey = ALERTS_CACHE_KEY(userId);
+    const cached = await cache.get<AlertItem[]>(cacheKey).catch(() => null);
+    if (cached) return cached;
+
     const now = Date.now();
-    if (alertsCache && now - alertsCache.ts < ALERTS_TTL) return alertsCache.data;
     const thirtyDays = 30 * 86400_000;
     const fourteenDays = 14 * 86400_000;
 
     const [staleVCs, coolingHot, stalePartners] = await Promise.all([
       prisma.contact.findMany({
-        where: { type: "vc", lastContactDate: { lt: new Date(now - thirtyDays) } },
+        where: { userId, type: "vc", lastContactDate: { lt: new Date(now - thirtyDays) } },
         include: { platforms: true, notes: { orderBy: { createdAt: "desc" }, take: 2 } },
         orderBy: { lastContactDate: "asc" }, take: 5,
       }),
       prisma.contact.findMany({
-        where: { relationshipStrength: "hot", lastContactDate: { lt: new Date(now - fourteenDays) } },
+        where: { userId, relationshipStrength: "hot", lastContactDate: { lt: new Date(now - fourteenDays) } },
         include: { platforms: true, notes: { orderBy: { createdAt: "desc" }, take: 2 } },
         take: 5,
       }),
       prisma.contact.findMany({
-        where: { type: "partner", lastContactDate: { lt: new Date(now - thirtyDays) } },
+        where: { userId, type: "partner", lastContactDate: { lt: new Date(now - thirtyDays) } },
         include: { platforms: true, notes: { orderBy: { createdAt: "desc" }, take: 2 } },
         orderBy: { lastContactDate: "asc" }, take: 3,
       }),
@@ -234,7 +237,10 @@ Return a JSON object with this exact structure:
       ...stalePartners.map((c) => ({ id: c.id, name: c.name, company: c.company, role: c.role, type: "partner", daysSince: daysSince(c.lastContactDate), lastNote: c.notes[0]?.content ?? null, urgency: "medium" as const })),
     ];
 
-    if (contactsForGPT.length === 0) { alertsCache = { data: [], ts: Date.now() }; return []; }
+    if (contactsForGPT.length === 0) {
+      await cache.set(cacheKey, [], ALERTS_TTL_SECONDS).catch(() => {});
+      return [];
+    }
 
     // Single GPT call to generate all draft messages + reasons
     const gptRes = await getOpenAI().chat.completions.create({
@@ -287,7 +293,7 @@ Return JSON: { "items": [{ "id": "<contact id>", "reason": "<short reason>", "dr
           channelHandle: handle,
         };
       });
-    alertsCache = { data: result, ts: Date.now() };
+    await cache.set(cacheKey, result, ALERTS_TTL_SECONDS).catch(() => {});
     return result;
   },
 };
