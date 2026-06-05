@@ -1,6 +1,6 @@
 import type { Contact, ContactStats, Tag, ImportJob, Company, Reminder } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
+const API_BASE = "";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

@@ -210,7 +210,7 @@ export function InboxView() {
     });
 
     // SSE for real-time push — conversations + active thread refresh on new messages
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
+    const API_BASE = "";
     const es = new EventSource(`${API_BASE}/api/inbox/events`, { withCredentials: true });
 
     es.addEventListener("new_message", (e) => {

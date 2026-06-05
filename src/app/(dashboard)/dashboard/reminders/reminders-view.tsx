@@ -84,7 +84,7 @@ function lastChannel(contact: Contact | null): PlatformType | null {
   return contact.platforms?.[0]?.type || null;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
+const API_BASE = "";
 
 export function RemindersView() {
   const [reminders, setReminders] = useState<Reminder[]>([]);
