@@ -288,6 +288,17 @@ app.listen(PORT, async () => {
     { repeat: { cron: "*/15 * * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
   console.log("[server] Discord sync scheduled every 15 minutes");
+
+  // ── BullMQ: LinkedIn sync every 15 minutes ─────────────────
+  await queues.linkedinSync
+    .removeRepeatable("linkedin-sync", { cron: "*/15 * * * *" })
+    .catch(() => {});
+  await queues.linkedinSync.add(
+    "linkedin-sync",
+    {},
+    { repeat: { cron: "*/15 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+  );
+  console.log("[server] LinkedIn sync scheduled every 15 minutes");
 });
 
 export default app;

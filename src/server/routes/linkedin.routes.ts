@@ -43,4 +43,25 @@ router.delete("/disconnect", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.post("/cookie", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { liAt, jsessionId } = req.body as { liAt: string; jsessionId?: string };
+    if (!liAt?.trim()) {
+      res.status(400).json({ error: "li_at cookie is required" });
+      return;
+    }
+    await linkedinService.saveCookie(userId, liAt.trim(), jsessionId?.trim());
+    linkedinService.syncMessages(userId).catch(console.error);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+router.post("/sync", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    res.json(await linkedinService.syncMessages(userId));
+  } catch (err) { next(err); }
+});
+
 export default router;

@@ -378,10 +378,12 @@ export const slackApi = {
 
 // ─── X/Twitter API ─────────────────────────────────────────
 export const xApi = {
-  status: () => apiFetch<{ connected: boolean; lastSync: string | null; screenName?: string; hasEnvCreds?: boolean }>("/api/x/status"),
+  status: () => apiFetch<{ connected: boolean; lastSync: string | null; screenName?: string; hasEnvCreds?: boolean; hasCookie?: boolean }>("/api/x/status"),
   connectUrl: () => apiFetch<{ url: string }>("/api/x/connect-url"),
   connect: (data: { accessToken: string; accessTokenSecret: string; apiKey?: string; apiSecret?: string }) =>
     apiFetch<{ connected: boolean; screenName?: string }>("/api/x/connect", { method: "POST", body: JSON.stringify(data) }),
+  saveCookie: (data: { authToken: string; ct0: string }) =>
+    apiFetch<{ connected: boolean; screenName: string }>("/api/x/cookie", { method: "POST", body: JSON.stringify(data) }),
   sync: () => apiFetch<{ synced: number }>("/api/x/sync", { method: "POST" }),
   disconnect: () => apiFetch<{ ok: boolean }>("/api/x/disconnect", { method: "DELETE" }),
 };
@@ -420,8 +422,11 @@ export const telegramPersonalApi = {
 
 // ─── LinkedIn API ───────────────────────────────────────────
 export const linkedinApi = {
-  status: () => apiFetch<{ connected: boolean; profileName: string | null }>("/api/linkedin/status"),
+  status: () => apiFetch<{ connected: boolean; profileName: string | null; hasCookie?: boolean; lastSync?: string | null }>("/api/linkedin/status"),
   connectUrl: () => apiFetch<{ url: string }>("/api/linkedin/connect-url"),
+  saveCookie: (data: { liAt: string; jsessionId?: string }) =>
+    apiFetch<{ ok: boolean }>("/api/linkedin/cookie", { method: "POST", body: JSON.stringify(data) }),
+  sync: () => apiFetch<{ synced: number }>("/api/linkedin/sync", { method: "POST" }),
   disconnect: () => apiFetch<{ ok: boolean }>("/api/linkedin/disconnect", { method: "DELETE" }),
 };
 

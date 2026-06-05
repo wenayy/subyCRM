@@ -140,86 +140,96 @@ function DiscordModal({ onConnect, onClose }: { onConnect: (token: string) => Pr
   );
 }
 
-function XModal({ hasEnvCreds, onConnect, onClose }: {
-  hasEnvCreds?: boolean;
-  onConnect: (d: { accessToken: string; accessTokenSecret: string; apiKey?: string; apiSecret?: string }) => Promise<void>;
+function XCookieModal({ onConnect, onClose }: {
+  onConnect: (d: { authToken: string; ct0: string }) => Promise<void>;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState({ apiKey: "", apiSecret: "", accessToken: "", accessTokenSecret: "" });
+  const [form, setForm] = useState({ authToken: "", ct0: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
-  
+
   const submit = async () => {
-    if (!form.accessToken || !form.accessTokenSecret) { setError("Access token and secret required"); return; }
-    if (!hasEnvCreds && (!form.apiKey || !form.apiSecret)) { setError("API Key and Secret required"); return; }
-    
+    if (!form.authToken.trim() || !form.ct0.trim()) { setError("Both cookies are required"); return; }
     setLoading(true); setError("");
-    try {
-      await onConnect({
-        accessToken: form.accessToken.trim(),
-        accessTokenSecret: form.accessTokenSecret.trim(),
-        ...(hasEnvCreds ? {} : { apiKey: form.apiKey.trim(), apiSecret: form.apiSecret.trim() }),
-      });
-      onClose();
-    }
+    try { await onConnect({ authToken: form.authToken.trim(), ct0: form.ct0.trim() }); onClose(); }
     catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed"); }
     finally { setLoading(false); }
   };
 
   return (
     <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-[400px] rounded-2xl p-6">
+      <DialogContent className="max-w-[420px] rounded-2xl p-6">
         <DialogHeader>
           <DialogTitle className="text-lg font-bold text-foreground">Connect X / Twitter</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 py-2">
-          {hasEnvCreds ? (
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              API credentials are pre-configured on the server. Please enter your account <strong>Access Token</strong> and <strong>Access Token Secret</strong> from <strong>developer.twitter.com</strong> (Keys and Tokens) to connect:
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground leading-normal">
-              Get API keys from <strong>developer.twitter.com</strong> → Your App → Keys and Tokens
-            </p>
-          )}
-
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Open <strong>twitter.com</strong> → DevTools (F12) → <strong>Application</strong> → Cookies → <strong>twitter.com</strong>. Copy the values for <code>auth_token</code> and <code>ct0</code>:
+          </p>
           <div className="space-y-3">
-            {!hasEnvCreds && (
-              <>
-                <input
-                  value={form.apiKey}
-                  onChange={set("apiKey")}
-                  placeholder="API Key"
-                  className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60"
-                />
-                <input
-                  value={form.apiSecret}
-                  onChange={set("apiSecret")}
-                  placeholder="API Secret"
-                  className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60"
-                />
-              </>
-            )}
-            <input
-              value={form.accessToken}
-              onChange={set("accessToken")}
-              placeholder="Access Token"
-              className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60"
-            />
-            <input
-              value={form.accessTokenSecret}
-              onChange={set("accessTokenSecret")}
-              placeholder="Access Token Secret"
-              className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60"
-            />
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">auth_token</label>
+              <input value={form.authToken} onChange={set("authToken")} placeholder="Paste auth_token cookie value" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">ct0</label>
+              <input value={form.ct0} onChange={set("ct0")} placeholder="Paste ct0 cookie value" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+            </div>
           </div>
           {error && <p className="text-status-red text-xs mt-1 bg-status-red/10 px-3 py-1.5 rounded-lg font-medium">{error}</p>}
         </div>
         <div className="flex gap-2.5 justify-end mt-2">
-          <Button size="sm" variant="outline" className="rounded-xl px-4" onClick={onClose}>Cancel</Button>
-          <Button size="sm" className="rounded-xl px-4" onClick={submit} disabled={loading}>{loading && <Spinner />}{loading ? "Connecting…" : "Connect"}</Button>
+          <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={submit} disabled={loading || !form.authToken.trim() || !form.ct0.trim()}>{loading && <Spinner />}{loading ? "Connecting…" : "Connect"}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function LinkedInCookieModal({ onConnect, onClose }: {
+  onConnect: (d: { liAt: string; jsessionId?: string }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState({ liAt: "", jsessionId: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const submit = async () => {
+    if (!form.liAt.trim()) { setError("li_at cookie is required"); return; }
+    setLoading(true); setError("");
+    try { await onConnect({ liAt: form.liAt.trim(), jsessionId: form.jsessionId.trim() || undefined }); onClose(); }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed"); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-[420px] rounded-2xl p-6">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-bold text-foreground">Connect LinkedIn</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 py-2">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Open <strong>linkedin.com</strong> → DevTools (F12) → <strong>Application</strong> → Cookies → <strong>linkedin.com</strong>. Copy the values for <code>li_at</code> and <code>JSESSIONID</code>:
+          </p>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">li_at <span className="text-status-red">*</span></label>
+              <input value={form.liAt} onChange={set("liAt")} placeholder="Paste li_at cookie value" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">JSESSIONID <span className="text-xs text-muted-foreground/60">(optional but recommended)</span></label>
+              <input value={form.jsessionId} onChange={set("jsessionId")} placeholder="Paste JSESSIONID cookie value" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+            </div>
+          </div>
+          {error && <p className="text-status-red text-xs mt-1 bg-status-red/10 px-3 py-1.5 rounded-lg font-medium">{error}</p>}
+        </div>
+        <div className="flex gap-2.5 justify-end mt-2">
+          <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={submit} disabled={loading || !form.liAt.trim()}>{loading && <Spinner />}{loading ? "Connecting…" : "Connect"}</Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -602,7 +612,7 @@ type CachedStatuses = {
   xStatus?: { connected: boolean; lastSync: string | null; screenName?: string; hasEnvCreds?: boolean };
   whatsapp?: { connected: boolean; phoneNumber: string | null };
   tgPersonal?: { connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean };
-  linkedin?: { connected: boolean; profileName: string | null };
+  linkedin?: { connected: boolean; profileName: string | null; hasCookie?: boolean; lastSync?: string | null };
 };
 
 function cacheKey(userId: string | undefined) {
@@ -635,7 +645,7 @@ export function SettingsView() {
   const [xStatus, setXStatus] = useState<{ connected: boolean; lastSync: string | null; screenName?: string; hasEnvCreds?: boolean } | null>(null);
   const [whatsapp, setWhatsapp] = useState<{ connected: boolean; phoneNumber: string | null } | null>(null);
   const [tgPersonal, setTgPersonal] = useState<{ connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean } | null>(null);
-  const [linkedin, setLinkedin] = useState<{ connected: boolean; profileName: string | null } | null>(null);
+  const [linkedin, setLinkedin] = useState<{ connected: boolean; profileName: string | null; hasCookie?: boolean; lastSync?: string | null } | null>(null);
   const [botLink, setBotLink] = useState<{ linked: boolean; chatId: string | null; linkedAt: string | null } | null>(null);
   const [botToken, setBotToken] = useState<string | null>(null);
   const [botTokenLoading, setBotTokenLoading] = useState(false);
@@ -734,7 +744,11 @@ export function SettingsView() {
     if (key === "x") return xStatus?.screenName ? `@${xStatus.screenName}` : undefined;
     if (key === "whatsapp") return whatsapp?.phoneNumber ? `+${whatsapp.phoneNumber}` : undefined;
     if (key === "telegram_personal") return tgPersonal?.phone ? tgPersonal.phone : undefined;
-    if (key === "linkedin") return linkedin?.profileName ? linkedin.profileName : undefined;
+    if (key === "linkedin") {
+      if (linkedin?.profileName) return linkedin.profileName;
+      if (linkedin?.lastSync) return `Last synced ${new Date(linkedin.lastSync).toLocaleString()}`;
+      return undefined;
+    }
     if (key === "subyassist_bot") return botLink?.linked ? "@subyassistant_bot · linked" : undefined;
     return undefined;
   };
@@ -772,6 +786,13 @@ export function SettingsView() {
     finally { setSyncing(null); }
   };
 
+  const syncLinkedIn = async () => {
+    setSyncing("linkedin");
+    try { await linkedinApi.sync(); reload(userId); }
+    catch (e: any) { alert(`LinkedIn sync failed: ${e.message || "Unknown error"}`); }
+    finally { setSyncing(null); }
+  };
+
   const syncTelegram = async (deep = false) => {
     setSyncing("telegram_personal");
     try {
@@ -799,7 +820,7 @@ export function SettingsView() {
         else if (key === "x") { await xApi.disconnect(); setXStatus({ connected: false, lastSync: null }); }
         else if (key === "whatsapp") { await whatsappApi.disconnect(); setWhatsapp({ connected: false, phoneNumber: null }); }
         else if (key === "telegram_personal") { await telegramPersonalApi.disconnect(); setTgPersonal({ connected: false, lastSync: null }); }
-        else if (key === "linkedin") { await linkedinApi.disconnect(); setLinkedin({ connected: false, profileName: null }); }
+        else if (key === "linkedin") { await linkedinApi.disconnect(); setLinkedin({ connected: false, profileName: null, hasCookie: false, lastSync: null }); }
       } catch { /* ignore */ }
       finally { setPending(null); }
       return;
@@ -819,16 +840,9 @@ export function SettingsView() {
       try { const { url } = await slackApi.connectUrl(); window.location.href = url; }
       catch { setPending(null); }
     } else if (key === "x") {
-      setPending(key);
-      try { const { url } = await xApi.connectUrl(); window.location.href = url; }
-      catch (e: any) {
-        setPending(null);
-        alert(`Failed to start Twitter login: ${e.message || "Unknown error"}.\n\nTo fix this, please ensure:\n1. X_CONSUMER_KEY and X_CONSUMER_SECRET are correct in your .env.local.\n2. In your Twitter Developer App settings, "User authentication settings" is enabled, OAuth 1.0a is turned on, and Callback URL is set to "http://localhost:4002/api/x/callback".`);
-      }
+      setModal("x");
     } else if (key === "linkedin") {
-      setPending(key);
-      try { const { url } = await linkedinApi.connectUrl(); window.location.href = url; }
-      catch { setPending(null); }
+      setModal("linkedin_cookie");
     } else if (key === "discord") {
       setPending(key);
       try { const { url } = await discordApi.connectUrl(); window.location.href = url; }
@@ -905,6 +919,11 @@ export function SettingsView() {
                       {k === "discord" && isConnected && (
                         <Button size="sm" variant="outline" onClick={syncDiscord} disabled={syncing === "discord"} className="min-w-[70px]">
                           {syncing === "discord" && <Spinner />}{syncing === "discord" ? "Syncing…" : "Sync"}
+                        </Button>
+                      )}
+                      {k === "linkedin" && isConnected && (
+                        <Button size="sm" variant="outline" onClick={syncLinkedIn} disabled={syncing === "linkedin"} className="min-w-[70px]">
+                          {syncing === "linkedin" && <Spinner />}{syncing === "linkedin" ? "Syncing…" : "Sync"}
                         </Button>
                       )}
                       {k === "telegram_personal" && isConnected && (
@@ -1001,9 +1020,14 @@ export function SettingsView() {
         />
       )}
       {modal === "x" && (
-        <XModal
-          hasEnvCreds={xStatus?.hasEnvCreds}
-          onConnect={async (d) => { await xApi.connect(d); reload(userId); }}
+        <XCookieModal
+          onConnect={async (d) => { await xApi.saveCookie(d); reload(userId); }}
+          onClose={() => { setModal(null); reload(userId); }}
+        />
+      )}
+      {modal === "linkedin_cookie" && (
+        <LinkedInCookieModal
+          onConnect={async (d) => { await linkedinApi.saveCookie(d); reload(userId); }}
           onClose={() => { setModal(null); reload(userId); }}
         />
       )}

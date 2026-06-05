@@ -35,6 +35,20 @@ router.get("/connect-url", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.post("/cookie", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { authToken, ct0 } = req.body as { authToken: string; ct0: string };
+    if (!authToken?.trim() || !ct0?.trim()) {
+      res.status(400).json({ error: "auth_token and ct0 are required" });
+      return;
+    }
+    const result = await xService.saveCookie(userId, authToken.trim(), ct0.trim());
+    xService.syncWithCookie(userId).catch(console.error);
+    res.json({ connected: true, screenName: result.screenName });
+  } catch (err) { next(err); }
+});
+
 // Legacy manual credentials (kept as fallback)
 router.post("/connect", async (req, res, next) => {
   try {

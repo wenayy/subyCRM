@@ -15,6 +15,7 @@ export const QUEUE_NAMES = {
   SLACK_SYNC: "slack-sync",
   DISCORD_SYNC: "discord-sync",
   CSV_IMPORT: "csv-import",
+  LINKEDIN_SYNC: "linkedin-sync",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -33,6 +34,7 @@ export const queues = {
   slackSync: new Queue(QUEUE_NAMES.SLACK_SYNC, redisConnection),
   discordSync: new Queue(QUEUE_NAMES.DISCORD_SYNC, redisConnection),
   csvImport: new Queue(QUEUE_NAMES.CSV_IMPORT, redisConnection),
+  linkedinSync: new Queue(QUEUE_NAMES.LINKEDIN_SYNC, redisConnection),
 };
 
 /** Default job options for all queues */

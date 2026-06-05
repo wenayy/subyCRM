@@ -101,8 +101,14 @@ export const linkedinService = {
 
   async getStatus(userId: string) {
     const rec = await (prisma as any).linkedInToken.findUnique({ where: { userId } }).catch(() => null);
-    if (!rec) return { connected: false, profileName: null };
-    return { connected: true, profileName: rec.profileName };
+    if (!rec) return { connected: false, profileName: null, hasCookie: false, lastSync: null };
+    const hasCookie = !!rec.liAtCookie;
+    return {
+      connected: !!(rec.profileId || hasCookie),
+      profileName: rec.profileName,
+      hasCookie,
+      lastSync: rec.lastSyncAt?.toISOString() ?? null,
+    };
   },
 
   async disconnect(userId: string) {

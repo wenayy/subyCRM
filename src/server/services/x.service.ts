@@ -3,6 +3,26 @@ import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
 import { TwitterApi } from "twitter-api-v2";
 
+const TWITTER_BEARER = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
+
+async function twitterFetch(path: string, authToken: string, ct0: string) {
+  return fetch(`https://twitter.com${path}`, {
+    headers: {
+      authorization: `Bearer ${TWITTER_BEARER}`,
+      cookie: `auth_token=${authToken}; ct0=${ct0}`,
+      "x-csrf-token": ct0,
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "x-twitter-auth-type": "OAuth2Session",
+      "x-twitter-active-user": "yes",
+      "x-twitter-client-language": "en",
+      accept: "application/json",
+      "accept-language": "en-US,en;q=0.9",
+      referer: "https://twitter.com/messages",
+      origin: "https://twitter.com",
+    },
+  });
+}
+
 const CONSUMER_KEY = process.env.X_CONSUMER_KEY || "";
 const CONSUMER_SECRET = process.env.X_CONSUMER_SECRET || "";
 const CALLBACK_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/x/callback`;
@@ -51,8 +71,9 @@ export const xService = {
   async getStatus(userId: string) {
     const rec = await (prisma as any).xToken.findUnique({ where: { userId } });
     const hasEnvCreds = !!(CONSUMER_KEY && CONSUMER_SECRET);
-    if (!rec) return { connected: false, lastSync: null, hasEnvCreds };
-    return { connected: true, lastSync: rec.lastSyncAt?.toISOString() ?? null, screenName: rec.screenName, hasEnvCreds };
+    if (!rec) return { connected: false, lastSync: null, hasEnvCreds, hasCookie: false };
+    const hasCookie = !!(rec.cookieAuthToken && rec.cookieCt0);
+    return { connected: !!(rec.screenName || hasCookie), lastSync: rec.lastSyncAt?.toISOString() ?? null, screenName: rec.screenName, hasEnvCreds, hasCookie };
   },
 
   async saveCredentials(userId: string, data: {
@@ -99,9 +120,112 @@ export const xService = {
     await (prisma as any).xToken.deleteMany({ where: { userId } });
   },
 
+  async saveCookie(userId: string, authToken: string, ct0: string): Promise<{ screenName: string }> {
+    // Verify cookies are valid
+    const meRes = await twitterFetch("/i/api/1.1/account/verify_credentials.json?include_email=false&skip_status=true", authToken, ct0);
+    if (!meRes.ok) {
+      if (meRes.status === 401 || meRes.status === 403) throw new Error("Invalid or expired cookies. Make sure you copied auth_token and ct0 correctly.");
+      throw new Error(`Twitter returned ${meRes.status} — try refreshing twitter.com and copying fresh cookies.`);
+    }
+    const me = await meRes.json() as any;
+    const screenName: string = me.screen_name ?? "unknown";
+    const myUserId: string = me.id_str ?? "";
+
+    await (prisma as any).xToken.upsert({
+      where: { userId },
+      create: { userId, accessToken: "", accessTokenSecret: "", screenName, myUserId, cookieAuthToken: authToken, cookieCt0: ct0 },
+      update: { screenName, myUserId, cookieAuthToken: authToken, cookieCt0: ct0 },
+    });
+    return { screenName };
+  },
+
+  async syncWithCookie(userId: string): Promise<{ synced: number }> {
+    const rec = await (prisma as any).xToken.findUnique({ where: { userId } });
+    if (!rec?.cookieAuthToken || !rec?.cookieCt0) throw new Error("X cookies not saved");
+
+    const { cookieAuthToken: authToken, cookieCt0: ct0, myUserId } = rec;
+    const cutoff = rec.lastSyncAt ? new Date(rec.lastSyncAt).getTime() : Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+    const inboxRes = await twitterFetch(
+      "/i/api/1.1/dm/inbox_initial_state.json?filter_by_folder=default&dm_users=false&include_groups=true&include_inbox_timelines=true&supports_reactions=true&include_conversation_info=true",
+      authToken, ct0,
+    );
+    if (!inboxRes.ok) {
+      if (inboxRes.status === 401 || inboxRes.status === 403) {
+        await (prisma as any).xToken.update({ where: { userId }, data: { cookieAuthToken: null, cookieCt0: null } });
+        throw new Error("X cookies expired — please reconnect");
+      }
+      throw new Error(`X inbox fetch failed: ${inboxRes.status}`);
+    }
+
+    const data = await inboxRes.json() as any;
+    const state = data.inbox_initial_state ?? {};
+    const usersMap: Record<string, any> = state.users ?? {};
+    const entries: any[] = state.entries ?? [];
+
+    let synced = 0;
+    for (const entry of entries) {
+      const md = entry.message?.data?.message_data;
+      if (!md?.text || !md.id) continue;
+
+      const createdAt = new Date(Number(md.time));
+      if (createdAt.getTime() < cutoff) continue;
+
+      const senderId: string = md.sender_id ?? "";
+      const isFromMe = senderId === myUserId;
+      const otherUserId = isFromMe ? md.recipient_id : senderId;
+      const otherUser = usersMap[otherUserId];
+      const screenName: string | undefined = otherUser?.screen_name;
+
+      let contactId: string | null = null;
+      let contactName: string = otherUser?.name ?? screenName ?? otherUserId;
+
+      if (screenName || otherUserId) {
+        const platform = await prisma.platform.findFirst({
+          where: {
+            type: "x",
+            OR: [
+              ...(screenName ? [{ platformId: screenName }] : []),
+              { platformId: otherUserId },
+            ],
+          },
+        });
+        if (platform) {
+          contactId = platform.contactId;
+          const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+          if (contact) contactName = contact.name;
+        }
+      }
+
+      await inboxService.upsert({
+        platform: "x",
+        externalId: md.id,
+        userId,
+        contactId,
+        contactName,
+        senderId: otherUserId,
+        preview: md.text.slice(0, 120),
+        body: md.text,
+        receivedAt: createdAt,
+        needsReply: !isFromMe,
+        fromMe: isFromMe,
+      });
+      synced++;
+    }
+
+    await (prisma as any).xToken.update({ where: { userId }, data: { lastSyncAt: new Date() } });
+    return { synced };
+  },
+
   async sync(userId: string): Promise<{ synced: number }> {
     const rec = await (prisma as any).xToken.findUnique({ where: { userId } });
     if (!rec) throw new Error("X not connected");
+
+    // Prefer cookie-based sync (no API plan needed)
+    if (rec.cookieAuthToken && rec.cookieCt0) {
+      return xService.syncWithCookie(userId);
+    }
+    // Fall back to official API (requires $100/mo Basic plan)
 
     const [apiKey, apiSecret, accessToken] = rec.accessToken.split(":");
     const accessTokenSecret = rec.accessTokenSecret;
