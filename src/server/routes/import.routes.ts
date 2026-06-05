@@ -261,88 +261,114 @@ router.post("/csv", async (req, res, next) => {
     (async () => {
       let imported = 0, skipped = 0, errors = 0;
       const errorMessages: string[] = [];
+
+      // Parse all rows first
+      type ParsedRow = { name: string; email: string; company: string; role: string; linkedin: string; twitter: string; notes: string; tags: string };
+      const parsed: ParsedRow[] = [];
       for (let i = 1; i < lines.length; i++) {
-        try {
-          // Basic CSV split (handles simple cases — no quoted commas)
-          const row = lines[i].split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
-          const name = col(row, "name", "full_name", "fullname", "contact_name");
-          if (!name) { skipped++; continue; }
-
-          const email    = col(row, "email", "email_address");
-          const company  = col(row, "company", "company_name", "organization");
-          const role     = col(row, "role", "title", "job_title", "position");
-          const linkedin = col(row, "linkedin", "linkedin_url", "linkedin_profile");
-          const twitter  = col(row, "twitter", "x", "x_handle", "twitter_handle");
-          const notes    = col(row, "notes", "note", "description");
-          const tags     = col(row, "tags", "tag", "labels");
-
-          // Check for duplicate by name + userId
-          const existing = await prisma.contact.findFirst({
-            where: { userId, name: { equals: name, mode: "insensitive" } },
-          });
-          if (existing) { skipped++; continue; }
-
-          const contact = await prisma.contact.create({
-            data: {
-              userId,
-              name,
-              company: company || null,
-              role: role || null,
-              type: "other",
-              domain: "other",
-              relationshipStrength: "cold",
-            },
-          });
-
-          if (email) {
-            await prisma.platform.create({
-              data: { contactId: contact.id, type: "email", platformId: email, displayName: name },
-            }).catch(() => {});
-          }
-
-          if (linkedin) {
-            const slug = linkedin.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? linkedin;
-            await prisma.platform.create({
-              data: { contactId: contact.id, type: "linkedin", platformId: slug, profileUrl: linkedin.startsWith("http") ? linkedin : `https://www.linkedin.com/in/${slug}`, displayName: name },
-            }).catch(() => {});
-          }
-
-          if (twitter) {
-            const handle = twitter.replace(/^@/, "").replace(/.*(?:twitter|x)\.com\//, "");
-            await prisma.platform.create({
-              data: { contactId: contact.id, type: "x", platformId: handle, profileUrl: `https://x.com/${handle}`, displayName: handle },
-            }).catch(() => {});
-          }
-
-          if (notes) {
-            await prisma.note.create({
-              data: { contactId: contact.id, content: notes },
-            }).catch(() => {});
-          }
-
-          if (tags) {
-            for (const tagName of tags.split(";").map((t: string) => t.trim()).filter(Boolean)) {
-              const tag = await prisma.tag.upsert({
-                where: { userId_name: { userId, name: tagName } },
-                create: { userId, name: tagName, color: "#6366f1" },
-                update: {},
-              });
-              await prisma.contactTag.upsert({
-                where: { contactId_tagId: { contactId: contact.id, tagId: tag.id } },
-                create: { contactId: contact.id, tagId: tag.id },
-                update: {},
-              }).catch(() => {});
-            }
-          }
-
-          imported++;
-        } catch (err: any) {
-          const msg = err?.message ?? String(err);
-          console.error(`[import/csv] row ${i} failed:`, msg);
-          errorMessages.push(`row ${i}: ${msg}`);
-          errors++;
-        }
+        const row = lines[i].split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
+        const name = col(row, "name", "full_name", "fullname", "contact_name");
+        if (!name) { skipped++; continue; }
+        parsed.push({
+          name,
+          email:    col(row, "email", "email_address"),
+          company:  col(row, "company", "company_name", "organization"),
+          role:     col(row, "role", "title", "job_title", "position"),
+          linkedin: col(row, "linkedin", "linkedin_url", "linkedin_profile"),
+          twitter:  col(row, "twitter", "x", "x_handle", "twitter_handle"),
+          notes:    col(row, "notes", "note", "description"),
+          tags:     col(row, "tags", "tag", "labels"),
+        });
       }
+
+      // 1 query: load all existing contact names for this user
+      const existing = await prisma.contact.findMany({
+        where: { userId },
+        select: { name: true },
+      });
+      const existingNames = new Set(existing.map((c) => c.name.toLowerCase().trim()));
+
+      const toCreate = parsed.filter((r) => {
+        if (existingNames.has(r.name.toLowerCase().trim())) { skipped++; return false; }
+        return true;
+      });
+
+      if (toCreate.length === 0) {
+        await prisma.importJob.update({
+          where: { id: job.id },
+          data: { status: "completed", totalFound: lines.length - 1, imported: 0, deduplicated: skipped, errors: 0, completedAt: new Date() },
+        });
+        return;
+      }
+
+      // Batch create all contacts in one query
+      await prisma.contact.createMany({
+        data: toCreate.map((r) => ({
+          userId,
+          name: r.name,
+          company: r.company || null,
+          role: r.role || null,
+          type: "other" as const,
+          domain: "other" as const,
+          relationshipStrength: "cold" as const,
+        })),
+        skipDuplicates: true,
+      });
+
+      // Fetch back the created contacts to get their IDs
+      const createdContacts = await prisma.contact.findMany({
+        where: { userId, name: { in: toCreate.map((r) => r.name) } },
+        select: { id: true, name: true },
+      });
+      const idByName = new Map(createdContacts.map((c) => [c.name.toLowerCase().trim(), c.id]));
+
+      // Build platform/note data
+      const platformData: any[] = [];
+      const noteData: any[] = [];
+      const tagWork: Array<{ contactId: string; tagNames: string[] }> = [];
+
+      for (const r of toCreate) {
+        const contactId = idByName.get(r.name.toLowerCase().trim());
+        if (!contactId) { errors++; continue; }
+
+        if (r.email) platformData.push({ contactId, type: "email", platformId: r.email, displayName: r.name });
+        if (r.linkedin) {
+          const slug = r.linkedin.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? r.linkedin;
+          platformData.push({ contactId, type: "linkedin", platformId: slug, profileUrl: r.linkedin.startsWith("http") ? r.linkedin : `https://www.linkedin.com/in/${slug}`, displayName: r.name });
+        }
+        if (r.twitter) {
+          const handle = r.twitter.replace(/^@/, "").replace(/.*(?:twitter|x)\.com\//, "");
+          platformData.push({ contactId, type: "x", platformId: handle, profileUrl: `https://x.com/${handle}`, displayName: handle });
+        }
+        if (r.notes) noteData.push({ contactId, content: r.notes });
+        if (r.tags) tagWork.push({ contactId, tagNames: r.tags.split(";").map((t: string) => t.trim()).filter(Boolean) });
+
+        imported++;
+      }
+
+      // Batch create platforms and notes in parallel
+      await Promise.all([
+        platformData.length > 0 ? prisma.platform.createMany({ data: platformData, skipDuplicates: true }).catch(() => {}) : Promise.resolve(),
+        noteData.length > 0 ? prisma.note.createMany({ data: noteData }).catch(() => {}) : Promise.resolve(),
+      ]);
+
+      // Tags: upsert each unique tag then link — run all in parallel
+      await Promise.all(tagWork.map(async ({ contactId, tagNames }) => {
+        for (const tagName of tagNames) {
+          try {
+            const tag = await prisma.tag.upsert({
+              where: { userId_name: { userId, name: tagName } },
+              create: { userId, name: tagName, color: "#6366f1" },
+              update: {},
+            });
+            await prisma.contactTag.upsert({
+              where: { contactId_tagId: { contactId, tagId: tag.id } },
+              create: { contactId, tagId: tag.id },
+              update: {},
+            }).catch(() => {});
+          } catch { /* ignore tag errors */ }
+        }
+      }));
 
       await prisma.importJob.update({
         where: { id: job.id },
