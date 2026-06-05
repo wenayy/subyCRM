@@ -150,6 +150,12 @@ export const importApi = {
 
   runWhatsApp: () =>
     apiFetch<{ status: string; jobId: string }>("/api/imports/whatsapp", { method: "POST" }),
+
+  runCsv: (csv: string) =>
+    apiFetch<{ status: string; jobId: string }>("/api/imports/csv", {
+      method: "POST",
+      body: JSON.stringify({ csv }),
+    }),
 };
 
 // ─── Companies API ─────────────────────────────────────────

@@ -71,11 +71,26 @@ const SOURCES = [
   },
 ];
 
+const SAMPLE_CSV = `name,email,phone,company,role,linkedin,twitter,notes,tags
+Jane Smith,jane@acme.com,+1234567890,Acme Corp,CEO,https://linkedin.com/in/janesmith,janesmith,Met at TechConf 2024,investor;founder
+John Doe,john@startup.io,,Startup IO,CTO,,,Follow up about partnership,`;
+
+function downloadSampleCsv() {
+  const blob = new Blob([SAMPLE_CSV], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "suby-contacts-template.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function ImportView() {
   const [jobs, setJobs] = useState<ImportJob[]>([]);
-  const [importing, setImporting] = useState<string | null>(null); // key of source currently importing
+  const [importing, setImporting] = useState<string | null>(null);
   const [classifying, setClassifying] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
+  const [csvDragging, setCsvDragging] = useState(false);
 
   const loadJobs = () => {
     importApi.getJobs()
@@ -153,6 +168,24 @@ export function ImportView() {
       pollJob(res.jobId, "WhatsApp");
     } catch (e: any) {
       setMessage({ text: e?.message ?? "Failed to start WhatsApp import.", type: "error" });
+      setImporting(null);
+    }
+  };
+
+  const handleCsvFile = async (file: File) => {
+    if (!file.name.endsWith(".csv") && file.type !== "text/csv") {
+      setMessage({ text: "Please upload a .csv file", type: "error" });
+      return;
+    }
+    const text = await file.text();
+    setImporting("csv");
+    setMessage(null);
+    try {
+      const res = await importApi.runCsv(text);
+      setMessage({ text: "CSV import started…", type: "success" });
+      pollJob(res.jobId, "csv");
+    } catch (e: any) {
+      setMessage({ text: e?.message ?? "CSV import failed.", type: "error" });
       setImporting(null);
     }
   };
@@ -264,6 +297,62 @@ export function ImportView() {
         ))}
       </div>
 
+      {/* CSV Upload */}
+      <div className="rounded-xl border border-border bg-card shadow-sm" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground">Import from CSV</div>
+          <button
+            onClick={downloadSampleCsv}
+            style={{
+              fontSize: 12, color: "var(--pc)", background: "none", border: "none",
+              cursor: "pointer", padding: "2px 0", fontWeight: 500, textDecoration: "underline",
+            }}
+          >
+            Download template
+          </button>
+        </div>
+        <label
+          htmlFor="csv-upload"
+          onDragOver={(e) => { e.preventDefault(); setCsvDragging(true); }}
+          onDragLeave={() => setCsvDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setCsvDragging(false);
+            const file = e.dataTransfer.files[0];
+            if (file) handleCsvFile(file);
+          }}
+          style={{
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            gap: 8, padding: "32px 20px", borderRadius: "var(--r)",
+            border: `2px dashed ${csvDragging ? "var(--pc)" : "var(--border)"}`,
+            background: csvDragging ? "var(--pb)" : "transparent",
+            cursor: importing === "csv" ? "not-allowed" : "pointer",
+            transition: "border-color 0.15s, background 0.15s",
+          }}
+        >
+          <div style={{ fontSize: 28 }}>📂</div>
+          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--t1)" }}>
+            {importing === "csv" ? "Uploading…" : "Drop a CSV file here or click to browse"}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--t3)" }}>
+            Supports: name, email, phone, company, role, linkedin, twitter, notes, tags
+          </div>
+          {importing === "csv" && <Spinner />}
+          <input
+            id="csv-upload"
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            disabled={importing !== null}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleCsvFile(file);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+
       {/* Recent import jobs */}
       {jobs.length > 0 && (
         <div className="rounded-xl border border-border bg-card shadow-sm" style={{ padding: 20 }}>
@@ -294,7 +383,14 @@ export function ImportView() {
                   <td className="font-mono text-xs tabular-nums">{j.totalFound ?? "--"}</td>
                   <td className="font-mono text-xs tabular-nums">{j.imported ?? "--"}</td>
                   <td className="font-mono text-xs tabular-nums">{j.deduplicated ?? "--"}</td>
-                  <td className="font-mono text-xs tabular-nums" style={{ color: j.errors ? "var(--rc)" : undefined }}>{j.errors ?? "--"}</td>
+                  <td className="font-mono text-xs tabular-nums" style={{ color: j.errors ? "var(--rc)" : undefined }}>
+                    {j.errors ?? "--"}
+                    {j.errors && (j.errorLog as any)?.errors?.[0] && (
+                      <div style={{ fontSize: 10, color: "var(--rc)", marginTop: 2, maxWidth: 200, whiteSpace: "normal" }}>
+                        {(j.errorLog as any).errors[0]}
+                      </div>
+                    )}
+                  </td>
                   <td className="max-md:hidden font-mono text-xs tabular-nums" style={{ fontSize: 12, color: "var(--t3)" }}>{relativeDate(j.createdAt)}</td>
                 </tr>
               ))}

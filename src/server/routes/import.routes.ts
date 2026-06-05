@@ -221,4 +221,146 @@ router.post("/whatsapp", async (req, res, next) => {
   }
 });
 
+// POST /api/imports/csv — parse CSV text and create contacts
+router.post("/csv", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { csv } = req.body as { csv: string };
+    if (!csv || typeof csv !== "string") {
+      res.status(400).json({ error: "Missing csv field" });
+      return;
+    }
+
+    const lines = csv.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) {
+      res.status(400).json({ error: "CSV must have a header row and at least one data row" });
+      return;
+    }
+
+    // Parse header — normalize to lowercase, trim spaces
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_"));
+
+    const col = (row: string[], ...names: string[]): string => {
+      for (const name of names) {
+        const idx = headers.indexOf(name);
+        if (idx !== -1 && row[idx]?.trim()) return row[idx].trim();
+      }
+      return "";
+    };
+
+    const job = await prisma.importJob.create({
+      data: { source: "manual", status: "running", startedAt: new Date() },
+    });
+    res.json({ status: "started", jobId: job.id });
+
+    // Run import in background
+    (async () => {
+      let imported = 0, skipped = 0, errors = 0;
+      const errorMessages: string[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        try {
+          // Basic CSV split (handles simple cases — no quoted commas)
+          const row = lines[i].split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
+          const name = col(row, "name", "full_name", "fullname", "contact_name");
+          if (!name) { skipped++; continue; }
+
+          const email    = col(row, "email", "email_address");
+          const company  = col(row, "company", "company_name", "organization");
+          const role     = col(row, "role", "title", "job_title", "position");
+          const linkedin = col(row, "linkedin", "linkedin_url", "linkedin_profile");
+          const twitter  = col(row, "twitter", "x", "x_handle", "twitter_handle");
+          const notes    = col(row, "notes", "note", "description");
+          const tags     = col(row, "tags", "tag", "labels");
+
+          // Check for duplicate by name + userId
+          const existing = await prisma.contact.findFirst({
+            where: { userId, name: { equals: name, mode: "insensitive" } },
+          });
+          if (existing) { skipped++; continue; }
+
+          const contact = await prisma.contact.create({
+            data: {
+              userId,
+              name,
+              company: company || null,
+              role: role || null,
+              type: "other",
+              domain: "other",
+              relationshipStrength: "cold",
+            },
+          });
+
+          if (email) {
+            await prisma.platform.create({
+              data: { contactId: contact.id, type: "email", platformId: email, displayName: name },
+            }).catch(() => {});
+          }
+
+          if (linkedin) {
+            const slug = linkedin.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? linkedin;
+            await prisma.platform.create({
+              data: { contactId: contact.id, type: "linkedin", platformId: slug, profileUrl: linkedin.startsWith("http") ? linkedin : `https://www.linkedin.com/in/${slug}`, displayName: name },
+            }).catch(() => {});
+          }
+
+          if (twitter) {
+            const handle = twitter.replace(/^@/, "").replace(/.*(?:twitter|x)\.com\//, "");
+            await prisma.platform.create({
+              data: { contactId: contact.id, type: "x", platformId: handle, profileUrl: `https://x.com/${handle}`, displayName: handle },
+            }).catch(() => {});
+          }
+
+          if (notes) {
+            await prisma.note.create({
+              data: { contactId: contact.id, content: notes },
+            }).catch(() => {});
+          }
+
+          if (tags) {
+            for (const tagName of tags.split(";").map((t: string) => t.trim()).filter(Boolean)) {
+              const tag = await prisma.tag.upsert({
+                where: { userId_name: { userId, name: tagName } },
+                create: { userId, name: tagName, color: "#6366f1" },
+                update: {},
+              });
+              await prisma.contactTag.upsert({
+                where: { contactId_tagId: { contactId: contact.id, tagId: tag.id } },
+                create: { contactId: contact.id, tagId: tag.id },
+                update: {},
+              }).catch(() => {});
+            }
+          }
+
+          imported++;
+        } catch (err: any) {
+          const msg = err?.message ?? String(err);
+          console.error(`[import/csv] row ${i} failed:`, msg);
+          errorMessages.push(`row ${i}: ${msg}`);
+          errors++;
+        }
+      }
+
+      await prisma.importJob.update({
+        where: { id: job.id },
+        data: {
+          status: "completed",
+          totalFound: lines.length - 1,
+          imported,
+          deduplicated: skipped,
+          errors,
+          completedAt: new Date(),
+          ...(errorMessages.length > 0 && { errorLog: { errors: errorMessages.slice(0, 5) } }),
+        },
+      });
+    })().catch(async (err) => {
+      await prisma.importJob.update({
+        where: { id: job.id },
+        data: { status: "failed", errorLog: { error: err.message }, completedAt: new Date() },
+      });
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
