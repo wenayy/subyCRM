@@ -94,8 +94,8 @@ async function useRobustMultiFileAuthState(folder: string) {
   };
 }
 
-const AUTH_DIR = path.join(process.cwd(), ".whatsapp-auth");
-const LID_FILE  = path.join(AUTH_DIR, "lid-map.json");
+const getAuthDir = (userId: string) => path.join(process.cwd(), ".whatsapp-auth", userId);
+const getLidFile = (userId: string) => path.join(getAuthDir(userId), "lid-map.json");
 
 // ── Runtime state ──────────────────────────────────────────────────────────────
 const state: {
@@ -132,21 +132,22 @@ const state: {
 // Key: LID digits (no suffix), Value: phone digits (no suffix)
 const lidMap = new Map<string, string>();
 
-function loadLidMap(): void {
+function loadLidMap(userId: string): void {
   try {
-    if (fs.existsSync(LID_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(LID_FILE, "utf-8")) as Record<string, string>;
+    const lidFile = getLidFile(userId);
+    if (fs.existsSync(lidFile)) {
+      const raw = JSON.parse(fs.readFileSync(lidFile, "utf-8")) as Record<string, string>;
       for (const [k, v] of Object.entries(raw)) lidMap.set(k, v);
       console.log(`[whatsapp] Loaded ${lidMap.size} LID entries`);
     }
   } catch {}
 }
 
-function saveLidMap(): void {
+function saveLidMap(userId: string): void {
   try {
     const obj: Record<string, string> = {};
     for (const [k, v] of lidMap.entries()) obj[k] = v;
-    fs.writeFileSync(LID_FILE, JSON.stringify(obj));
+    fs.writeFileSync(getLidFile(userId), JSON.stringify(obj));
   } catch {}
 }
 
@@ -171,7 +172,7 @@ function ingestContacts(contacts: any[]): void {
     }
   }
   if (changed) {
-    saveLidMap();
+    saveLidMap(state.userId ?? "default");
     // Retry messages that were dropped because the LID wasn't in the map yet
     if (pendingLidMessages.length > 0) {
       const pending = pendingLidMessages.splice(0);
@@ -493,13 +494,14 @@ function waitForConnection(ms = 15_000): Promise<void> {
 // ── Core: create socket and wire events ───────────────────────────────────────
 async function connectSocket(userId: string): Promise<{ qr?: string; connected: boolean }> {
   // Safeguard: Check if AUTH_DIR exists but creds.json is corrupt/empty
-  const credsFile = path.join(AUTH_DIR, "creds.json");
+  const authDir = getAuthDir(userId);
+  const credsFile = path.join(authDir, "creds.json");
   if (fs.existsSync(credsFile)) {
     try {
       const stats = fs.statSync(credsFile);
       if (stats.size === 0) {
         console.warn("[whatsapp] creds.json is empty. Cleaning up auth directory.");
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        fs.rmSync(authDir, { recursive: true, force: true });
         await (prisma as any).whatsAppSession.updateMany({
           where: { userId },
           data: { connected: false },
@@ -510,7 +512,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
       }
     } catch (e) {
       console.warn("[whatsapp] creds.json is corrupt. Cleaning up auth directory.");
-      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      fs.rmSync(authDir, { recursive: true, force: true });
       await (prisma as any).whatsAppSession.updateMany({
         where: { userId },
         data: { connected: false },
@@ -537,10 +539,10 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
   // Guard: another connectSocket may have started while we were awaiting getBaileys()
   if (state.generation !== myGen) return { connected: false };
 
-  fs.mkdirSync(AUTH_DIR, { recursive: true });
-  loadLidMap();
+  fs.mkdirSync(authDir, { recursive: true });
+  loadLidMap(userId);
 
-  const { state: authState, saveCreds } = await useRobustMultiFileAuthState(AUTH_DIR);
+  const { state: authState, saveCreds } = await useRobustMultiFileAuthState(authDir);
 
   // Guard again after the async auth-state load
   if (state.generation !== myGen) return { connected: false };
@@ -628,7 +630,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         console.log(`[whatsapp] Disconnected — code=${code} loggedOut=${loggedOut}`);
 
         if (loggedOut) {
-          try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+          try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
           await (prisma as any).whatsAppSession.deleteMany({ where: { userId } }).catch(() => {});
           console.log("[whatsapp] Logged out. Scan QR to reconnect.");
           settle({ connected: false });
@@ -764,7 +766,7 @@ export const whatsappService = {
       .findFirst({ where: { connected: true } })
       .catch(() => null);
     return {
-      connected: !!(saved && fs.existsSync(AUTH_DIR)),
+      connected: !!(saved && fs.existsSync(getAuthDir(userId))),
       qrAvailable: !!state.qr,
       phoneNumber: saved?.phoneNumber ?? state.phoneNumber,
       lastSync: null,
@@ -791,7 +793,7 @@ export const whatsappService = {
       const saved = await (prisma as any).whatsAppSession
         .findFirst({ where: { connected: true } })
         .catch(() => null);
-      if (!saved || !fs.existsSync(AUTH_DIR)) {
+      if (!saved || !fs.existsSync(getAuthDir(saved?.userId ?? "default"))) {
         throw new Error("WhatsApp is not connected. Go to Settings → WhatsApp to connect.");
       }
       if (!state.reconnecting && !state.sock) {
@@ -895,7 +897,7 @@ export const whatsappService = {
     const saved = await (prisma as any).whatsAppSession
       .findFirst({ where: { connected: true } })
       .catch(() => null);
-    if (!saved || !fs.existsSync(AUTH_DIR)) {
+    if (!saved || !fs.existsSync(getAuthDir(saved?.userId ?? "default"))) {
       state.reconnecting = false; // nothing to reconnect — release the slot
       return;
     }
@@ -912,7 +914,7 @@ export const whatsappService = {
     state.userId        = null;
     state.phoneNumber   = null;
     state.reconnectDelay = 0;
-    try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(getAuthDir(userId), { recursive: true, force: true }); } catch {}
     await (prisma as any).whatsAppSession.deleteMany({ where: { userId } }).catch(() => {});
     console.log("[whatsapp] Disconnected and session cleared.");
   },
