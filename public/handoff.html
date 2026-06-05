@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Suby Contacts — Founder Handoff</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e5e5e5; line-height: 1.6; padding: 40px 20px; }
+    .container { max-width: 760px; margin: 0 auto; }
+    .logo { display: flex; align-items: center; gap: 12px; margin-bottom: 40px; }
+    .logo-icon { width: 44px; height: 44px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+    .logo-text { font-size: 22px; font-weight: 700; color: #fff; }
+    .logo-sub { font-size: 13px; color: #888; }
+    h1 { font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+    .subtitle { color: #888; font-size: 15px; margin-bottom: 40px; }
+    .section { margin-bottom: 36px; }
+    .section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #6366f1; margin-bottom: 16px; }
+    .card { background: #141414; border: 1px solid #222; border-radius: 12px; padding: 20px 24px; margin-bottom: 10px; }
+    .card-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .card-body { font-size: 13px; color: #999; line-height: 1.6; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; }
+    .badge-green { background: #14532d; color: #4ade80; }
+    .badge-yellow { background: #422006; color: #fb923c; }
+    .badge-blue { background: #172554; color: #60a5fa; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+    .link-btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; background: #6366f1; color: #fff; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 600; margin-right: 8px; margin-bottom: 8px; }
+    .link-btn-ghost { background: #1a1a1a; border: 1px solid #333; color: #ccc; }
+    ul { padding-left: 18px; }
+    ul li { font-size: 13px; color: #999; margin-bottom: 5px; }
+    ul li strong { color: #e5e5e5; }
+    .divider { border: none; border-top: 1px solid #1f1f1f; margin: 32px 0; }
+    .tag { display: inline-block; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px; padding: 2px 8px; font-size: 11px; color: #888; margin: 2px; }
+    .step { display: flex; gap: 14px; margin-bottom: 16px; }
+    .step-num { width: 26px; height: 26px; border-radius: 50%; background: #6366f1; color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+    .step-content { flex: 1; }
+    .step-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 3px; }
+    .step-body { font-size: 13px; color: #999; }
+    code { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 1px 6px; font-size: 12px; color: #a78bfa; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="logo">
+      <div class="logo-icon">🗂</div>
+      <div>
+        <div class="logo-text">Suby Contacts</div>
+        <div class="logo-sub">Internal Relationship CRM</div>
+      </div>
+    </div>
+
+    <h1>Founder Handoff</h1>
+    <p class="subtitle">What's live, what works, and how to get started.</p>
+
+    <div style="margin-bottom: 28px;">
+      <a href="https://suby-crm.vercel.app" class="link-btn" target="_blank">→ Open App</a>
+      <a href="https://subycrm-production.up.railway.app/health" class="link-btn link-btn-ghost" target="_blank">API Health Check</a>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- What's live -->
+    <div class="section">
+      <div class="section-title">What's live</div>
+
+      <div class="card">
+        <div class="card-title">🔐 Auth <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">Google OAuth login. Access is restricted to allowed emails — only you can log in by default. Each user gets their own isolated data (contacts, inbox, notes, etc.).</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">👥 Contacts <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">Add, edit, search and filter contacts. Tag them, add notes, log interactions, set reminders, track relationship strength. Import via CSV. AI auto-classifies type and domain. Enrich any contact to auto-find their LinkedIn and Twitter/X via web search.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📥 Unified Inbox <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">All your messages from all platforms in one place. Real-time push via SSE — new messages appear instantly without refresh. Reply directly from the inbox. Works on mobile (tap conversation → full thread → back button).</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🎙 Voice Bot (Telegram) <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">Send a voice note to <strong>@subyassistant_bot</strong> on Telegram. It transcribes with Whisper, extracts name/company/note with GPT, and creates or updates the contact automatically. Works anywhere — in a car, walking out of a meeting.</div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">📧 Gmail <span class="badge badge-green">LIVE</span></div>
+          <div class="card-body">Connect in Settings → indexes your emails → matches them to CRM contacts → shows in inbox.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">📅 Google Calendar <span class="badge badge-green">LIVE</span></div>
+          <div class="card-body">Sync calendar → upcoming meetings linked to contacts → pre-call view.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">💬 WhatsApp <span class="badge badge-green">LIVE</span></div>
+          <div class="card-body">Scan QR in Settings (like WhatsApp Web). Incoming DMs from CRM contacts appear in inbox.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">✈️ Telegram Personal <span class="badge badge-green">LIVE</span></div>
+          <div class="card-body">Connect with phone number. Reads personal DMs — not just bot messages. Syncs to inbox.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">💼 Slack <span class="badge badge-green">LIVE</span></div>
+          <div class="card-body">OAuth connect. Syncs DMs every 5 minutes. Reply from inbox.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">🎮 Discord <span class="badge badge-green">LIVE</span></div>
+          <div class="card-body">Bot token connect. Real-time messages from server members who are CRM contacts.</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 10px;">
+        <div class="card-title">🏢 Companies <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">Company profiles with linked contacts. Enrichment auto-fills website, description, sector, funding stage.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📋 Sequences & Pipeline <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">Multi-step outreach sequences with delays. Pipeline board to track deals/relationships through stages.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🤖 Daily Brief <span class="badge badge-green">LIVE</span></div>
+        <div class="card-body">Every morning at 7:55 AM, the Telegram bot sends a brief: stale contacts to follow up, upcoming meetings, reminders due today.</div>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Getting started -->
+    <div class="section">
+      <div class="section-title">Getting started (5 minutes)</div>
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-title">Log in at suby-crm.vercel.app</div>
+          <div class="step-body">Click "Continue with Google". Your email must be added to the allowed list in Railway → <code>AUTH_ALLOWED_EMAILS</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-title">Add your first contacts</div>
+          <div class="step-body">Go to Contacts → Add manually, or import a CSV. After adding, hit "Enrich" on any contact to auto-find their LinkedIn and Twitter.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-title">Connect your messaging platforms</div>
+          <div class="step-body">Settings → connect Gmail, WhatsApp, Telegram, Slack. Once connected, messages from your CRM contacts start appearing in Inbox.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-title">Try the voice bot</div>
+          <div class="step-body">Open Telegram → search <strong>@subyassistant_bot</strong> → send a voice note like <em>"Just met Sarah Chen from Acme, she's the CTO, remind me to send her a deck tomorrow"</em>. Contact gets created automatically.</div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Known limitations -->
+    <div class="section">
+      <div class="section-title">Known limitations right now</div>
+      <div class="card">
+        <div class="card-body">
+          <ul>
+            <li><strong>Twitter/X DM sync</strong> — requires a paid Twitter API plan (Basic $100/mo). Currently shows 402 error in logs. Read-only enrichment (finding handles) works fine.</li>
+            <li><strong>LinkedIn DMs</strong> — not supported. LinkedIn blocks automated access. LinkedIn profile enrichment (finding profiles via web search) works fine.</li>
+            <li><strong>Enrich accuracy</strong> — works best when contact has company + role filled in. Common names with no context may return wrong person.</li>
+            <li><strong>WhatsApp</strong> — uses WhatsApp Web protocol (Baileys). Session may disconnect occasionally and needs re-scan.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Tech stack -->
+    <div class="section">
+      <div class="section-title">Infrastructure</div>
+      <div class="card">
+        <div class="card-body" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;">
+          <span class="tag">Next.js 16 on Vercel</span>
+          <span class="tag">Express API on Railway</span>
+          <span class="tag">PostgreSQL on Supabase</span>
+          <span class="tag">Redis on Upstash</span>
+          <span class="tag">BullMQ job queues</span>
+          <span class="tag">better-auth</span>
+          <span class="tag">Prisma ORM</span>
+          <span class="tag">OpenAI GPT-4o</span>
+          <span class="tag">Whisper transcription</span>
+        </div>
+        <div style="font-size: 13px; color: #999;">All infrastructure is on free/hobby tiers. Scale up Railway and Supabase when needed.</div>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <div style="font-size: 12px; color: #555; text-align: center; padding-bottom: 40px;">
+      Built by Vinay · Suby Contacts · 2026
+    </div>
+
+  </div>
+</body>
+</html>
