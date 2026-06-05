@@ -5,6 +5,8 @@ import { importService } from "../services/import.service";
 import { telegramPersonalService } from "../services/telegram-personal.service";
 import { discordService } from "../services/discord.service";
 import { whatsappService } from "../services/whatsapp.service";
+import { queues } from "../lib/queues";
+import type { CsvImportJobData } from "../workers/csv-import.worker";
 
 const router = Router();
 
@@ -225,7 +227,7 @@ router.post("/whatsapp", async (req, res, next) => {
   }
 });
 
-// POST /api/imports/csv — parse CSV text and create contacts
+// POST /api/imports/csv — parse CSV and enqueue for processing
 router.post("/csv", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
@@ -241,9 +243,7 @@ router.post("/csv", async (req, res, next) => {
       return;
     }
 
-    // Parse header — normalize to lowercase, trim spaces
     const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_"));
-
     const col = (row: string[], ...names: string[]): string => {
       for (const name of names) {
         const idx = headers.indexOf(name);
@@ -252,142 +252,37 @@ router.post("/csv", async (req, res, next) => {
       return "";
     };
 
+    // Parse all rows upfront — fast, in-memory, no DB
+    const rows: CsvImportJobData["rows"] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
+      const name = col(row, "name", "full_name", "fullname", "contact_name");
+      if (!name) continue;
+      rows.push({
+        name,
+        email:    col(row, "email", "email_address"),
+        company:  col(row, "company", "company_name", "organization"),
+        role:     col(row, "role", "title", "job_title", "position"),
+        linkedin: col(row, "linkedin", "linkedin_url", "linkedin_profile"),
+        twitter:  col(row, "twitter", "x", "x_handle", "twitter_handle"),
+        notes:    col(row, "notes", "note", "description"),
+        tags:     col(row, "tags", "tag", "labels"),
+      });
+    }
+
+    if (rows.length === 0) {
+      res.status(400).json({ error: "No valid rows found (name column is required)" });
+      return;
+    }
+
     const job = await prisma.importJob.create({
-      data: { source: "manual", status: "running", startedAt: new Date() },
+      data: { userId, source: "manual", status: "running", startedAt: new Date() },
     });
+
+    // Enqueue — worker handles all DB work, HTTP responds immediately
+    await queues.csvImport.add("csv-import", { jobId: job.id, userId, rows, totalFound: rows.length } satisfies CsvImportJobData);
+
     res.json({ status: "started", jobId: job.id });
-
-    // Run import in background
-    (async () => {
-      let imported = 0, skipped = 0, errors = 0;
-      const errorMessages: string[] = [];
-
-      // Parse all rows first
-      type ParsedRow = { name: string; email: string; company: string; role: string; linkedin: string; twitter: string; notes: string; tags: string };
-      const parsed: ParsedRow[] = [];
-      for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
-        const name = col(row, "name", "full_name", "fullname", "contact_name");
-        if (!name) { skipped++; continue; }
-        parsed.push({
-          name,
-          email:    col(row, "email", "email_address"),
-          company:  col(row, "company", "company_name", "organization"),
-          role:     col(row, "role", "title", "job_title", "position"),
-          linkedin: col(row, "linkedin", "linkedin_url", "linkedin_profile"),
-          twitter:  col(row, "twitter", "x", "x_handle", "twitter_handle"),
-          notes:    col(row, "notes", "note", "description"),
-          tags:     col(row, "tags", "tag", "labels"),
-        });
-      }
-
-      // 1 query: load all existing contact names for this user
-      const existing = await prisma.contact.findMany({
-        where: { userId },
-        select: { name: true },
-      });
-      const existingNames = new Set(existing.map((c) => c.name.toLowerCase().trim()));
-
-      const toCreate = parsed.filter((r) => {
-        if (existingNames.has(r.name.toLowerCase().trim())) { skipped++; return false; }
-        return true;
-      });
-
-      if (toCreate.length === 0) {
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: { status: "completed", totalFound: lines.length - 1, imported: 0, deduplicated: skipped, errors: 0, completedAt: new Date() },
-        });
-        return;
-      }
-
-      // Batch create all contacts in one query
-      await prisma.contact.createMany({
-        data: toCreate.map((r) => ({
-          userId,
-          name: r.name,
-          company: r.company || null,
-          role: r.role || null,
-          type: "other" as const,
-          domain: "other" as const,
-          relationshipStrength: "cold" as const,
-        })),
-        skipDuplicates: true,
-      });
-
-      // Fetch back the created contacts to get their IDs
-      const createdContacts = await prisma.contact.findMany({
-        where: { userId, name: { in: toCreate.map((r) => r.name) } },
-        select: { id: true, name: true },
-      });
-      const idByName = new Map(createdContacts.map((c) => [c.name.toLowerCase().trim(), c.id]));
-
-      // Build platform/note data
-      const platformData: any[] = [];
-      const noteData: any[] = [];
-      const tagWork: Array<{ contactId: string; tagNames: string[] }> = [];
-
-      for (const r of toCreate) {
-        const contactId = idByName.get(r.name.toLowerCase().trim());
-        if (!contactId) { errors++; continue; }
-
-        if (r.email) platformData.push({ contactId, type: "email", platformId: r.email, displayName: r.name });
-        if (r.linkedin) {
-          const slug = r.linkedin.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? r.linkedin;
-          platformData.push({ contactId, type: "linkedin", platformId: slug, profileUrl: r.linkedin.startsWith("http") ? r.linkedin : `https://www.linkedin.com/in/${slug}`, displayName: r.name });
-        }
-        if (r.twitter) {
-          const handle = r.twitter.replace(/^@/, "").replace(/.*(?:twitter|x)\.com\//, "");
-          platformData.push({ contactId, type: "x", platformId: handle, profileUrl: `https://x.com/${handle}`, displayName: handle });
-        }
-        if (r.notes) noteData.push({ contactId, content: r.notes });
-        if (r.tags) tagWork.push({ contactId, tagNames: r.tags.split(";").map((t: string) => t.trim()).filter(Boolean) });
-
-        imported++;
-      }
-
-      // Batch create platforms and notes in parallel
-      await Promise.all([
-        platformData.length > 0 ? prisma.platform.createMany({ data: platformData, skipDuplicates: true }).catch(() => {}) : Promise.resolve(),
-        noteData.length > 0 ? prisma.note.createMany({ data: noteData }).catch(() => {}) : Promise.resolve(),
-      ]);
-
-      // Tags: upsert each unique tag then link — run all in parallel
-      await Promise.all(tagWork.map(async ({ contactId, tagNames }) => {
-        for (const tagName of tagNames) {
-          try {
-            const tag = await prisma.tag.upsert({
-              where: { userId_name: { userId, name: tagName } },
-              create: { userId, name: tagName, color: "#6366f1" },
-              update: {},
-            });
-            await prisma.contactTag.upsert({
-              where: { contactId_tagId: { contactId, tagId: tag.id } },
-              create: { contactId, tagId: tag.id },
-              update: {},
-            }).catch(() => {});
-          } catch { /* ignore tag errors */ }
-        }
-      }));
-
-      await prisma.importJob.update({
-        where: { id: job.id },
-        data: {
-          status: "completed",
-          totalFound: lines.length - 1,
-          imported,
-          deduplicated: skipped,
-          errors,
-          completedAt: new Date(),
-          ...(errorMessages.length > 0 && { errorLog: { errors: errorMessages.slice(0, 5) } }),
-        },
-      });
-    })().catch(async (err) => {
-      await prisma.importJob.update({
-        where: { id: job.id },
-        data: { status: "failed", errorLog: { error: err.message }, completedAt: new Date() },
-      });
-    });
   } catch (err) {
     next(err);
   }

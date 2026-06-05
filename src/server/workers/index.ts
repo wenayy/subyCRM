@@ -11,6 +11,7 @@ import { startGmailSyncWorker } from "./gmail-sync.worker";
 import { startXDmSyncWorker } from "./x-dm-sync.worker";
 import { startSlackSyncWorker } from "./slack-sync.worker";
 import { startDiscordSyncWorker } from "./discord-sync.worker";
+import { startCsvImportWorker } from "./csv-import.worker";
 
 let workers: Worker[] = [];
 
@@ -30,6 +31,7 @@ export function startAllWorkers() {
     startXDmSyncWorker(),
     startSlackSyncWorker(),
     startDiscordSyncWorker(),
+    startCsvImportWorker(),
   ];
 
   console.log(`[workers] ${workers.length} workers running`);
