@@ -242,4 +242,121 @@ Now every API call stays on `suby-crm.vercel.app` from the browser's perspective
 
 ---
 
+## 9. Multi-Tenancy — How Each User Sees Only Their Own Data
+
+### What is multi-tenancy?
+
+A multi-tenant app serves multiple users (tenants) from a single database and codebase. Each user's data is isolated — they can never see or modify another user's records.
+
+The opposite is a single-tenant app where one instance = one user. Multi-tenancy is how almost every SaaS product works (Gmail, Notion, Linear, etc.).
+
+### How it worked before (broken)
+
+Originally the app had no `userId` on any model. Every query just fetched everything:
+
+```ts
+// Old — returns ALL contacts from the entire database
+prisma.contact.findMany()
+```
+
+This meant every logged-in user saw the same contacts, the same inbox, the same tags. One big shared pile of data.
+
+### The fix — userId column on every model
+
+Added a `userId` field to `Contact`, `InboxMessage`, `Tag`, and `Company` in the Prisma schema:
+
+```prisma
+model Contact {
+  id     String @id
+  userId String @default("default") @map("user_id")
+  name   String
+  // ...
+  @@index([userId])
+}
+```
+
+The `@@index([userId])` makes lookups by userId fast — without it, every query would scan the whole table.
+
+### Every query now filters by userId
+
+The logged-in user's ID comes from the session (set during login by better-auth):
+
+```ts
+// In every route handler
+const userId = res.locals.session?.user?.id ?? "default";
+
+// In every service method
+prisma.contact.findMany({ where: { userId } })
+prisma.contact.create({ data: { ...data, userId } })
+```
+
+So user A's request only touches rows where `userId = A`. User B's request only touches rows where `userId = B`. The database physically contains both users' data, but each user can never reach the other's rows.
+
+### The startup backfill
+
+When this was deployed, existing contacts had `userId = "default"` (the old default). A one-time backfill on server startup claimed them for the first real user:
+
+```ts
+const firstUser = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+await prisma.contact.updateMany({
+  where: { userId: "default" },
+  data: { userId: firstUser.id },
+});
+```
+
+This ran once, moved all legacy data to the actual owner, and no data was lost.
+
+### The interview answer
+
+> "We added a `userId` foreign key to every tenant-scoped model and passed the authenticated user's ID into every query's `WHERE` clause. The session middleware extracts the user ID from the auth cookie on every request, making it impossible for one user to read another's data without changing the application logic. We also indexed `userId` on each table so filtering doesn't require full table scans."
+
+---
+
+## 10. DATABASE_URL vs DIRECT_URL — Why They Differ Locally But Not on Railway
+
+### What each URL is for
+
+Prisma uses two separate database URLs for two separate purposes:
+
+| Variable | Used for | Connection type |
+|---|---|---|
+| `DATABASE_URL` | Normal app queries at runtime (SELECT, INSERT, UPDATE) | Pooler (PgBouncer, port 6543) |
+| `DIRECT_URL` | Schema changes (`prisma db push`, `prisma migrate`) | Direct to Postgres (port 5432) |
+
+The `DATABASE_URL` goes through Supabase's PgBouncer connection pooler. The pooler is efficient — it reuses database connections across many app requests so you don't exhaust Postgres's connection limit.
+
+The `DIRECT_URL` bypasses the pooler and connects directly to Postgres. This is required for schema migrations because PgBouncer in transaction mode doesn't support DDL (CREATE TABLE, ALTER TABLE, etc.) — see Concept 5.
+
+### Why they're different locally
+
+When you run `npm run dev` locally you're also running `prisma db push` to sync your schema changes to the database. So `DIRECT_URL` must point to a real direct connection to Supabase (port 5432, no pooler):
+
+```
+# .env.local
+DATABASE_URL="postgresql://...@pooler.supabase.com:6543/postgres?pgbouncer=true"
+DIRECT_URL="postgresql://...@db.supabase.co:5432/postgres"
+```
+
+They point to the same Supabase project but via different entry points.
+
+### Why they can be the same on Railway
+
+The Railway production server **never runs `prisma db push`**. It was removed from the startup command because it hangs against the transaction pooler (Concept 5). Railway's server only runs normal queries — so `DIRECT_URL` is never actually called.
+
+Since it's never used, you can safely set both to the same pooler URL on Railway:
+
+```
+# Railway env vars
+DATABASE_URL=postgresql://...@pooler.supabase.com:6543/postgres?pgbouncer=true
+DIRECT_URL=postgresql://...@pooler.supabase.com:6543/postgres?pgbouncer=true
+```
+
+This is fine because `DIRECT_URL` is only read by Prisma CLI commands (`db push`, `migrate`), and those never run on Railway.
+
+### The rule
+
+> `DIRECT_URL` only matters where you run schema migrations. In production, if migrations are handled separately (locally or in CI), `DIRECT_URL` is never called — so it can be set to anything or the same as `DATABASE_URL`.
+
+---
+
 *More concepts will be added as new problems are encountered.*
