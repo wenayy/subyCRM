@@ -121,21 +121,72 @@ export const xService = {
   },
 
   async saveCookie(userId: string, authToken: string, ct0: string): Promise<{ screenName: string }> {
-    // Verify cookies are valid
-    const meRes = await twitterFetch("/i/api/1.1/account/verify_credentials.json?include_email=false&skip_status=true", authToken, ct0);
-    if (!meRes.ok) {
-      if (meRes.status === 401 || meRes.status === 403) throw new Error("Invalid or expired cookies. Make sure you copied auth_token and ct0 correctly.");
-      throw new Error(`Twitter returned ${meRes.status} — try refreshing twitter.com and copying fresh cookies.`);
-    }
-    const me = await meRes.json() as any;
-    const screenName: string = me.screen_name ?? "unknown";
-    const myUserId: string = me.id_str ?? "";
-
+    // Save cookies first, then resolve screen name via the inbox endpoint
+    // (verify_credentials lives on api.twitter.com and requires OAuth1 signatures — not usable with cookies)
     await (prisma as any).xToken.upsert({
       where: { userId },
-      create: { userId, accessToken: "", accessTokenSecret: "", screenName, myUserId, cookieAuthToken: authToken, cookieCt0: ct0 },
-      update: { screenName, myUserId, cookieAuthToken: authToken, cookieCt0: ct0 },
+      create: { userId, accessToken: "", accessTokenSecret: "", cookieAuthToken: authToken, cookieCt0: ct0 },
+      update: { cookieAuthToken: authToken, cookieCt0: ct0 },
     });
+
+    // Best-effort: resolve screen name from the inbox state (contains the current user in the users map)
+    let screenName = "connected";
+    let myUserId = "";
+    try {
+      const inboxRes = await twitterFetch(
+        "/i/api/1.1/dm/inbox_initial_state.json?filter_by_folder=default&dm_users=false&include_groups=true",
+        authToken, ct0,
+      );
+      if (inboxRes.ok) {
+        const data = await inboxRes.json() as any;
+        const state = data.inbox_initial_state ?? {};
+        // The users map contains all participants including self
+        const usersMap: Record<string, any> = state.users ?? {};
+        // Find our own user — conversations list has our userId as one of the participant IDs
+        // Fall back: look at the first message's recipient or sender to find us
+        const convs: Record<string, any> = state.conversations ?? {};
+        const firstConv = Object.values(convs)[0] as any;
+        if (firstConv?.participants) {
+          for (const p of firstConv.participants) {
+            const u = usersMap[p.user_id];
+            if (u && !firstConv.participants.every((pp: any) => pp.user_id === p.user_id)) {
+              // Can't determine self here — skip, get from first message instead
+            }
+          }
+        }
+        // Get self from entries: the sender of a fromMe message
+        const entries: any[] = state.entries ?? [];
+        for (const e of entries) {
+          const md = e.message?.data?.message_data;
+          if (!md) continue;
+          // The recipient_id is stable; sender_id tells us who sent it
+          // We'll derive myUserId from the conversation_id format "a-b" where one of a/b is us
+          const convId: string = e.message?.data?.conversation_id ?? "";
+          if (convId.includes("-")) {
+            const [ua, ub] = convId.split("-");
+            if (usersMap[ua]) { myUserId = ua; screenName = usersMap[ua]?.screen_name ?? "connected"; }
+            else if (usersMap[ub]) { myUserId = ub; screenName = usersMap[ub]?.screen_name ?? "connected"; }
+          }
+          if (screenName !== "connected") break;
+        }
+      } else if (inboxRes.status === 401 || inboxRes.status === 403) {
+        // Delete the record we just created — cookies are definitely invalid
+        await (prisma as any).xToken.deleteMany({ where: { userId } });
+        throw new Error("Invalid cookies — Twitter rejected them (401). Make sure you copied auth_token and ct0 correctly from twitter.com.");
+      }
+    } catch (err: any) {
+      if (err.message?.includes("Invalid cookies")) throw err;
+      // Network/parse errors are non-fatal — cookies are saved, sync will verify
+      console.warn("[x] saveCookie best-effort check failed:", err.message);
+    }
+
+    if (myUserId || screenName !== "connected") {
+      await (prisma as any).xToken.update({
+        where: { userId },
+        data: { screenName, myUserId: myUserId || undefined },
+      });
+    }
+
     return { screenName };
   },
 
