@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { calendarApi, gmailApi, discordApi, slackApi, xApi, whatsappApi, telegramPersonalApi, linkedinApi } from "@/lib/api";
+import { calendarApi, gmailApi, discordApi, slackApi, xApi, whatsappApi, telegramPersonalApi, linkedinApi, telegramBotApi } from "@/lib/api";
 import { authClient } from "@/lib/auth-client";
 
 type Status = "connected" | "disconnected" | "error";
@@ -636,6 +636,9 @@ export function SettingsView() {
   const [whatsapp, setWhatsapp] = useState<{ connected: boolean; phoneNumber: string | null } | null>(null);
   const [tgPersonal, setTgPersonal] = useState<{ connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean } | null>(null);
   const [linkedin, setLinkedin] = useState<{ connected: boolean; profileName: string | null } | null>(null);
+  const [botLink, setBotLink] = useState<{ linked: boolean; chatId: string | null; linkedAt: string | null } | null>(null);
+  const [botToken, setBotToken] = useState<string | null>(null);
+  const [botTokenLoading, setBotTokenLoading] = useState(false);
 
   const reload = (uid: string | undefined) => {
     calendarApi.status()
@@ -662,6 +665,9 @@ export function SettingsView() {
     linkedinApi.status()
       .then((v) => { setLinkedin(v); writeCache(uid, { ...readCache(uid), linkedin: v }); })
       .catch(() => setLinkedin((p) => p ?? { connected: false, profileName: null }));
+    telegramBotApi.status()
+      .then((v) => setBotLink(v))
+      .catch(() => setBotLink((p) => p ?? { linked: false, chatId: null, linkedAt: null }));
   };
 
   useEffect(() => {
@@ -921,6 +927,55 @@ export function SettingsView() {
           </div>
           <span style={{ fontSize: 13, color: "var(--t3)" }}>→</span>
         </Link>
+      </section>
+
+      {/* Voice Bot account linking */}
+      <section>
+        <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground" style={{ marginBottom: 12 }}>Voice Bot</div>
+        <div className="rounded-xl border border-border bg-card shadow-sm" style={{ padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>Link your Telegram account</div>
+              <div style={{ fontSize: 12, color: "var(--t3)", lineHeight: 1.5 }}>
+                Link your Telegram account to @subyassistant_bot so voice notes you send are saved to <em>your</em> contacts — not the shared account.
+              </div>
+              {botLink?.linked && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--gc)", fontWeight: 500 }}>
+                  ✓ Linked — voice notes go to your account
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+              {botLink?.linked ? (
+                <Button size="sm" variant="ghost" onClick={async () => {
+                  await telegramBotApi.unlink();
+                  setBotLink({ linked: false, chatId: null, linkedAt: null });
+                  setBotToken(null);
+                }}>Unlink</Button>
+              ) : (
+                <Button size="sm" onClick={async () => {
+                  setBotTokenLoading(true);
+                  try {
+                    const { token } = await telegramBotApi.generateToken();
+                    setBotToken(token);
+                  } finally { setBotTokenLoading(false); }
+                }} disabled={botTokenLoading}>
+                  {botTokenLoading ? <><Spinner /> Generating…</> : "Generate Code"}
+                </Button>
+              )}
+            </div>
+          </div>
+          {botToken && !botLink?.linked && (
+            <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: "var(--r)", background: "var(--al)", border: "1px solid var(--bd)" }}>
+              <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 6 }}>Send this code to <strong>@subyassistant_bot</strong> on Telegram:</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <code style={{ fontSize: 18, fontWeight: 700, letterSpacing: 2, color: "var(--pc)", fontFamily: "monospace", flex: 1 }}>{botToken}</code>
+                <Button size="sm" variant="ghost" onClick={() => { navigator.clipboard.writeText(botToken); }}>Copy</Button>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 6 }}>Expires in 15 minutes. After sending the code, refresh this page.</div>
+            </div>
+          )}
+        </div>
       </section>
 
       <p style={{ fontSize: 11, color: "var(--t3)", textAlign: "center" }}>Need another integration? Drop a note in <span className="font-mono text-xs tabular-nums">#suby-feedback</span>.</p>

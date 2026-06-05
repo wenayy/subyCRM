@@ -395,6 +395,12 @@ export const whatsappApi = {
 };
 
 // ─── Telegram Personal API ─────────────────────────────────
+export const telegramBotApi = {
+  status: () => apiFetch<{ linked: boolean; chatId: string | null; linkedAt: string | null }>("/api/telegram-bot/status"),
+  generateToken: () => apiFetch<{ token: string }>("/api/telegram-bot/generate-token", { method: "POST" }),
+  unlink: () => apiFetch<{ ok: boolean }>("/api/telegram-bot/unlink", { method: "POST" }),
+};
+
 export const telegramPersonalApi = {
   status: () => apiFetch<{ connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean }>("/api/telegram-personal/status"),
   sendCode: (data: { phoneNumber: string; apiId?: number; apiHash?: string }) =>

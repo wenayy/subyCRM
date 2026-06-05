@@ -325,6 +325,28 @@ model ImportJob {
   @@schema("contacts")
 }
 
+model TelegramBotLink {
+  id       String   @id @default(uuid())
+  userId   String   @unique @map("user_id")
+  chatId   String   @unique @map("chat_id")
+  linkedAt DateTime @default(now()) @map("linked_at")
+
+  @@map("telegram_bot_links")
+  @@schema("contacts")
+}
+
+model TelegramBotLinkToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@map("telegram_bot_link_tokens")
+  @@schema("contacts")
+}
+
 model GoogleCalendarToken {
   id           String    @id @default(uuid())
   userId       String    @unique @map("user_id")

@@ -108,14 +108,20 @@ Rules:
 }
 
 // ── Core: process a transcript → DB writes → return result ───────────────────
-async function getBotUserId(): Promise<string> {
+async function getUserIdForChat(chatId: number): Promise<string> {
+  const link = await (prisma as any).telegramBotLink.findUnique({
+    where: { chatId: String(chatId) },
+    select: { userId: true },
+  });
+  if (link) return link.userId;
+  // Fall back to first registered user if no link exists
   const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
   return user?.id ?? "default";
 }
 
-export async function processVoiceCapture(transcript: string): Promise<CaptureResult> {
+export async function processVoiceCapture(transcript: string, chatId?: number): Promise<CaptureResult> {
   const startMs = Date.now();
-  const userId = await getBotUserId();
+  const userId = chatId ? await getUserIdForChat(chatId) : await getUserIdForChat(0);
 
   let intent: ParsedIntent;
   try {
@@ -252,6 +258,39 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   const send = (text: string) => bot!.sendMessage(chatId, text, { parse_mode: "Markdown" });
 
+  // ── Account linking ──────────────────────────────────────
+  if (msg.text?.match(/^LINK-[A-F0-9]{8}$/)) {
+    const token = msg.text.trim();
+    const record = await (prisma as any).telegramBotLinkToken.findUnique({ where: { token } });
+    if (!record) {
+      await send("❌ Invalid or expired code. Generate a new one in Settings → Voice Bot.");
+      return;
+    }
+    if (new Date(record.expiresAt) < new Date()) {
+      await (prisma as any).telegramBotLinkToken.delete({ where: { token } });
+      await send("❌ Code expired. Generate a new one in Settings → Voice Bot.");
+      return;
+    }
+    await (prisma as any).telegramBotLink.upsert({
+      where: { userId: record.userId },
+      create: { userId: record.userId, chatId: String(chatId) },
+      update: { chatId: String(chatId) },
+    });
+    await (prisma as any).telegramBotLinkToken.delete({ where: { token } });
+    await send("✅ *Linked!* Your Suby CRM account is now connected to this Telegram account. Send voice notes to log contacts.");
+    return;
+  }
+
+  if (msg.text?.startsWith("/start")) {
+    const isLinked = await (prisma as any).telegramBotLink.findUnique({ where: { chatId: String(chatId) } });
+    if (isLinked) {
+      await send("✅ Already linked to your CRM account. Send a voice note to get started!");
+    } else {
+      await send("👋 Welcome to Suby CRM Bot!\n\nTo link your account:\n1. Open the app → *Settings → Voice Bot*\n2. Click *Generate Code*\n3. Send the code here");
+    }
+    return;
+  }
+
   let transcript: string;
   if (msg.voice) {
     await send("🎙️ Transcribing…");
@@ -263,10 +302,10 @@ async function handleMessage(msg: TelegramBot.Message) {
     }
   } else if (msg.text && !msg.text.startsWith("/")) {
     transcript = msg.text;
-    // Log text DMs to unified inbox (inbound messages from bot users)
+    const userId = await getUserIdForChat(chatId);
     const senderName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") || msg.from?.username || String(chatId);
     const contact = await prisma.contact.findFirst({
-      where: { name: { contains: senderName.split(" ")[0], mode: "insensitive" } },
+      where: { userId, name: { contains: senderName.split(" ")[0], mode: "insensitive" } },
     });
     if (contact) {
       await inboxService.upsert({
@@ -287,7 +326,7 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   await send(`📝 _"${transcript}"_\n\n⏳ Processing…`);
   try {
-    const result = await processVoiceCapture(transcript);
+    const result = await processVoiceCapture(transcript, chatId);
     await send(result.replyMessage);
   } catch (err) {
     console.error("[telegram-bot] processVoiceCapture failed:", err);

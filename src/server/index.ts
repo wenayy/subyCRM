@@ -35,6 +35,7 @@ import telegramPersonalRouter from "./routes/telegram-personal.routes";
 import linkedinRouter, { linkedinCallbackRouter } from "./routes/linkedin.routes";
 import sequenceRouter from "./routes/sequence.routes";
 import pipelineRouter from "./routes/pipeline.routes";
+import telegramBotRouter from "./routes/telegram-bot.routes";
 
 const app = express();
 const PORT = process.env.PORT || process.env.API_PORT || 4002;
@@ -132,6 +133,7 @@ app.use("/api/telegram-personal", telegramPersonalRouter);
 app.use("/api/linkedin", linkedinRouter);
 app.use("/api/sequences", sequenceRouter);
 app.use("/api/pipeline", pipelineRouter);
+app.use("/api/telegram-bot", telegramBotRouter);
 
 // ─── Error handler ───────────────────────────────────────────
 app.use(errorMiddleware);
