@@ -366,8 +366,8 @@ export const enrichmentService = {
 
     let companyRecord = null;
     if (finalCompany) {
-      const existingCompany = await prisma.company.findUnique({
-        where: { name: finalCompany },
+      const existingCompany = await prisma.company.findFirst({
+        where: { userId: contact.userId, name: finalCompany },
       });
 
       let companyUpdateData: Record<string, any> = {};
@@ -378,11 +378,16 @@ export const enrichmentService = {
         }
       }
 
-      companyRecord = await prisma.company.upsert({
-        where: { name: finalCompany },
-        create: { name: finalCompany, ...companyUpdateData },
-        update: companyUpdateData,
-      });
+      if (existingCompany) {
+        companyRecord = await prisma.company.update({
+          where: { id: existingCompany.id },
+          data: companyUpdateData,
+        });
+      } else {
+        companyRecord = await prisma.company.create({
+          data: { name: finalCompany, userId: contact.userId, ...companyUpdateData },
+        });
+      }
       if (!contact.companyId) updateData.companyId = companyRecord.id;
     }
 
