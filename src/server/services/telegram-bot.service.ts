@@ -108,8 +108,14 @@ Rules:
 }
 
 // ── Core: process a transcript → DB writes → return result ───────────────────
+async function getBotUserId(): Promise<string> {
+  const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
+  return user?.id ?? "default";
+}
+
 export async function processVoiceCapture(transcript: string): Promise<CaptureResult> {
   const startMs = Date.now();
+  const userId = await getBotUserId();
 
   let intent: ParsedIntent;
   try {
@@ -117,7 +123,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
     console.log("[voice] intent:", intent);
   } catch (err) {
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, action: "unknown", status: "failed", processingMs: Date.now() - startMs },
+      data: { userId, transcript, action: "unknown", status: "failed", processingMs: Date.now() - startMs },
     });
     return { ...cap, replyMessage: "❌ Failed to parse intent. Try again.", dueDate: cap.dueDate?.toISOString() ?? null };
   }
@@ -130,7 +136,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
   // ── Unknown ───────────────────────────────────────────────
   if (intent.action === "unknown") {
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, contactName: null, action: "unknown", content: null, status: "processed", processingMs },
+      data: { userId, transcript, contactName: null, action: "unknown", content: null, status: "processed", processingMs },
     });
     replyMessage = `❓ No action detected.\n\n_"${transcript}"_\n\nTry: _"Met John from Stripe, he's the CTO"_ or _"Remind me to call Sarah on Friday"_`;
     return { ...cap, createdAt: undefined, replyMessage, dueDate: null };
@@ -140,14 +146,14 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
   if (intent.action === "new_contact" || (!intent.contactId && intent.contactName)) {
     if (!intent.contactName) {
       const cap = await (prisma as any).voiceCapture.create({
-        data: { transcript, action: "unknown", status: "failed", processingMs },
+        data: { userId, transcript, action: "unknown", status: "failed", processingMs },
       });
       replyMessage = `❓ Couldn't extract a name. Try mentioning their name clearly.`;
       return { ...cap, replyMessage, dueDate: null };
     }
 
     // Check if a similar contact already exists to avoid duplicates
-    const existing = await findSimilarContact(intent.contactName);
+    const existing = await findSimilarContact(intent.contactName, userId);
     if (existing) {
       contactId = existing.id;
       contactName = existing.name;
@@ -155,7 +161,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
         await prisma.note.create({ data: { contactId: existing.id, content: intent.content } });
       }
       const cap = await (prisma as any).voiceCapture.create({
-        data: { transcript, contactId, contactName, action: "note", content: intent.content ?? null, status: "processed", processingMs },
+        data: { userId, transcript, contactId, contactName, action: "note", content: intent.content ?? null, status: "processed", processingMs },
       });
       replyMessage = `🔗 *Matched existing contact:* ${existing.name}${intent.content ? `\n✅ Note: _"${intent.content}"_` : ""}`;
       return { ...cap, replyMessage, dueDate: null };
@@ -163,6 +169,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
 
     const newContact = await prisma.contact.create({
       data: {
+        userId,
         name: intent.contactName,
         role: intent.inferredRole ?? undefined,
         company: intent.inferredCompany ?? undefined,
@@ -180,7 +187,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
     }
 
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, contactId, contactName, action: "new_contact", content: intent.content ?? null, status: "processed", processingMs },
+      data: { userId, transcript, contactId, contactName, action: "new_contact", content: intent.content ?? null, status: "processed", processingMs },
     });
     replyMessage = `👤 *New contact:* ${newContact.name}${detailLine ? `\n_${detailLine}_` : ""}${intent.content ? `\n✅ Note: _"${intent.content}"_` : ""}`;
     return { ...cap, replyMessage, dueDate: null };
@@ -190,7 +197,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
   const contact = await prisma.contact.findUnique({ where: { id: intent.contactId! } });
   if (!contact) {
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, action: "unknown", status: "failed", processingMs },
+      data: { userId, transcript, action: "unknown", status: "failed", processingMs },
     });
     replyMessage = `❓ Contact not found. Try again.`;
     return { ...cap, replyMessage, dueDate: null };
@@ -202,7 +209,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
     await prisma.note.create({ data: { contactId: contact.id, content: intent.content } });
     await prisma.contact.update({ where: { id: contact.id }, data: { lastContactDate: new Date() } });
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, contactId, contactName, action: "note", content: intent.content, status: "processed", processingMs },
+      data: { userId, transcript, contactId, contactName, action: "note", content: intent.content, status: "processed", processingMs },
     });
     replyMessage = `✅ *Note saved* for *${contact.name}*\n_"${intent.content}"_`;
     return { ...cap, replyMessage, dueDate: null };
@@ -214,7 +221,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
     })();
     await prisma.reminder.create({ data: { contactId: contact.id, content: intent.content, dueDate } });
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, contactId, contactName, action: "reminder", content: intent.content, dueDate, status: "processed", processingMs },
+      data: { userId, transcript, contactId, contactName, action: "reminder", content: intent.content, dueDate, status: "processed", processingMs },
     });
     const when = dueDate.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
     replyMessage = `⏰ *Reminder set* for *${contact.name}*\n_"${intent.content}"_\n📅 ${when}`;
@@ -224,7 +231,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
   if (intent.action === "strength" && intent.strength) {
     await prisma.contact.update({ where: { id: contact.id }, data: { relationshipStrength: intent.strength } });
     const cap = await (prisma as any).voiceCapture.create({
-      data: { transcript, contactId, contactName, action: "strength", content: `Marked as ${intent.strength}`, strength: intent.strength, status: "processed", processingMs },
+      data: { userId, transcript, contactId, contactName, action: "strength", content: `Marked as ${intent.strength}`, strength: intent.strength, status: "processed", processingMs },
     });
     const emoji = intent.strength === "hot" ? "🔥" : intent.strength === "warm" ? "☀️" : "🧊";
     replyMessage = `${emoji} *${contact.name}* marked as *${intent.strength}*`;
@@ -232,7 +239,7 @@ export async function processVoiceCapture(transcript: string): Promise<CaptureRe
   }
 
   const cap = await (prisma as any).voiceCapture.create({
-    data: { transcript, contactId, contactName, action: "unknown", status: "failed", processingMs },
+    data: { userId, transcript, contactId, contactName, action: "unknown", status: "failed", processingMs },
   });
   replyMessage = `❓ Couldn't determine action.`;
   return { ...cap, replyMessage, dueDate: null };

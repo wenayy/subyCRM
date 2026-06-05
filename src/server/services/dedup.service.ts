@@ -24,14 +24,16 @@ interface DeduplicateResult {
 
 // Check if a contact with a similar name already exists before creating a new one.
 // Returns the existing contact if found, null otherwise.
-export async function findSimilarContact(name: string): Promise<{ id: string; name: string } | null> {
+export async function findSimilarContact(name: string, userId?: string): Promise<{ id: string; name: string } | null> {
   const normalized = name.toLowerCase().trim();
   if (normalized.length < 3) return null;
-  const contacts = await prisma.contact.findMany({ select: { id: true, name: true } });
+  const contacts = await prisma.contact.findMany({
+    where: userId ? { userId } : undefined,
+    select: { id: true, name: true },
+  });
   for (const c of contacts) {
     const existing = c.name.toLowerCase().trim();
     if (levenshtein(normalized, existing) <= 2) return c;
-    // Also match if one name is a substring of the other (e.g. "Patrick" vs "Patrick Collison")
     if (normalized.includes(existing) || existing.includes(normalized)) return c;
   }
   return null;

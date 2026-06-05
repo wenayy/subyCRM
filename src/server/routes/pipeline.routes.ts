@@ -20,9 +20,10 @@ function fmt(d: any) {
 }
 
 // GET /api/pipeline
-router.get("/", async (_req, res, next) => {
+router.get("/", async (req, res, next) => {
   try {
-    const deals = await prisma.deal.findMany({ orderBy: { createdAt: "asc" } });
+    const userId = res.locals.session?.user?.id ?? "default";
+    const deals = await prisma.deal.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
     res.json(deals.map(fmt));
   } catch (err) { next(err); }
 });
@@ -30,6 +31,7 @@ router.get("/", async (_req, res, next) => {
 // POST /api/pipeline
 router.post("/", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { contactId, contactName, companyId, companyName, stage, value, probability, nextStep, source } = req.body as {
       contactId?: string; contactName: string; companyId?: string; companyName?: string;
       stage?: string; value?: number; probability?: number; nextStep?: string; source?: string;
@@ -37,6 +39,7 @@ router.post("/", async (req, res, next) => {
     if (!contactName?.trim()) { res.status(400).json({ error: "contactName is required" }); return; }
     const deal = await prisma.deal.create({
       data: {
+        userId,
         contactId: contactId || null,
         contactName: contactName.trim(),
         companyId: companyId || null,
@@ -55,6 +58,7 @@ router.post("/", async (req, res, next) => {
 // PATCH /api/pipeline/:id
 router.patch("/:id", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const { stage, value, probability, nextStep, source, contactName, companyName } = req.body as {
       stage?: string; value?: number; probability?: number; nextStep?: string;
       source?: string; contactName?: string; companyName?: string;
@@ -67,7 +71,7 @@ router.patch("/:id", async (req, res, next) => {
     if (source !== undefined) data.source = source;
     if (contactName !== undefined) data.contactName = contactName;
     if (companyName !== undefined) data.companyName = companyName;
-    const deal = await prisma.deal.update({ where: { id: req.params.id }, data });
+    const deal = await prisma.deal.update({ where: { id: req.params.id, userId }, data });
     res.json(fmt(deal));
   } catch (err) { next(err); }
 });
@@ -75,7 +79,8 @@ router.patch("/:id", async (req, res, next) => {
 // DELETE /api/pipeline/:id
 router.delete("/:id", async (req, res, next) => {
   try {
-    await prisma.deal.delete({ where: { id: req.params.id } });
+    const userId = res.locals.session?.user?.id ?? "default";
+    await prisma.deal.delete({ where: { id: req.params.id, userId } });
     res.status(204).send();
   } catch (err) { next(err); }
 });

@@ -360,18 +360,20 @@ model CalendarEvent {
 }
 
 model VoiceCapture {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
+  userId       String    @default("default") @map("user_id")
   transcript   String
-  contactId    String?  @map("contact_id")
-  contactName  String?  @map("contact_name")
-  action       String   // note | reminder | strength | new_contact | unknown
-  content      String?  // note body / reminder text
+  contactId    String?   @map("contact_id")
+  contactName  String?   @map("contact_name")
+  action       String
+  content      String?
   dueDate      DateTime? @map("due_date")
-  strength     String?  // hot | warm | cold
-  status       String   @default("processed") // processed | failed
-  processingMs Int?     @map("processing_ms")
-  createdAt    DateTime @default(now()) @map("created_at")
+  strength     String?
+  status       String    @default("processed")
+  processingMs Int?      @map("processing_ms")
+  createdAt    DateTime  @default(now()) @map("created_at")
 
+  @@index([userId])
   @@index([createdAt])
   @@map("voice_captures")
   @@schema("contacts")
@@ -555,6 +557,7 @@ enum EnrollmentStatus {
 
 model Sequence {
   id          String         @id @default(uuid())
+  userId      String         @default("default") @map("user_id")
   name        String?
   contactId   String?        @map("contact_id")
   contactName String?        @map("contact_name")
@@ -569,6 +572,7 @@ model Sequence {
   steps       SequenceStep[]
   enrollments SequenceEnrollment[]
 
+  @@index([userId])
   @@index([contactId])
   @@map("sequences")
   @@schema("contacts")

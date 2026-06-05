@@ -48,9 +48,11 @@ function fmtSeq(seq: any) {
 }
 
 // GET /api/sequences
-router.get("/", async (_req, res, next) => {
+router.get("/", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const sequences = await (prisma as any).sequence.findMany({
+      where: { userId },
       include: { steps: { orderBy: { stepNumber: "asc" } } },
       orderBy: { createdAt: "desc" },
     });
@@ -91,8 +93,10 @@ router.post("/", async (req, res, next) => {
       if (found) resolvedContactId = found.id;
     }
 
+    const userId = res.locals.session?.user?.id ?? "default";
     const seq = await (prisma as any).sequence.create({
       data: {
+        userId,
         name: goal,
         contactId: resolvedContactId,
         contactName: contactName.trim(),

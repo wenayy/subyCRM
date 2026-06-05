@@ -5,9 +5,11 @@ import { processVoiceCapture } from "../services/telegram-bot.service";
 export const voiceRouter = Router();
 
 // GET /api/voice/captures
-voiceRouter.get("/captures", async (_req, res, next) => {
+voiceRouter.get("/captures", async (req, res, next) => {
   try {
+    const userId = res.locals.session?.user?.id ?? "default";
     const rows = await (prisma as any).voiceCapture.findMany({
+      where: { userId },
       orderBy: { createdAt: "desc" },
       take: 50,
     });
@@ -20,9 +22,13 @@ voiceRouter.get("/captures", async (_req, res, next) => {
 });
 
 // GET /api/voice/stats
-voiceRouter.get("/stats", async (_req, res, next) => {
+voiceRouter.get("/stats", async (req, res, next) => {
   try {
-    const all = await (prisma as any).voiceCapture.findMany({ select: { action: true, status: true } });
+    const userId = res.locals.session?.user?.id ?? "default";
+    const all = await (prisma as any).voiceCapture.findMany({
+      where: { userId },
+      select: { action: true, status: true },
+    });
     res.json({
       total: all.length,
       processed: all.filter((r: any) => r.status === "processed").length,
