@@ -128,7 +128,7 @@ export const inboxService = {
   },
 
   async deleteMessage(id: string, userId: string = "default") {
-    const result = await (prisma as any).inboxMessage.delete({ where: { id, userId } });
+    const result = await (prisma as any).inboxMessage.deleteMany({ where: { id, userId } });
     broadcastInboxEvent("message_deleted", { id });
     return result;
   },
@@ -464,29 +464,16 @@ export const inboxService = {
         data: { contactId },
       });
 
-      for (const msg of matchingMessages) {
-        const direction = msg.fromMe ? "outbound" : "inbound";
-        const existing = await prisma.interaction.findFirst({
-          where: {
-            contactId,
-            platform: platformType as any,
-            direction,
-            occurredAt: msg.receivedAt,
-          },
-        });
-
-        if (!existing) {
-          await prisma.interaction.create({
-            data: {
-              contactId,
-              platform: platformType as any,
-              direction,
-              contentSnippet: msg.preview || msg.body || "",
-              occurredAt: msg.receivedAt,
-            },
-          });
-        }
-      }
+      await prisma.interaction.createMany({
+        data: matchingMessages.map((msg: any) => ({
+          contactId,
+          platform: platformType as any,
+          direction: msg.fromMe ? "outbound" : "inbound",
+          contentSnippet: msg.preview || msg.body || "",
+          occurredAt: msg.receivedAt,
+        })),
+        skipDuplicates: true,
+      });
 
       const contactInteractions = await prisma.interaction.findMany({
         where: { contactId },
