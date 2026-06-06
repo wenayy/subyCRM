@@ -261,7 +261,10 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
 
   const handleDeleteNote = (noteId: string) => {
     setContact((prev) => prev ? { ...prev, notes: (prev.notes || []).filter((n) => n.id !== noteId) } : prev);
-    contactsApi.deleteNote(id, noteId).catch(() => reload());
+    contactsApi.deleteNote(id, noteId).catch((err) => {
+      reload();
+      alert(`Failed to delete note: ${err?.message ?? "Unknown error"}`);
+    });
   };
 
   const handleClassify = async () => {
@@ -344,12 +347,18 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     setContact((prev) => prev ? { ...prev, platforms: (prev.platforms || []).map((p) => p.id === pid ? { ...p, platformId: handle } : p) } : prev);
     setEditingPlatformId(null);
     setEditPlatformValue("");
-    contactsApi.updatePlatform(id, pid, { platformId: handle }).catch(() => reload());
+    contactsApi.updatePlatform(id, pid, { platformId: handle }).catch((err) => {
+      reload();
+      alert(`Failed to update platform: ${err?.message ?? "Unknown error"}`);
+    });
   };
 
   const handleDeletePlatform = (pid: string) => {
     setContact((prev) => prev ? { ...prev, platforms: (prev.platforms || []).filter((p) => p.id !== pid) } : prev);
-    contactsApi.deletePlatform(id, pid).catch(() => reload());
+    contactsApi.deletePlatform(id, pid).catch((err) => {
+      reload();
+      alert(`Failed to remove platform: ${err?.message ?? "Unknown error"}`);
+    });
   };
 
   const handleAddReminder = async () => {
@@ -382,7 +391,7 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
 
   const handleFieldChange = async (field: string, value: string) => {
     try { await contactsApi.update(id, { [field]: value } as Partial<Contact>); await reload(); }
-    catch {}
+    catch (err: any) { alert(`Failed to update contact: ${err?.message ?? "Unknown error"}`); }
   };
 
   const handleAddTag = () => {
@@ -392,12 +401,27 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     const optimisticCt = { id: `opt-ct-${Date.now()}`, contactId: id, tagId: tag.id, tag, createdAt: new Date().toISOString() };
     setContact((prev) => prev ? { ...prev, contactTags: [...(prev.contactTags || []), optimisticCt] } : prev);
     setSelectedTag("");
-    contactsApi.addTag(id, tag.id).catch(() => reload());
+    contactsApi.addTag(id, tag.id)
+      .then((realCt: any) => {
+        setContact((prev) => prev ? {
+          ...prev,
+          contactTags: (prev.contactTags || []).map((ct) =>
+            ct.id === optimisticCt.id ? { ...optimisticCt, ...realCt, tag: realCt.tag ?? tag } : ct
+          ),
+        } : prev);
+      })
+      .catch((err) => {
+        setContact((prev) => prev ? { ...prev, contactTags: (prev.contactTags || []).filter((ct) => ct.id !== optimisticCt.id) } : prev);
+        alert(`Failed to add tag: ${err?.message ?? "Unknown error"}`);
+      });
   };
 
   const handleRemoveTag = (tagId: string) => {
     setContact((prev) => prev ? { ...prev, contactTags: (prev.contactTags || []).filter((ct) => ct.tagId !== tagId) } : prev);
-    contactsApi.removeTag(id, tagId).catch(() => reload());
+    contactsApi.removeTag(id, tagId).catch((err) => {
+      reload();
+      alert(`Failed to remove tag: ${err?.message ?? "Unknown error"}`);
+    });
   };
 
   if (loading) {

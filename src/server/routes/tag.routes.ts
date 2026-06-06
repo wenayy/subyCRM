@@ -74,8 +74,10 @@ contactTagRouter.post("/:id/tags", async (req, res, next) => {
       return;
     }
 
-    const contactTag = await prisma.contactTag.create({
-      data: { contactId: req.params.id, tagId: resolvedTagId },
+    const contactTag = await prisma.contactTag.upsert({
+      where: { contactId_tagId: { contactId: req.params.id, tagId: resolvedTagId } },
+      create: { contactId: req.params.id, tagId: resolvedTagId },
+      update: {},
       include: { tag: true },
     });
     await cache.invalidateContacts().catch(console.error);
