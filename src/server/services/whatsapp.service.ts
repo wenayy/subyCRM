@@ -617,6 +617,17 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
             create: { userId, connected: true, phoneNumber: state.phoneNumber },
             update: { connected: true, phoneNumber: state.phoneNumber },
           });
+          // Only one WhatsApp socket can be active — purge all other users' sessions
+          // so autoReconnect never re-attaches a different user's session on restart
+          const others = await (prisma as any).whatsAppSession
+            .findMany({ where: { userId: { not: userId } } })
+            .catch(() => []);
+          for (const other of others) {
+            try { fs.rmSync(getAuthDir(other.userId), { recursive: true, force: true }); } catch {}
+          }
+          await (prisma as any).whatsAppSession
+            .deleteMany({ where: { userId: { not: userId } } })
+            .catch(() => {});
         } catch (e) {
           console.error("[whatsapp] Failed to persist session:", e);
         }
