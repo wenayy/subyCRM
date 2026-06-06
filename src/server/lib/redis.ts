@@ -12,4 +12,6 @@ export const redis: IORedis =
   globalThis.__redis ??
   (globalThis.__redis = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, ...tlsOptions }));
 
-export const redisConnection = { connection: redis };
+// Cast to any: BullMQ bundles its own ioredis copy, causing TS structural type mismatch.
+// Runtime behavior is identical — same connection instance.
+export const redisConnection = { connection: redis as any };
