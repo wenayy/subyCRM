@@ -3,7 +3,10 @@ import { createHmac } from "crypto";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
 
-const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+// gmail.modify covers read + send + label changes. gmail.readonly is a subset of this
+// so existing tokens are still valid for reading; users only need to re-authorize once
+// to gain send access.
+const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/gmail/callback`;
 const STATE_SECRET = process.env.BETTER_AUTH_SECRET || "suby-gmail-state-secret";
 
@@ -235,40 +238,42 @@ export async function getThreads(contactId?: string) {
   });
 }
 
-import nodemailer from "nodemailer";
-
-// Reusable transporter for sending emails via Gmail SMTP (App Password)
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-/**
- * Send an email using the configured transporter.
- * @param params - to, subject, text and optional html.
- */
-export async function sendEmail(params: {
-  to: string | string[];
-  subject: string;
-  text?: string;
-  html?: string;
-}) {
-  const { to, subject, text, html } = params;
+// Send a reply via the user's connected Gmail OAuth account.
+// Using the Gmail API (not SMTP) means the email is sent from the user's own
+// address and the threadId keeps it in the right conversation thread.
+export async function sendEmailViaGmailApi(
+  userId: string,
+  params: { to: string; subject: string; text: string; threadId?: string }
+): Promise<void> {
+  let client: Awaited<ReturnType<typeof authedClient>>;
   try {
-    const info = await transporter.sendMail({
-      from: `"Suby Contacts" <${process.env.EMAIL_USER}>`,
-      to,
-      subject,
-      text,
-      html,
+    client = await authedClient(userId);
+  } catch {
+    throw new Error("Gmail not connected — go to Settings → Gmail to reconnect.");
+  }
+
+  const gmail = google.gmail({ version: "v1", auth: client });
+
+  const emailLines = [
+    `To: ${params.to}`,
+    `Subject: ${params.subject}`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    ``,
+    params.text,
+  ];
+  const raw = Buffer.from(emailLines.join("\r\n")).toString("base64url");
+
+  try {
+    await gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw, threadId: params.threadId },
     });
-    console.log("[sendEmail] Message sent:", info.messageId);
-    return info;
-  } catch (error) {
-    console.error("[sendEmail] Failed to send email:", error);
-    throw error;
+  } catch (err: any) {
+    // 403 with "insufficient authentication scopes" means the stored token was issued
+    // with the old gmail.readonly scope — user must re-authorize.
+    if (err?.code === 403 || err?.message?.includes("insufficient")) {
+      throw new Error("Gmail needs re-authorization to send email — go to Settings → Gmail, disconnect and reconnect.");
+    }
+    throw err;
   }
 }

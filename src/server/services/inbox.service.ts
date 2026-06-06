@@ -424,11 +424,16 @@ export const inboxService = {
             await sendBotReply(telegramChatId, text);
           }
         } else if (msg.platform === "email" && toEmail) {
-          // Build reply subject: prepend "Re: " if not already present
           const originalSubject = msg.preview ?? "";
           const subject = originalSubject.match(/^re:/i) ? originalSubject : `Re: ${originalSubject}`;
-          const { sendEmail } = await import("./gmail.service");
-          await sendEmail({ to: toEmail, subject, text });
+          const { sendEmailViaGmailApi } = await import("./gmail.service");
+          // Pass threadId (= externalId) so Gmail keeps the reply in the same thread
+          await sendEmailViaGmailApi(userId ?? "default", {
+            to: toEmail,
+            subject,
+            text,
+            threadId: msg.externalId ?? undefined,
+          });
         }
       } catch (err: any) {
         // If WA is reconnecting (not permanently disconnected) and JID is resolved,
