@@ -3,9 +3,13 @@ import type { Prisma } from "@prisma/client";
 
 function normalizePlatformId(type: string, id: string): string {
   if (type === "linkedin") {
-    // Accept: full URL, URL without protocol, or just slug — always store the slug
     const match = id.match(/linkedin\.com\/in\/([^/?#\s]+)/i);
     if (match) return match[1];
+  }
+  if (type === "whatsapp") {
+    // Always store digits only — consistent with how Baileys stores phone numbers
+    const digits = id.replace(/\D/g, "");
+    return digits || id.trim();
   }
   return id.trim();
 }

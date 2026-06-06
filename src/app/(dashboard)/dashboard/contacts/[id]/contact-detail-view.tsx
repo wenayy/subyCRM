@@ -325,9 +325,17 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     setContact((prev) => prev ? { ...prev, platforms: [...(prev.platforms || []), optimisticPlatform] } : prev);
     setNewPlatformId("");
     setAddingPlatform(false);
-    contactsApi.addPlatform(id, { type: newPlatformType, platformId: handle }).then(() => reload()).catch(() => {
-      setContact((prev) => prev ? { ...prev, platforms: (prev.platforms || []).filter((p) => p.id !== optimisticPlatform.id) } : prev);
-    });
+    contactsApi.addPlatform(id, { type: newPlatformType, platformId: handle })
+      .then((realPlatform: any) => {
+        setContact((prev) => prev ? {
+          ...prev,
+          platforms: (prev.platforms || []).map((p) => p.id === optimisticPlatform.id ? { ...optimisticPlatform, ...realPlatform } : p),
+        } as any : prev);
+      })
+      .catch((err) => {
+        setContact((prev) => prev ? { ...prev, platforms: (prev.platforms || []).filter((p) => p.id !== optimisticPlatform.id) } : prev);
+        alert(`Failed to add platform: ${err?.message ?? "Unknown error"}`);
+      });
   };
 
   const handleEditPlatform = (pid: string) => {
