@@ -752,6 +752,8 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         persistAllFilesToDb(authDir, userId).catch(e =>
           console.error("[whatsapp] Failed to snapshot auth files on connect:", e)
         );
+        // Stable connection — reset 440 counter so a future 440 starts fresh backoff
+        s.consecutive440s = 0;
         settle({ connected: true });
       }
 
@@ -769,12 +771,12 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         } else {
           settle({ connected: false });
           if (code === DisconnectReason.connectionReplaced || code === 440) {
-            // 440 = another client (e.g. Beeper) replaced this session.
-            // Use a long backoff so both clients don't kick each other in a tight loop.
+            // 440 = another client replaced this session (e.g. user opens WhatsApp on phone).
+            // Graduated backoff: short on first hit (brief phone use), longer only if it keeps happening.
             s.consecutive440s++;
-            // 5 min flat backoff — long enough for the competing client to stabilise
-            s.reconnectDelay = 5 * 60_000;
-            console.log(`[whatsapp] Connection replaced (440) — count=${s.consecutive440s}, waiting 5 min before reconnect`);
+            const delays = [30_000, 90_000, 5 * 60_000]; // 30s → 90s → 5 min
+            s.reconnectDelay = delays[Math.min(s.consecutive440s - 1, delays.length - 1)];
+            console.log(`[whatsapp] Connection replaced (440) — count=${s.consecutive440s}, reconnecting in ${s.reconnectDelay / 1000}s`);
           } else {
             s.consecutive440s = 0;
             s.reconnectDelay = 0;
