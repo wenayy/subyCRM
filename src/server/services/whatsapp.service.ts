@@ -117,6 +117,7 @@ type UserState = {
   lidMap: Map<string, string>;
   contactsCache: Map<string, any>;
   pendingLidMessages: Array<{ msg: any; isHistorical: boolean }>;
+  autoImportDone: boolean;
 };
 
 const sessions = new Map<string, UserState>();
@@ -139,6 +140,7 @@ function getSession(userId: string): UserState {
       lidMap: new Map(),
       contactsCache: new Map(),
       pendingLidMessages: [],
+      autoImportDone: false,
     };
     sessions.set(userId, s);
   }
@@ -707,7 +709,24 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     });
 
     // ── Contact list updates (builds LID map) ────────────────
-    sock.ev.on("contacts.upsert", (c: any[]) => { if (s.generation === myGen) ingestContacts(c, s); });
+    sock.ev.on("contacts.upsert", async (c: any[]) => {
+      if (s.generation !== myGen) return;
+      ingestContacts(c, s);
+      // Auto-import contacts into CRM on first contacts.upsert after a fresh connect
+      if (!s.autoImportDone && s.contactsCache.size > 0) {
+        s.autoImportDone = true;
+        try {
+          const { queues } = await import("../lib/queues");
+          const job = await prisma.importJob.create({
+            data: { userId, source: "whatsapp_export", status: "running", startedAt: new Date() },
+          });
+          await queues.whatsappImport.add("whatsapp-import", { userId, importJobId: job.id });
+          console.log(`[whatsapp] Auto-import triggered for user ${userId} (${s.contactsCache.size} contacts in cache)`);
+        } catch (err) {
+          console.error("[whatsapp] Failed to trigger auto-import:", err);
+        }
+      }
+    });
     sock.ev.on("contacts.update", (c: any[]) => { if (s.generation === myGen) ingestContacts(c, s); });
 
     // ── Live messages ─────────────────────────────────────────
