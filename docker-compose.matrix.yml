@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  conduit:
+    image: matrixconduit/matrix-conduit:latest
+    ports:
+      - "6167:6167"
+    environment:
+      CONDUIT_SERVER_NAME: localhost
+      CONDUIT_DATABASE_BACKEND: rocksdb
+      CONDUIT_MAX_REQUEST_SIZE: "20000000"
+      CONDUIT_ALLOW_REGISTRATION: "false"
+      CONDUIT_ALLOW_GUESTS: "false"
+      CONDUIT_PORT: "6167"
+    volumes:
+      - conduit-data:/var/lib/matrix-conduit
+      - ./registrations:/registrations:ro
+
+  mautrix-twitter:
+    build: ./railway/mautrix-twitter
+    ports:
+      - "29327:29327"
+    environment:
+      HOMESERVER_URL: http://conduit:6167
+      MATRIX_DOMAIN: localhost
+      TWITTER_BRIDGE_URL: http://mautrix-twitter:29327
+      TWITTER_AS_TOKEN: ${TWITTER_AS_TOKEN}
+      TWITTER_HS_TOKEN: ${TWITTER_HS_TOKEN}
+      DATABASE_URL: ${BRIDGE_DATABASE_URL}
+    volumes:
+      - twitter-data:/data
+    depends_on:
+      - conduit
+
+  mautrix-linkedin:
+    build: ./railway/mautrix-linkedin
+    ports:
+      - "29328:29328"
+    environment:
+      HOMESERVER_URL: http://conduit:6167
+      MATRIX_DOMAIN: localhost
+      LINKEDIN_BRIDGE_URL: http://mautrix-linkedin:29328
+      LINKEDIN_AS_TOKEN: ${LINKEDIN_AS_TOKEN}
+      LINKEDIN_HS_TOKEN: ${LINKEDIN_HS_TOKEN}
+      DATABASE_URL: ${BRIDGE_DATABASE_URL}
+    volumes:
+      - linkedin-data:/data
+    depends_on:
+      - conduit
+
+volumes:
+  conduit-data:
+  twitter-data:
+  linkedin-data:
