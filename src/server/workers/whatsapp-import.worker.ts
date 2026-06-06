@@ -27,9 +27,9 @@ export function startWhatsAppImportWorker() {
 
       let imported = 0, updated = 0, skipped = 0;
 
-      // Pre-fetch all existing WhatsApp platform records once
+      // Pre-fetch only this user's existing WhatsApp platform records
       const existing = await prisma.platform.findMany({
-        where: { type: "whatsapp" },
+        where: { type: "whatsapp", contact: { userId } },
         select: { platformId: true, contactId: true },
       });
       const existingSet = new Set(existing.map((p) => p.platformId));

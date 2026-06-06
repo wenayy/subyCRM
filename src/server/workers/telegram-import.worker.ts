@@ -16,9 +16,9 @@ export function startTelegramImportWorker() {
 
       const dialogs = await client.getDialogs({ limit: 500 });
 
-      // Pre-fetch all existing telegram + whatsapp platform records once
+      // Pre-fetch only this user's existing telegram + whatsapp platform records
       const existing = await prisma.platform.findMany({
-        where: { type: { in: ["telegram", "whatsapp"] } },
+        where: { type: { in: ["telegram", "whatsapp"] }, contact: { userId } },
         select: { platformId: true, contactId: true, contact: { select: { id: true, name: true, lastContactDate: true } } },
       });
       const byPlatformId = new Map(existing.map((p) => [p.platformId.toLowerCase(), p]));

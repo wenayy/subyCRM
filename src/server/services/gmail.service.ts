@@ -199,7 +199,7 @@ export async function syncThreads(userId: string): Promise<number> {
   console.log(`[syncThreads] saving ${rows.length} threads...`);
   const threadIds = rows.map((r) => r.threadId);
   await (prisma as any).gmailThread.deleteMany({ where: { threadId: { in: threadIds } } });
-  await (prisma as any).gmailThread.createMany({ data: rows });
+  await (prisma as any).gmailThread.createMany({ data: rows, skipDuplicates: true });
 
   // Mirror to unified InboxMessage
   for (const row of rows) {
