@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES, DEFAULT_JOB_OPTIONS } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { sendBotReply } from "../services/telegram-bot.service";
@@ -57,7 +57,7 @@ export function startOutcomePromptWorker() {
       return { sent: true, chatId, contactName, eventTitle };
     },
     {
-      connection: redisConnection.connection,
+      connection: redis.connection,
       concurrency: 2,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

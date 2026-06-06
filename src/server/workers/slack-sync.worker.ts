@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES, DEFAULT_JOB_OPTIONS } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { slackService } from "../services/slack.service";
@@ -37,7 +37,7 @@ export function startSlackSyncWorker() {
       return { synced: totalSynced, users: tokens.length };
     },
     {
-      connection: redisConnection.connection,
+      connection: redis.connection,
       concurrency: 2,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

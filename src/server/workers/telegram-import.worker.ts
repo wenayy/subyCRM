@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { telegramPersonalService } from "../services/telegram-personal.service";
@@ -143,7 +143,7 @@ export function startTelegramImportWorker() {
 
       return { imported, updated, skipped };
     },
-    { connection: redisConnection, concurrency: 1 }
+    { connection: redis, concurrency: 1 }
   );
 
   worker.on("failed", (job, err) => {

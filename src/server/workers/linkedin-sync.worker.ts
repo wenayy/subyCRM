@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES, DEFAULT_JOB_OPTIONS } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { linkedinService } from "../services/linkedin.service";
@@ -37,7 +37,7 @@ export function startLinkedInSyncWorker() {
       return { synced: totalSynced, users: records.length };
     },
     {
-      connection: redisConnection.connection,
+      connection: redis.connection,
       concurrency: 1,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

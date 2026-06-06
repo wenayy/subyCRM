@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES, DEFAULT_JOB_OPTIONS } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 
@@ -72,7 +72,7 @@ export function startSequenceTickWorker() {
       return { advanced, completed };
     },
     {
-      connection: redisConnection.connection,
+      connection: redis.connection,
       concurrency: 1,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

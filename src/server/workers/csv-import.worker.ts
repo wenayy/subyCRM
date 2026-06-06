@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 
@@ -129,7 +129,7 @@ export function startCsvImportWorker() {
         throw err;
       }
     },
-    { ...redisConnection, concurrency: 2 },
+    { connection: redis, concurrency: 2 },
   );
 
   worker.on("failed", (job, err) => console.error(`[csv-import] job ${job?.id} failed:`, err.message));
