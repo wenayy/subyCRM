@@ -198,17 +198,15 @@ app.listen(PORT, async () => {
             RAISE NOTICE 'Dropped old platform constraint: %', v_conname;
           END LOOP;
 
-          -- Add 3-column constraint if not already present
+          -- Add 3-column constraint if not already present (check by name)
           IF NOT EXISTS (
-            SELECT 1
-            FROM pg_constraint c
+            SELECT 1 FROM pg_constraint c
             JOIN pg_class t ON t.oid = c.conrelid
             JOIN pg_namespace n ON n.oid = t.relnamespace
-            WHERE t.relname = 'platforms' AND n.nspname = 'contacts'
+            WHERE n.nspname = 'contacts'
+              AND t.relname = 'platforms'
               AND c.contype = 'u'
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'type'        AND attnum = ANY(c.conkey))
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform_id' AND attnum = ANY(c.conkey))
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'contact_id'  AND attnum = ANY(c.conkey))
+              AND c.conname = 'platforms_type_platform_id_contact_id_key'
           ) THEN
             ALTER TABLE contacts.platforms
               ADD CONSTRAINT platforms_type_platform_id_contact_id_key
@@ -244,8 +242,8 @@ app.listen(PORT, async () => {
               AND t.relname = 'inbox_messages'
               AND c.contype = 'u'
               AND (
-                -- old 2-col constraint (platform + external_id only)
-                (SELECT array_agg(a.attname ORDER BY a.attname)
+                -- old 2-col constraint (platform + external_id only) — check by cast to avoid name[]=text[] error
+                (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
                  FROM pg_attribute a
                  WHERE a.attrelid = c.conrelid
                    AND a.attnum = ANY(c.conkey)
@@ -264,7 +262,7 @@ app.listen(PORT, async () => {
             AND a.external_id = b.external_id
             AND a.user_id     = b.user_id;
 
-          -- Add 3-col constraint if not already present
+          -- Add 3-col constraint if not already present (check by name)
           IF NOT EXISTS (
             SELECT 1 FROM pg_constraint c
             JOIN pg_class t ON t.oid = c.conrelid
@@ -272,10 +270,7 @@ app.listen(PORT, async () => {
             WHERE n.nspname = 'contacts'
               AND t.relname = 'inbox_messages'
               AND c.contype = 'u'
-              AND (SELECT array_agg(a.attname ORDER BY a.attname)
-                   FROM pg_attribute a
-                   WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
-                  ) = ARRAY['external_id','platform','user_id']
+              AND c.conname = 'inbox_messages_platform_external_id_user_id_key'
           ) THEN
             ALTER TABLE contacts.inbox_messages
               ADD CONSTRAINT inbox_messages_platform_external_id_user_id_key
