@@ -343,15 +343,15 @@ async function resolveContact(
     if (hit) return { contactId: hit.contactId, contactName: hit.contactName };
   }
 
-  // pushName fallback for unresolved @lid
+  // pushName fallback for unresolved @lid — EXACT match only.
+  // Prefix/startsWith matching ("yogesh pangati".startsWith("yogesh")) caused messages from
+  // strangers with a common first name to be attributed to the wrong CRM contact, then replies
+  // went to that contact's saved phone number instead of the actual sender.
   if (jid.endsWith("@lid") && !digits && pushName) {
     const norm = pushName.toLowerCase().trim();
-    const hit = platforms.find((p) => {
-      const n = p.contactName.toLowerCase().trim();
-      return n === norm || norm.startsWith(n) || n.startsWith(norm);
-    });
+    const hit = platforms.find((p) => p.contactName.toLowerCase().trim() === norm);
     if (hit) {
-      console.log(`[whatsapp] LID matched via pushName "${pushName}" → ${hit.contactName}`);
+      console.log(`[whatsapp] LID matched via pushName exact "${pushName}" → ${hit.contactName}`);
       return { contactId: hit.contactId, contactName: hit.contactName };
     }
   }

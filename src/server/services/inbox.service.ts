@@ -287,8 +287,6 @@ export const inboxService = {
             const { resolveJid } = await import("./whatsapp.service");
             jid = resolveJid(msg.senderId) ?? msg.senderId;
           }
-          if (!jid) jid = `${msg.contactName}@s.whatsapp.net`;
-
           if (jid) {
             const { resolveJid } = await import("./whatsapp.service");
             jid = resolveJid(jid) ?? jid;
