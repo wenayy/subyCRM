@@ -16,6 +16,8 @@ export const QUEUE_NAMES = {
   DISCORD_SYNC: "discord-sync",
   CSV_IMPORT: "csv-import",
   LINKEDIN_SYNC: "linkedin-sync",
+  WHATSAPP_IMPORT: "whatsapp-import",
+  TELEGRAM_IMPORT: "telegram-import",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -35,6 +37,8 @@ export const queues = {
   discordSync: new Queue(QUEUE_NAMES.DISCORD_SYNC, redisConnection),
   csvImport: new Queue(QUEUE_NAMES.CSV_IMPORT, redisConnection),
   linkedinSync: new Queue(QUEUE_NAMES.LINKEDIN_SYNC, redisConnection),
+  whatsappImport: new Queue(QUEUE_NAMES.WHATSAPP_IMPORT, redisConnection),
+  telegramImport: new Queue(QUEUE_NAMES.TELEGRAM_IMPORT, redisConnection),
 };
 
 /** Default job options for all queues */

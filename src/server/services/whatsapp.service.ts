@@ -1008,4 +1008,19 @@ export const whatsappService = {
 
     return { imported, updated, skipped };
   },
+
+  // Serialize in-memory contacts cache for the import worker job payload
+  getContactsForImport(userId: string): Array<{ jid: string; name: string; phoneDigits: string }> {
+    const s = getSession(userId);
+    const result: Array<{ jid: string; name: string; phoneDigits: string }> = [];
+    for (const [jid, info] of s.contactsCache.entries()) {
+      if (jid.endsWith("@g.us") || jid.endsWith("@broadcast") || jid === "status@broadcast") continue;
+      const name = info.name || info.verifiedName || info.notify;
+      if (!name) continue;
+      const phoneDigits = jidDigits(jid, s);
+      if (phoneDigits.length < 5) continue;
+      result.push({ jid, name, phoneDigits });
+    }
+    return result;
+  },
 };

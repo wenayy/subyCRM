@@ -93,45 +93,19 @@ router.post("/beeper", async (req, res, next) => {
 // POST /api/imports/telegram — import contacts from Telegram MTProto dialogs
 router.post("/telegram", async (req, res, next) => {
   try {
-    // Use first authenticated user from session table
-    const session = await (prisma as any).telegramPersonalSession.findFirst({
-      where: { connected: true },
-      select: { userId: true },
-    });
-    if (!session) {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    if (!rec?.sessionStr) {
       res.status(400).json({ error: "Telegram personal not connected. Connect it in Settings first." });
       return;
     }
 
-    const userId = res.locals.session?.user?.id ?? "default";
     const job = await prisma.importJob.create({
       data: { userId, source: "telegram_api", status: "running", startedAt: new Date() },
     });
 
+    await queues.telegramImport.add("telegram-import", { userId, importJobId: job.id });
     res.json({ status: "started", jobId: job.id });
-
-    // Run in background
-    telegramPersonalService.importContacts(session.userId)
-      .then(async ({ imported, updated, skipped }) => {
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: {
-            status: "completed",
-            totalFound: imported + updated + skipped,
-            imported,
-            deduplicated: updated,
-            errors: skipped,
-            completedAt: new Date(),
-          },
-        });
-      })
-      .catch(async (err) => {
-        console.error("[import/telegram]", err);
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: { status: "failed", errorLog: { error: err.message }, completedAt: new Date() },
-        });
-      });
   } catch (err) {
     next(err);
   }
@@ -187,10 +161,16 @@ router.post("/whatsapp", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
 
-    // Check connection status
     const status = await whatsappService.getStatus(userId);
     if (!status.connected) {
       res.status(400).json({ error: "WhatsApp not connected. Connect it in Settings first." });
+      return;
+    }
+
+    // Serialize in-memory contacts cache into job payload now (worker can't access memory)
+    const contacts = whatsappService.getContactsForImport(userId);
+    if (!contacts.length) {
+      res.status(400).json({ error: "No WhatsApp contacts found in cache. Try reconnecting WhatsApp." });
       return;
     }
 
@@ -198,30 +178,8 @@ router.post("/whatsapp", async (req, res, next) => {
       data: { userId, source: "whatsapp_export", status: "running", startedAt: new Date() },
     });
 
+    await queues.whatsappImport.add("whatsapp-import", { userId, importJobId: job.id, contacts });
     res.json({ status: "started", jobId: job.id });
-
-    // Run in background
-    whatsappService.importContacts(userId)
-      .then(async ({ imported, updated, skipped }) => {
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: {
-            status: "completed",
-            totalFound: imported + updated + skipped,
-            imported,
-            deduplicated: updated,
-            errors: skipped,
-            completedAt: new Date(),
-          },
-        });
-      })
-      .catch(async (err) => {
-        console.error("[import/whatsapp]", err);
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: { status: "failed", errorLog: { error: err.message }, completedAt: new Date() },
-        });
-      });
   } catch (err) {
     next(err);
   }
