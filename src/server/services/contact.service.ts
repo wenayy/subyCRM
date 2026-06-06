@@ -322,9 +322,24 @@ export const contactService = {
         platform = existing;
       }
     } else {
-      platform = await prisma.platform.create({
-        data: { contactId, type: data.type as any, platformId: normalizedId, displayName: data.displayName, profileUrl: data.profileUrl },
-      });
+      try {
+        platform = await prisma.platform.create({
+          data: { contactId, type: data.type as any, platformId: normalizedId, displayName: data.displayName, profileUrl: data.profileUrl },
+        });
+      } catch (err: any) {
+        // P2002 = unique constraint violation
+        // If it fires on (type, platform_id) only (old 2-col constraint still live in DB),
+        // surface a clear message instead of a raw Prisma error.
+        if (err?.code === "P2002") {
+          const fields: string[] = err?.meta?.target ?? [];
+          if (fields.includes("platform_id") && !fields.includes("contact_id")) {
+            throw new Error(
+              `This ${data.type} handle is already linked to another contact. The database uniqueness constraint needs to be updated — please contact support or re-deploy the server.`
+            );
+          }
+        }
+        throw err;
+      }
     }
 
     // Link existing messages that match this platform

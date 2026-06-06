@@ -162,12 +162,54 @@ app.listen(PORT, async () => {
   console.log(`Suby Contacts API running on port ${PORT}`);
 
   // ── Schema migration: platform unique constraint per-contact ───
+  // Drop any 2-column (type, platform_id) unique constraint (regardless of name),
+  // then add/keep the correct 3-column (type, platform_id, contact_id) one.
   void (async () => {
     try {
       const { prisma } = await import("./lib/prisma");
-      await prisma.$executeRawUnsafe(`ALTER TABLE contacts.platforms DROP CONSTRAINT IF EXISTS platforms_type_platform_id_key`);
-      await prisma.$executeRawUnsafe(`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platforms_type_platform_id_contact_id_key') THEN ALTER TABLE contacts.platforms ADD CONSTRAINT platforms_type_platform_id_contact_id_key UNIQUE (type, platform_id, contact_id); END IF; END $$`);
+      await prisma.$executeRawUnsafe(`
+        DO $mig$
+        DECLARE v_conname text;
+        BEGIN
+          -- Drop any unique constraint on exactly (type, platform_id) — name may vary
+          FOR v_conname IN
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'platforms'
+              AND n.nspname = 'contacts'
+              AND c.contype = 'u'
+              AND array_length(c.conkey, 1) = 2
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'type' AND attnum = ANY(c.conkey))
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform_id' AND attnum = ANY(c.conkey))
+          LOOP
+            EXECUTE 'ALTER TABLE contacts.platforms DROP CONSTRAINT IF EXISTS ' || quote_ident(v_conname);
+            RAISE NOTICE 'Dropped old platform constraint: %', v_conname;
+          END LOOP;
+
+          -- Add 3-column constraint if not already present
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'platforms' AND n.nspname = 'contacts'
+              AND c.contype = 'u'
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'type'        AND attnum = ANY(c.conkey))
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform_id' AND attnum = ANY(c.conkey))
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'contact_id'  AND attnum = ANY(c.conkey))
+          ) THEN
+            ALTER TABLE contacts.platforms
+              ADD CONSTRAINT platforms_type_platform_id_contact_id_key
+              UNIQUE (type, platform_id, contact_id);
+            RAISE NOTICE 'Added per-contact platform uniqueness constraint';
+          END IF;
+        END
+        $mig$
+      `);
       await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS platforms_type_platform_id_idx ON contacts.platforms (type, platform_id)`);
+      console.log("[startup] Platform constraint migration OK");
     } catch (e: any) {
       console.error("[startup] Platform constraint migration error:", e.message);
     }
