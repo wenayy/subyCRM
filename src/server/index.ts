@@ -290,6 +290,17 @@ app.listen(PORT, async () => {
     }
   })();
 
+  // ── Schema migration: reminders.contact_id nullable ───────────
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE contacts.reminders
+          ALTER COLUMN contact_id DROP NOT NULL
+      `);
+    } catch { /* already nullable */ }
+  })();
+
   // ── Schema migration: WhatsApp creds_json column ───────────────
   void (async () => {
     try {

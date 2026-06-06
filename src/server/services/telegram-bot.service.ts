@@ -19,11 +19,13 @@ async function getLinkedUser(chatId: number) {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ParsedIntent {
-  action: "note" | "reminder" | "strength" | "new_contact" | "unknown";
+  // Primary action. "note+reminder" means do both.
+  action: "note" | "reminder" | "note+reminder" | "strength" | "new_contact" | "self_reminder" | "unknown";
   contactId: string | null;
   contactName: string | null;
-  content: string;
-  dueDate: string | null;
+  noteContent: string | null;      // content for the note (if action includes note)
+  reminderContent: string | null;  // content for the reminder (if action includes reminder)
+  dueDate: string | null;          // ISO datetime string, user's local time
   strength: "hot" | "warm" | "cold" | null;
   inferredRole: string | null;
   inferredCompany: string | null;
@@ -61,43 +63,56 @@ async function parseIntent(text: string): Promise<ParsedIntent> {
     take: 200,
   });
   const contactList = contacts.map((c) => `${c.name} — id:${c.id}`).join("\n");
-  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const timeNow = now.toTimeString().slice(0, 5);
 
-  const system = `You are a CRM assistant for a founder's personal CRM.
-Today is ${today}.
-
-Your job: parse a voice-note transcript into one structured action.
+  const system = `You are a smart CRM voice assistant for a founder. Parse voice notes into structured actions.
+Today is ${today}, current time is ${timeNow} (use this to resolve relative times like "at 4pm" = today at 16:00, "tomorrow" = next day).
 
 Known contacts:
 ${contactList}
 
-Return ONLY valid JSON (no markdown):
+Return ONLY valid JSON:
 {
-  "action": "note" | "reminder" | "strength" | "new_contact" | "unknown",
-  "contactId": "<id from list above, or null>",
-  "contactName": "<matched or extracted name>",
-  "content": "<concise note/reminder text>",
-  "dueDate": "<ISO datetime like 2026-06-03T09:00:00 or null>",
+  "action": "note" | "reminder" | "note+reminder" | "strength" | "new_contact" | "self_reminder" | "unknown",
+  "contactId": "<exact id from list, or null>",
+  "contactName": "<matched or extracted name, or null>",
+  "noteContent": "<concise note text, or null>",
+  "reminderContent": "<concise reminder task text, or null>",
+  "dueDate": "<ISO datetime like ${today}T16:00:00 or null>",
   "strength": "hot" | "warm" | "cold" | null,
   "inferredRole": "<job title if mentioned, else null>",
   "inferredCompany": "<company name if mentioned, else null>"
 }
 
-Rules:
-- "note": log something about an EXISTING contact (contactId found in list)
-- "reminder": set a follow-up task for an EXISTING contact
-- "strength": update relationship warmth for an EXISTING contact
-- "new_contact": person clearly mentioned but NOT in the list — extract name/role/company, set contactId to null
-- "unknown": no person mentioned, or no clear action
-- Match existing contacts by name similarity (fuzzy is fine)
-- For reminders without a time, default to 09:00
-- Keep content short (1-2 sentences max)`;
+Action rules — be decisive, lean toward action over "unknown":
+- "note": log info about an existing contact (meeting, call, update about them)
+- "reminder": ONLY a reminder for an existing contact, no note needed
+- "note+reminder": BOTH log info AND set a reminder for same contact (e.g. "met Yogesh, remind me to follow up Friday")
+- "strength": update relationship warmth (hot/warm/cold) for existing contact
+- "new_contact": person mentioned but NOT in the known list — extract details, contactId=null
+- "self_reminder": reminder with NO specific contact (e.g. "remind me to check email at 3pm", "remind me to review the deck tonight")
+- "unknown": truly unclear, no actionable intent at all
+
+Reminder detection — if the user says ANY of these, it is a reminder:
+  "remind me", "set a reminder", "follow up", "call [name] at", "meeting at", "don't forget", "reminder for"
+
+Time parsing:
+- "at 4pm" / "at 4" = today ${today}T16:00:00
+- "tomorrow at X" = next day at X
+- "on Friday" = next Friday at 09:00
+- "tonight" = today at 20:00
+- No time given → tomorrow at 09:00
+
+Contact matching: fuzzy match names, ignore case. If someone says "Yogesh" and "Yogesh" is in the list, match it.
+Keep noteContent and reminderContent concise (1 sentence max).`;
 
   const completion = await getOpenAI().chat.completions.create({
     model: "gpt-4o-mini",
     messages: [{ role: "system", content: system }, { role: "user", content: text }],
     response_format: { type: "json_object" },
-    temperature: 0.2,
+    temperature: 0.1,
   });
 
   return JSON.parse(completion.choices[0].message.content ?? "{}") as ParsedIntent;
@@ -115,6 +130,21 @@ async function getUserIdForChat(chatId: number): Promise<string> {
   return user?.id ?? "default";
 }
 
+function parseDueDate(raw: string | null): Date {
+  if (raw) {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) return d;
+  }
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(9, 0, 0, 0);
+  return d;
+}
+
+function fmtDue(d: Date): string {
+  return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+}
+
 export async function processVoiceCapture(transcript: string, chatId?: number): Promise<CaptureResult> {
   const startMs = Date.now();
   const userId = chatId ? await getUserIdForChat(chatId) : await getUserIdForChat(0);
@@ -122,7 +152,7 @@ export async function processVoiceCapture(transcript: string, chatId?: number): 
   let intent: ParsedIntent;
   try {
     intent = await parseIntent(transcript);
-    console.log("[voice] intent:", intent);
+    console.log("[voice] intent:", JSON.stringify(intent));
   } catch (err) {
     const cap = await (prisma as any).voiceCapture.create({
       data: { userId, transcript, action: "unknown", status: "failed", processingMs: Date.now() - startMs },
@@ -131,120 +161,106 @@ export async function processVoiceCapture(transcript: string, chatId?: number): 
   }
 
   const processingMs = Date.now() - startMs;
-  let contactId: string | null = null;
-  let contactName: string | null = intent.contactName;
   let replyMessage = "";
 
-  // ── Unknown ───────────────────────────────────────────────
+  // ── Unknown ───────────────────────────────────────────────────────────────
   if (intent.action === "unknown") {
     const cap = await (prisma as any).voiceCapture.create({
       data: { userId, transcript, contactName: null, action: "unknown", content: null, status: "processed", processingMs },
     });
-    replyMessage = `❓ No action detected.\n\n_"${transcript}"_\n\nTry: _"Met John from Stripe, he's the CTO"_ or _"Remind me to call Sarah on Friday"_`;
-    return { ...cap, createdAt: undefined, replyMessage, dueDate: null };
-  }
-
-  // ── Auto-create new contact (with dedup check) ───────────
-  if (intent.action === "new_contact" || (!intent.contactId && intent.contactName)) {
-    if (!intent.contactName) {
-      const cap = await (prisma as any).voiceCapture.create({
-        data: { userId, transcript, action: "unknown", status: "failed", processingMs },
-      });
-      replyMessage = `❓ Couldn't extract a name. Try mentioning their name clearly.`;
-      return { ...cap, replyMessage, dueDate: null };
-    }
-
-    // Check if a similar contact already exists to avoid duplicates
-    const existing = await findSimilarContact(intent.contactName, userId);
-    if (existing) {
-      contactId = existing.id;
-      contactName = existing.name;
-      if (intent.content) {
-        await prisma.note.create({ data: { contactId: existing.id, content: intent.content } });
-      }
-      const cap = await (prisma as any).voiceCapture.create({
-        data: { userId, transcript, contactId, contactName, action: "note", content: intent.content ?? null, status: "processed", processingMs },
-      });
-      replyMessage = `🔗 *Matched existing contact:* ${existing.name}${intent.content ? `\n✅ Note: _"${intent.content}"_` : ""}`;
-      return { ...cap, replyMessage, dueDate: null };
-    }
-
-    const newContact = await prisma.contact.create({
-      data: {
-        userId,
-        name: intent.contactName,
-        role: intent.inferredRole ?? undefined,
-        company: intent.inferredCompany ?? undefined,
-        type: "other", domain: "other",
-        relationshipStrength: "cold",
-        firstContactDate: new Date(), lastContactDate: new Date(),
-      },
-    });
-    contactId = newContact.id;
-    contactName = newContact.name;
-    const detailLine = [intent.inferredRole, intent.inferredCompany].filter(Boolean).join(" @ ");
-
-    if (intent.content) {
-      await prisma.note.create({ data: { contactId: newContact.id, content: intent.content } });
-    }
-
-    const cap = await (prisma as any).voiceCapture.create({
-      data: { userId, transcript, contactId, contactName, action: "new_contact", content: intent.content ?? null, status: "processed", processingMs },
-    });
-    replyMessage = `👤 *New contact:* ${newContact.name}${detailLine ? `\n_${detailLine}_` : ""}${intent.content ? `\n✅ Note: _"${intent.content}"_` : ""}`;
+    replyMessage = `❓ No action detected.\n\n_"${transcript}"_\n\nExamples:\n• _"Met Yogesh, great call, remind me to follow up Friday"_\n• _"Remind me to call Rahul at 4pm"_\n• _"Remind me to check the deck tonight"_\n• _"Just met Priya from Sequoia, she's a partner"_`;
     return { ...cap, replyMessage, dueDate: null };
   }
 
-  // ── Existing contact ──────────────────────────────────────
-  const contact = await prisma.contact.findUnique({ where: { id: intent.contactId! } });
+  // ── Self-reminder (no contact needed) ────────────────────────────────────
+  if (intent.action === "self_reminder") {
+    const content = intent.reminderContent ?? intent.noteContent ?? transcript;
+    const dueDate = parseDueDate(intent.dueDate);
+    await (prisma as any).reminder.create({ data: { content, dueDate } });
+    const cap = await (prisma as any).voiceCapture.create({
+      data: { userId, transcript, contactId: null, contactName: null, action: "reminder", content, dueDate, status: "processed", processingMs },
+    });
+    replyMessage = `⏰ *Reminder set*\n_"${content}"_\n📅 ${fmtDue(dueDate)}`;
+    return { ...cap, replyMessage, dueDate: dueDate.toISOString() };
+  }
+
+  // ── Resolve contact (existing or new) ────────────────────────────────────
+  let contact = intent.contactId ? await prisma.contact.findUnique({ where: { id: intent.contactId } }) : null;
+
+  // GPT sometimes returns null contactId even for known contacts — fuzzy match as fallback
+  if (!contact && intent.contactName) {
+    const fuzzy = await findSimilarContact(intent.contactName, userId);
+    if (fuzzy) contact = await prisma.contact.findUnique({ where: { id: fuzzy.id } });
+  }
+
+  let isNewContact = false;
+  if (!contact && intent.contactName) {
+    // Create new contact
+    contact = await prisma.contact.create({
+      data: {
+        userId, name: intent.contactName,
+        role: intent.inferredRole ?? undefined,
+        company: intent.inferredCompany ?? undefined,
+        type: "other", domain: "other", relationshipStrength: "cold",
+        firstContactDate: new Date(), lastContactDate: new Date(),
+      },
+    });
+    isNewContact = true;
+  }
+
   if (!contact) {
     const cap = await (prisma as any).voiceCapture.create({
       data: { userId, transcript, action: "unknown", status: "failed", processingMs },
     });
-    replyMessage = `❓ Contact not found. Try again.`;
+    replyMessage = `❓ Couldn't find or create the contact. Try mentioning their name clearly.`;
     return { ...cap, replyMessage, dueDate: null };
   }
-  contactId = contact.id;
-  contactName = contact.name;
 
-  if (intent.action === "note") {
-    await prisma.note.create({ data: { contactId: contact.id, content: intent.content } });
+  const contactId = contact.id;
+  const contactName = contact.name;
+  const lines: string[] = [];
+  let savedDueDate: Date | null = null;
+
+  if (isNewContact) {
+    const detail = [intent.inferredRole, intent.inferredCompany].filter(Boolean).join(" @ ");
+    lines.push(`👤 *New contact:* ${contact.name}${detail ? `\n_${detail}_` : ""}`);
+  } else {
+    lines.push(`🔗 *${contact.name}*`);
+  }
+
+  // ── Note ─────────────────────────────────────────────────────────────────
+  const needsNote = intent.action === "note" || intent.action === "note+reminder";
+  if (needsNote && intent.noteContent) {
+    await prisma.note.create({ data: { contactId: contact.id, content: intent.noteContent } });
     await prisma.contact.update({ where: { id: contact.id }, data: { lastContactDate: new Date() } });
-    const cap = await (prisma as any).voiceCapture.create({
-      data: { userId, transcript, contactId, contactName, action: "note", content: intent.content, status: "processed", processingMs },
-    });
-    replyMessage = `✅ *Note saved* for *${contact.name}*\n_"${intent.content}"_`;
-    return { ...cap, replyMessage, dueDate: null };
+    lines.push(`📝 Note: _"${intent.noteContent}"_`);
   }
 
-  if (intent.action === "reminder") {
-    const dueDate = intent.dueDate ? new Date(intent.dueDate) : (() => {
-      const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d;
-    })();
-    await prisma.reminder.create({ data: { contactId: contact.id, content: intent.content, dueDate } });
-    const cap = await (prisma as any).voiceCapture.create({
-      data: { userId, transcript, contactId, contactName, action: "reminder", content: intent.content, dueDate, status: "processed", processingMs },
-    });
-    const when = dueDate.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-    replyMessage = `⏰ *Reminder set* for *${contact.name}*\n_"${intent.content}"_\n📅 ${when}`;
-    return { ...cap, replyMessage, dueDate: dueDate.toISOString() };
+  // ── Reminder ─────────────────────────────────────────────────────────────
+  const needsReminder = intent.action === "reminder" || intent.action === "note+reminder";
+  if (needsReminder) {
+    const content = intent.reminderContent ?? intent.noteContent ?? transcript;
+    const dueDate = parseDueDate(intent.dueDate);
+    savedDueDate = dueDate;
+    await prisma.reminder.create({ data: { contactId: contact.id, content, dueDate } });
+    lines.push(`⏰ Reminder: _"${content}"_\n📅 ${fmtDue(dueDate)}`);
   }
 
+  // ── Strength ─────────────────────────────────────────────────────────────
   if (intent.action === "strength" && intent.strength) {
     await prisma.contact.update({ where: { id: contact.id }, data: { relationshipStrength: intent.strength } });
-    const cap = await (prisma as any).voiceCapture.create({
-      data: { userId, transcript, contactId, contactName, action: "strength", content: `Marked as ${intent.strength}`, strength: intent.strength, status: "processed", processingMs },
-    });
     const emoji = intent.strength === "hot" ? "🔥" : intent.strength === "warm" ? "☀️" : "🧊";
-    replyMessage = `${emoji} *${contact.name}* marked as *${intent.strength}*`;
-    return { ...cap, replyMessage, dueDate: null };
+    lines.push(`${emoji} Marked as *${intent.strength}*`);
   }
 
+  const content = intent.noteContent ?? intent.reminderContent ?? null;
+  const action = isNewContact ? "new_contact" : intent.action;
   const cap = await (prisma as any).voiceCapture.create({
-    data: { userId, transcript, contactId, contactName, action: "unknown", status: "failed", processingMs },
+    data: { userId, transcript, contactId, contactName, action, content, dueDate: savedDueDate, status: "processed", processingMs },
   });
-  replyMessage = `❓ Couldn't determine action.`;
-  return { ...cap, replyMessage, dueDate: null };
+
+  replyMessage = lines.join("\n");
+  return { ...cap, replyMessage, dueDate: savedDueDate?.toISOString() ?? null };
 }
 
 // ── Bot message handler ───────────────────────────────────────────────────────

@@ -171,13 +171,13 @@ model Company {
 
 model Reminder {
   id        String         @id @default(uuid())
-  contactId String         @map("contact_id")
+  contactId String?        @map("contact_id")
   content   String
   dueDate   DateTime       @map("due_date")
   status    ReminderStatus @default(pending)
   createdAt DateTime       @default(now()) @map("created_at")
 
-  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@index([status, dueDate])
   @@index([contactId])
