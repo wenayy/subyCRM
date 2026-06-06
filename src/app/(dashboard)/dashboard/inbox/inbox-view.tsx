@@ -12,7 +12,7 @@ import { getCached, setCached } from "@/lib/page-cache";
 // Sent messages only in local state (not persisted)
 interface SentMessage { id: string; body: string; sentAt: string; fromMe: true; status?: "sending" | "sent" | "failed" }
 
-type Filter = "all" | "unread" | "needs_reply" | "starred";
+type Filter = "all" | "unread" | "needs_reply" | "starred" | "unknown";
 
 function fmtAgo(iso: string): string {
   const m = (Date.now() - new Date(iso).getTime()) / 60000;
@@ -419,12 +419,14 @@ export function InboxView() {
     if (filter === "unread") return c.unreadCount > 0;
     if (filter === "needs_reply") return c.needsReply;
     if (filter === "starred") return c.starred;
+    if (filter === "unknown") return !c.contactId;
     return true;
   });
 
   const totalUnread = conversations.reduce((s, c) => s + c.unreadCount, 0);
   const totalNeedsReply = conversations.filter((c) => c.needsReply).length;
   const totalStarred = conversations.filter((c) => c.starred).length;
+  const totalUnknown = conversations.filter((c) => !c.contactId).length;
 
   const handleSend = () => {
     const textBody = textareaRef.current?.value.trim() ?? "";
@@ -586,17 +588,26 @@ export function InboxView() {
             {loading ? "Loading…" : `${totalUnread} unread · ${totalNeedsReply} need reply`}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 4, background: "var(--muted)", borderRadius: 8, padding: 3 }}>
-          {(["all", "unread", "needs_reply", "starred"] as Filter[]).map((f) => (
-            <button key={f} onClick={() => setFilter(f)}
-              style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap",
-                background: filter === f ? "var(--card)" : "transparent",
-                boxShadow: filter === f ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-                color: filter === f ? "var(--t1)" : "var(--t3)",
-                fontWeight: filter === f ? 600 : 400 }}>
-              {f === "all" ? `All ${conversations.length}` : f === "unread" ? `Unread ${totalUnread}` : f === "needs_reply" ? `Needs reply ${totalNeedsReply}` : `Starred ${totalStarred}`}
-            </button>
-          ))}
+        <div style={{ display: "flex", gap: 4, background: "var(--muted)", borderRadius: 8, padding: 3, flexWrap: "wrap" }}>
+          {(["all", "unread", "needs_reply", "starred", "unknown"] as Filter[]).map((f) => {
+            const label =
+              f === "all" ? `All ${conversations.length}` :
+              f === "unread" ? `Unread ${totalUnread}` :
+              f === "needs_reply" ? `Needs reply ${totalNeedsReply}` :
+              f === "starred" ? `Starred ${totalStarred}` :
+              `Unknown ${totalUnknown}`;
+            const isUnknownTab = f === "unknown";
+            return (
+              <button key={f} onClick={() => setFilter(f)}
+                style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap",
+                  background: filter === f ? (isUnknownTab ? "#f59e0b" : "var(--card)") : "transparent",
+                  boxShadow: filter === f ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                  color: filter === f ? (isUnknownTab ? "#fff" : "var(--t1)") : isUnknownTab && totalUnknown > 0 ? "#f59e0b" : "var(--t3)",
+                  fontWeight: filter === f ? 600 : 400 }}>
+                {label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -688,21 +699,23 @@ export function InboxView() {
                 {knownConvs.map(renderConv)}
                 {unknownConvs.length > 0 && (
                   <>
-                    <div style={{
-                      padding: "8px 14px 6px", display: "flex", alignItems: "center", gap: 8,
-                      borderBottom: "1px solid var(--bd)", borderTop: knownConvs.length > 0 ? "2px solid var(--bd)" : "none",
-                      background: "var(--muted)",
-                    }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                        Not in contacts
-                      </span>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
-                        background: "#f59e0b", color: "#fff",
+                    {filter !== "unknown" && (
+                      <div style={{
+                        padding: "8px 14px 6px", display: "flex", alignItems: "center", gap: 8,
+                        borderBottom: "1px solid var(--bd)", borderTop: knownConvs.length > 0 ? "2px solid var(--bd)" : "none",
+                        background: "var(--muted)",
                       }}>
-                        {unknownConvs.length}
-                      </span>
-                    </div>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                          Not in contacts
+                        </span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
+                          background: "#f59e0b", color: "#fff",
+                        }}>
+                          {unknownConvs.length}
+                        </span>
+                      </div>
+                    )}
                     {unknownConvs.map(renderConv)}
                   </>
                 )}
