@@ -27,14 +27,37 @@ interface DeduplicateResult {
 export async function findSimilarContact(name: string, userId?: string): Promise<{ id: string; name: string } | null> {
   const normalized = name.toLowerCase().trim();
   if (normalized.length < 3) return null;
+
   const contacts = await prisma.contact.findMany({
     where: userId ? { userId } : undefined,
     select: { id: true, name: true },
   });
+
+  const searchFirst = normalized.split(/\s+/)[0];
+
   for (const c of contacts) {
     const existing = c.name.toLowerCase().trim();
-    if (levenshtein(normalized, existing) <= 2) return c;
-    if (normalized.includes(existing) || existing.includes(normalized)) return c;
+    if (existing.length < 3) continue; // skip single/double-char contacts like "N", "Ar"
+
+    const existingFirst = existing.split(/\s+/)[0];
+
+    // Exact full name
+    if (normalized === existing) return c;
+
+    // Levenshtein — threshold proportional to length so "yogesh" never matches "lokesh"
+    const minLen = Math.min(normalized.length, existing.length);
+    const levThreshold = minLen <= 5 ? 0 : minLen <= 7 ? 1 : 2;
+    if (levenshtein(normalized, existing) <= levThreshold) return c;
+
+    // First-name exact match (both 3+ chars)
+    if (searchFirst.length >= 3 && existingFirst.length >= 3 && searchFirst === existingFirst) return c;
+
+    // First-name fuzzy (both 5+ chars, distance ≤ 1)
+    if (searchFirst.length >= 5 && existingFirst.length >= 5 && levenshtein(searchFirst, existingFirst) <= 1) return c;
+
+    // Substring — only for substantial names (4+ chars) to avoid "n" / "ar" false positives
+    if (existing.length >= 4 && normalized.includes(existing)) return c;
+    if (normalized.length >= 4 && existing.includes(normalized)) return c;
   }
   return null;
 }

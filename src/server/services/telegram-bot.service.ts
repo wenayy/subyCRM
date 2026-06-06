@@ -59,8 +59,8 @@ async function transcribe(fileId: string): Promise<string> {
 async function parseIntent(text: string): Promise<ParsedIntent> {
   const contacts = await prisma.contact.findMany({
     select: { id: true, name: true },
-    orderBy: { name: "asc" },
-    take: 200,
+    orderBy: { lastContactDate: "desc" },
+    take: 300,
   });
   const contactList = contacts.map((c) => `${c.name} — id:${c.id}`).join("\n");
   const now = new Date();
