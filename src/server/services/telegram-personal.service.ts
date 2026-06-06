@@ -94,7 +94,7 @@ async function clearSession(userId: string) {
   console.log(`[telegram-personal] Cleared expired session for user ${userId}`);
 }
 
-async function findContactForTelegram(entity: any) {
+async function findContactForTelegram(entity: any, userId: string) {
   if (!entity) return null;
   const username = entity.username;
   const phone = entity.phone;
@@ -102,9 +102,10 @@ async function findContactForTelegram(entity: any) {
 
   const platforms = await prisma.platform.findMany({
     where: {
+      contact: { userId },
       OR: [
         { type: "telegram" },
-        { type: "whatsapp" } // Sometimes cross-platform numbers are matched
+        { type: "whatsapp" }
       ]
     },
     include: { contact: true },
@@ -428,7 +429,7 @@ export const telegramPersonalService = {
         const lastMessageDate = dialog.date ? new Date(dialog.date * 1000) : null;
 
         // Check if already in CRM
-        const existing = await findContactForTelegram(entity);
+        const existing = await findContactForTelegram(entity, userId);
         if (existing) {
           // Update lastContactDate if dialog has a newer message
           if (lastMessageDate && (!existing.lastContactDate || lastMessageDate > existing.lastContactDate)) {
@@ -517,7 +518,7 @@ export const telegramPersonalService = {
         const entity = dialog.entity as any;
         if (!entity || entity.className !== "User" || entity.bot || entity.self) continue;
 
-        const contact = await findContactForTelegram(entity);
+        const contact = await findContactForTelegram(entity, userId);
         const entityName = [entity.firstName, entity.lastName].filter(Boolean).join(" ")
           || entity.username
           || String(entity.id);
@@ -581,12 +582,12 @@ export const telegramPersonalService = {
             if (!msg?.text && !msg?.media) return;
 
             const chat = await msg.getChat();
-            let contact = await findContactForTelegram(chat);
+            let contact = await findContactForTelegram(chat, userId);
             let chatEntity = chat;
 
             if (!contact) {
               const sender = await msg.getSender();
-              contact = await findContactForTelegram(sender);
+              contact = await findContactForTelegram(sender, userId);
               if (contact) {
                 chatEntity = sender;
               }

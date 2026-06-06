@@ -56,8 +56,9 @@ async function transcribe(fileId: string): Promise<string> {
 }
 
 // ── Parse intent with GPT-4o-mini ─────────────────────────────────────────────
-async function parseIntent(text: string): Promise<ParsedIntent> {
+async function parseIntent(text: string, userId: string): Promise<ParsedIntent> {
   const contacts = await prisma.contact.findMany({
+    where: { userId },
     select: { id: true, name: true },
     orderBy: { lastContactDate: "desc" },
     take: 300,
@@ -151,7 +152,7 @@ export async function processVoiceCapture(transcript: string, chatId?: number): 
 
   let intent: ParsedIntent;
   try {
-    intent = await parseIntent(transcript);
+    intent = await parseIntent(transcript, userId);
     console.log("[voice] intent:", JSON.stringify(intent));
   } catch (err) {
     const cap = await (prisma as any).voiceCapture.create({

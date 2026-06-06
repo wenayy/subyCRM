@@ -2,7 +2,7 @@ import { Worker } from "bullmq";
 import { redis } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
-import { whatsappService } from "../services/whatsapp.service";
+import { whatsappService, invalidatePlatformCache } from "../services/whatsapp.service";
 import { inboxService } from "../services/inbox.service";
 
 const BATCH = 20;
@@ -62,10 +62,11 @@ export function startWhatsAppImportWorker() {
                 return;
               }
 
-              // Before creating, check if a contact already exists with this phone in ANY platform
-              // to avoid duplicating manually-added contacts that don't have a WA platform yet
+              // Before creating, check if this user already has a contact with this phone
+              // (manually-added contacts without a WA platform yet). Scope to userId so we
+              // don't skip creation for User B just because User A has the same phone.
               const contactByPhone = await prisma.platform.findFirst({
-                where: { type: "whatsapp", platformId: phoneDigits },
+                where: { type: "whatsapp", platformId: phoneDigits, contact: { userId } },
                 select: { contactId: true },
               });
               if (contactByPhone) {
@@ -111,6 +112,9 @@ export function startWhatsAppImportWorker() {
           data: { imported, deduplicated: updated, errors: skipped },
         }).catch(() => {});
       }
+
+      // Flush the platform cache so new contacts are matched immediately on next message
+      invalidatePlatformCache(userId);
 
       await prisma.importJob.update({
         where: { id: importJobId },

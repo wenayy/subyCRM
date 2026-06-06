@@ -467,8 +467,12 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
       if (existing >= 10) return;
     }
 
-    // Save unknown messages (live or up to 10 historical) so they appear in inbox
-    const displayName = msg.pushName || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "");
+    // Save unknown messages (live or up to 10 historical) so they appear in inbox.
+    // For outgoing (fromMe=true), pushName is our OWN WhatsApp name — use the recipient's
+    // name from the contacts cache or the phone number instead.
+    const displayName = fromMe
+      ? (s.contactsCache.get(remoteJid) as any)?.name || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "")
+      : msg.pushName || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "");
     await inboxService.upsert({
       platform: "whatsapp",
       externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
