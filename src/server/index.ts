@@ -99,13 +99,18 @@ app.use("/media", express.static(path.join(process.cwd(), "public", "media"), {
 app.use(express.json({ limit: "20mb" }));
 
 // ─── Rate limiting ──────────────────────────────────────────
+// Trust Railway's proxy so req.ip resolves to the real browser IP,
+// not the shared proxy IP (which would bucket all users together).
+app.set("trust proxy", 1);
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 2000,
+    max: 10000, // ~11 req/s per IP — plenty for a small team with polling
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many requests, try again later" },
+    // SSE connections are long-lived and don't count as repeated requests
+    skip: (req) => req.path === "/api/inbox/events",
   })
 );
 
