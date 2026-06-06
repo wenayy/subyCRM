@@ -889,9 +889,10 @@ export const whatsappService = {
     const s = getSession(userId);
     if (!s.connected) {
       const saved = await (prisma as any).whatsAppSession
-        .findFirst({ where: { userId, connected: true } })
+        .findFirst({ where: { userId, connected: true }, select: { credsJson: true } })
         .catch(() => null);
-      if (!saved || !fs.existsSync(getAuthDir(userId))) {
+      // Only give up if there are no credentials anywhere — neither in DB nor on disk
+      if (!saved?.credsJson && !fs.existsSync(getAuthDir(userId))) {
         throw new Error("WhatsApp is not connected. Go to Settings → WhatsApp to connect.");
       }
       if (!s.reconnecting && !s.sock) {
@@ -989,14 +990,16 @@ export const whatsappService = {
   },
 
   async autoReconnect(): Promise<void> {
-    // Reconnect ALL saved sessions — each user gets their own socket
+    // Reconnect ALL saved sessions — each user gets their own socket.
+    // Fetch credsJson so we can reconnect even when Railway wipes the ephemeral filesystem.
     const savedSessions = await (prisma as any).whatsAppSession
-      .findMany({ where: { connected: true } })
+      .findMany({ where: { connected: true }, select: { userId: true, credsJson: true } })
       .catch(() => []);
 
     for (const saved of savedSessions) {
       const uid: string = saved.userId;
-      if (!fs.existsSync(getAuthDir(uid))) continue; // no auth dir on disk — skip
+      // Skip only if there's truly nothing to restore (no creds in DB and no auth dir on disk)
+      if (!saved.credsJson && !fs.existsSync(getAuthDir(uid))) continue;
 
       const s = getSession(uid);
       if (s.connected || s.reconnecting) continue; // already running — skip
