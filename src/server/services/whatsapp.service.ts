@@ -1076,6 +1076,11 @@ export const whatsappService = {
     return { imported, updated, skipped };
   },
 
+  getSessionConnected(userId: string): boolean {
+    const s = getSession(userId);
+    return s.connected && !!s.sock;
+  },
+
   // Serialize in-memory contacts cache for the import worker job payload
   getContactsForImport(userId: string): Array<{ jid: string; name: string; phoneDigits: string }> {
     const s = getSession(userId);
@@ -1091,3 +1096,20 @@ export const whatsappService = {
     return result;
   },
 };
+
+// Fast send for the BullMQ retry worker.
+// Throws immediately if not connected — no 35s wait — so BullMQ applies its own backoff.
+export async function sendMessageQueued(userId: string, jid: string, text: string): Promise<{ keyId?: string }> {
+  const s = getSession(userId);
+  if (!s.connected || !s.sock) {
+    throw new Error("WhatsApp not connected — retrying");
+  }
+  const resolved = resolveJid(jid) ?? jid;
+  const result = await s.sock.sendMessage(resolved, { text });
+  const keyId: string | undefined = (result as any)?.key?.id ?? undefined;
+  if (keyId) {
+    sentCrmMessageIds.add(keyId);
+    setTimeout(() => sentCrmMessageIds.delete(keyId), 120_000);
+  }
+  return { keyId };
+}

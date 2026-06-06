@@ -15,6 +15,7 @@ import { startCsvImportWorker } from "./csv-import.worker";
 import { startLinkedInSyncWorker } from "./linkedin-sync.worker";
 import { startWhatsAppImportWorker } from "./whatsapp-import.worker";
 import { startTelegramImportWorker } from "./telegram-import.worker";
+import { startWhatsAppSendWorker } from "./whatsapp-send.worker";
 
 let workers: Worker[] = [];
 
@@ -38,6 +39,7 @@ export function startAllWorkers() {
     startLinkedInSyncWorker(),
     startWhatsAppImportWorker(),
     startTelegramImportWorker(),
+    startWhatsAppSendWorker(),
   ];
 
   console.log(`[workers] ${workers.length} workers running`);

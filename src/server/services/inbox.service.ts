@@ -265,11 +265,13 @@ export const inboxService = {
 
     // ── Actually resolve and send in background — never blocks the HTTP response ─────────────
     void (async () => {
+      // Declared outside try so the catch block can read them for BullMQ retry
+      let jid: string | null = null;
+      let telegramChatId: string | null = null;
+      let toEmail: string | null = null;
+
       try {
         // ── Resolve destination in background ─────────────────────────────────────────
-        let jid: string | null = null;
-        let telegramChatId: string | null = null;
-        let toEmail: string | null = null;
 
         if (msg.platform === "whatsapp") {
           // Prefer phone-based JID from the platform record — avoids @lid format which
@@ -430,9 +432,25 @@ export const inboxService = {
           const { sendEmail } = await import("./gmail.service");
           await sendEmail({ to: toEmail, subject, text });
         }
-      } catch (err) {
+      } catch (err: any) {
+        // If WA is reconnecting (not permanently disconnected) and JID is resolved,
+        // queue a BullMQ retry job instead of immediately marking failed.
+        const isReconnecting = err?.message?.includes("reconnecting") || err?.message?.includes("not connected — retrying");
+        if (msg.platform === "whatsapp" && jid && isReconnecting) {
+          try {
+            const { queues } = await import("../lib/queues");
+            await queues.whatsappSend.add(
+              "send",
+              { userId: userId ?? "default", jid, text, tempId, contactId: msg.contactId },
+              { attempts: 10, backoff: { type: "exponential", delay: 20_000 }, removeOnComplete: 100, removeOnFail: 50 }
+            );
+            console.log(`[inbox] WA reconnecting — queued send retry for ${jid} (tempId=${tempId})`);
+            return;
+          } catch (qErr) {
+            console.error("[inbox] Failed to queue WA send retry:", qErr);
+          }
+        }
         console.error(`[inbox] Background send failed (${msg.platform}):`, err);
-        // Broadcast failure so frontend can show an indicator
         broadcastInboxEvent("send_failed", { platform: msg.platform, tempId, contactId: msg.contactId });
       }
     })();

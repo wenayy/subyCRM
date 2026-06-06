@@ -102,7 +102,11 @@ router.post("/:id/react", async (req, res, next) => {
     const { emoji } = req.body as { emoji: string };
     if (!emoji) { res.status(400).json({ error: "emoji required" }); return; }
     const userId = res.locals.session?.user?.id;
-    await inboxService.react(req.params.id, emoji, userId);
+    // Fire-and-forget — reactions are low-stakes and we don't want to block the
+    // HTTP response for 35s while waiting for a WhatsApp reconnect.
+    void inboxService.react(req.params.id, emoji, userId).catch((e) =>
+      console.error("[inbox] Background reaction failed:", e)
+    );
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
