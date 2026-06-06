@@ -219,7 +219,11 @@ app.listen(PORT, async () => {
       await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS platforms_type_platform_id_idx ON contacts.platforms (type, platform_id)`);
       console.log("[startup] Platform constraint migration OK");
     } catch (e: any) {
-      console.error("[startup] Platform constraint migration error:", e.message);
+      if (e.message?.includes("already exists")) {
+        console.log("[startup] Platform constraint already exists — OK");
+      } else {
+        console.error("[startup] Platform constraint migration error:", e.message);
+      }
     }
   })();
 
@@ -281,7 +285,11 @@ app.listen(PORT, async () => {
       `);
       console.log("[startup] Inbox constraint migration OK");
     } catch (e: any) {
-      console.error("[startup] Inbox constraint migration error:", e.message);
+      if (e.message?.includes("already exists")) {
+        console.log("[startup] Inbox constraint already exists — OK");
+      } else {
+        console.error("[startup] Inbox constraint migration error:", e.message);
+      }
     }
   })();
 
