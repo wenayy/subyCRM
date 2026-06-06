@@ -126,10 +126,11 @@ async function findContactForTelegram(entity: any) {
   return platform?.contact || null;
 }
 
-async function downloadTelegramMedia(client: any, messageId: number, media: any): Promise<string | null> {
-  if (!media) return null;
+async function downloadTelegramMedia(client: any, msg: any): Promise<string | null> {
+  if (!msg?.media) return null;
   try {
-    const buffer = await client.downloadMedia(media);
+    // Pass the full message object — more reliable than passing media directly
+    const buffer = await client.downloadMedia(msg, { workers: 1 });
     if (!buffer) return null;
 
     const fs = await import("fs/promises");
@@ -137,18 +138,67 @@ async function downloadTelegramMedia(client: any, messageId: number, media: any)
     const dir = path.join(process.cwd(), "public", "media");
     await fs.mkdir(dir, { recursive: true });
 
+    const media = msg.media;
     let ext = "jpg";
-    if (media.document?.mimeType) {
+    if (media?.document?.mimeType) {
       const parts = media.document.mimeType.split("/");
-      if (parts[1]) ext = parts[1];
+      if (parts[1]) ext = parts[1].replace("jpeg", "jpg");
+    } else if (media?.photo) {
+      ext = "jpg";
     }
 
-    const filename = `tg_${messageId}.${ext}`;
+    const filename = `tg_${msg.id ?? Date.now()}.${ext}`;
     await fs.writeFile(path.join(dir, filename), buffer);
     return `/media/${filename}`;
   } catch (err) {
-    console.error(`[telegram-personal] Failed to download media for msg ${messageId}:`, err);
+    console.error(`[telegram-personal] Failed to download media for msg ${msg.id}:`, err);
     return null;
+  }
+}
+
+// Link existing CRM contacts to Telegram entities by name/phone (no new contacts created)
+async function linkContactsByName(dialogs: any[]): Promise<void> {
+  for (const dialog of dialogs) {
+    try {
+      const entity = dialog.entity as any;
+      if (!entity || entity.className !== "User" || entity.bot || entity.self) continue;
+      const idStr = entity.id?.toString();
+      if (!idStr) continue;
+
+      // Skip if platform record already exists
+      const existing = await prisma.platform.findFirst({ where: { type: "telegram", platformId: idStr } });
+      if (existing) continue;
+
+      const firstName = entity.firstName ?? "";
+      const lastName = entity.lastName ?? "";
+      const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+      const username = entity.username ?? null;
+      const phone = entity.phone ?? null;
+
+      // Try matching existing CRM contact by name
+      let contact = fullName
+        ? await prisma.contact.findFirst({ where: { name: { equals: fullName, mode: "insensitive" } } })
+        : null;
+
+      // Fallback: match by phone against all platform records
+      if (!contact && phone) {
+        const digits = phone.replace(/\D/g, "").slice(-10);
+        const plat = await prisma.platform.findFirst({ where: { platformId: { endsWith: digits } } });
+        if (plat) contact = await prisma.contact.findUnique({ where: { id: plat.contactId } });
+      }
+
+      if (!contact) continue;
+
+      // Create Telegram platform record on the existing contact
+      await prisma.platform.create({
+        data: {
+          contactId: contact.id,
+          type: "telegram",
+          platformId: username ?? idStr,
+          displayName: fullName || username || idStr,
+        },
+      }).catch(() => {}); // ignore unique constraint if race condition
+    } catch {}
   }
 }
 
@@ -456,6 +506,10 @@ export const telegramPersonalService = {
     const msgLimit    = opts?.deep ? 200 : 50;
 
     const dialogs = await client.getDialogs({ limit: dialogLimit });
+
+    // Link any existing CRM contacts to Telegram entities by name/phone before syncing
+    await linkContactsByName(dialogs);
+
     let synced = 0;
 
     for (const dialog of dialogs) {
@@ -474,7 +528,7 @@ export const telegramPersonalService = {
 
           let body = msg.text || "";
           if (msg.media) {
-            const mediaUrl = await downloadTelegramMedia(client, msg.id, msg.media);
+            const mediaUrl = await downloadTelegramMedia(client, msg);
             if (mediaUrl) {
               const isImage = /\.(jpg|png|jpeg|gif|webp)$/i.test(mediaUrl);
               body = isImage
@@ -540,7 +594,7 @@ export const telegramPersonalService = {
 
             let body = msg.text || "";
             if (msg.media) {
-              const mediaUrl = await downloadTelegramMedia(typedClient, msg.id, msg.media);
+              const mediaUrl = await downloadTelegramMedia(typedClient, msg);
               if (mediaUrl) {
                 const isImage = mediaUrl.endsWith(".jpg") || mediaUrl.endsWith(".png") || mediaUrl.endsWith(".jpeg") || mediaUrl.endsWith(".gif") || mediaUrl.endsWith(".webp");
                 if (isImage) {
