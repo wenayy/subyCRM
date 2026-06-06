@@ -414,9 +414,15 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
       if (!isHistorical) s.pendingLidMessages.push({ msg, isHistorical });
       return;
     }
-    if (isHistorical) return; // skip historical messages from unknown senders (too noisy)
+    if (isHistorical) {
+      // Allow up to 10 historical messages per unknown sender for context
+      const existing = await (prisma as any).inboxMessage.count({
+        where: { platform: "whatsapp", senderId: remoteJid, contactId: null },
+      });
+      if (existing >= 10) return;
+    }
 
-    // Save unknown live messages so they appear in inbox with "+ Add to contacts"
+    // Save unknown messages (live or up to 10 historical) so they appear in inbox
     const displayName = msg.pushName || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "");
     await inboxService.upsert({
       platform: "whatsapp",
