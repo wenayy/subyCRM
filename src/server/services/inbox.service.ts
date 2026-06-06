@@ -201,23 +201,29 @@ export const inboxService = {
     quotedBody?: string | null;
     quotedFromMe?: boolean | null;
   }) {
-    const { platform, externalId, userId: dataUserId, ...rest } = data;
+    const { platform, externalId, userId: dataUserId, waStatus, quotedId, quotedBody, quotedFromMe, ...rest } = data;
     const resolvedUserId = dataUserId ?? "default";
     // fromMe messages are always read; messages older than 24h on first sync are pre-read
     const isOld = data.receivedAt < new Date(Date.now() - 24 * 60 * 60 * 1000);
     const read = data.fromMe || isOld ? true : undefined; // undefined = let DB default handle new messages
+    // Core upsert never includes WA-specific columns so it works even before the DB migration runs
     const result = await (prisma as any).inboxMessage.upsert({
       where: { platform_externalId_userId: { platform, externalId, userId: resolvedUserId } },
       create: { platform, externalId, userId: resolvedUserId, ...rest, ...(read !== undefined ? { read } : {}) },
       update: {
         contactId: rest.contactId, contactName: rest.contactName, preview: rest.preview,
         body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe, needsReply: rest.needsReply,
-        ...(rest.waStatus !== undefined ? { waStatus: rest.waStatus } : {}),
-        ...(rest.quotedId !== undefined ? { quotedId: rest.quotedId } : {}),
-        ...(rest.quotedBody !== undefined ? { quotedBody: rest.quotedBody } : {}),
-        ...(rest.quotedFromMe !== undefined ? { quotedFromMe: rest.quotedFromMe } : {}),
       },
     });
+    // Set WA-specific fields in a separate update — silently skipped if columns don't exist yet
+    const waFields: Record<string, unknown> = {};
+    if (waStatus != null) waFields.waStatus = waStatus;
+    if (quotedId != null) waFields.quotedId = quotedId;
+    if (quotedBody != null) waFields.quotedBody = quotedBody;
+    if (quotedFromMe != null) waFields.quotedFromMe = quotedFromMe;
+    if (Object.keys(waFields).length > 0) {
+      void (prisma as any).inboxMessage.update({ where: { id: result.id }, data: waFields }).catch(() => {});
+    }
 
     if (rest.contactId) {
       const direction = rest.fromMe ? "outbound" : "inbound";
