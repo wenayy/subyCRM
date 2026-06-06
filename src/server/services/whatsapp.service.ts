@@ -778,13 +778,14 @@ export const whatsappService = {
   },
 
   async initSession(userId: string): Promise<{ qr?: string; connected: boolean }> {
-    if (state.connected) return { connected: true };
-    // If autoReconnect already started a socket, wait for it instead of creating a second one.
-    // A second connectSocket would call dropSocket → bump generation → kill the first socket mid-handshake.
-    if (state.reconnecting) {
+    // Already connected as THIS user — nothing to do
+    if (state.connected && state.userId === userId) return { connected: true };
+    // Reconnecting for this same user — wait for it instead of spawning a second socket
+    if (state.reconnecting && state.userId === userId) {
       try { await waitForConnection(40_000); } catch {}
       return { connected: state.connected, qr: state.qr ?? undefined };
     }
+    // Different user or no session — connectSocket calls dropSocket() internally
     return connectSocket(userId);
   },
 
