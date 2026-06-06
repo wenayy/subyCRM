@@ -510,8 +510,9 @@ model WhatsAppSession {
   phoneNumber String?   @map("phone_number")
   connected   Boolean   @default(false)
   lastSyncAt  DateTime? @map("last_sync_at")
-  credsJson   String?   @map("creds_json") @db.Text
-  createdAt   DateTime  @default(now()) @map("created_at")
+  credsJson       String?   @map("creds_json") @db.Text
+  authFilesJson   String?   @map("auth_files_json") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
   @@map("whatsapp_sessions")

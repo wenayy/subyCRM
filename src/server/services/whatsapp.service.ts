@@ -11,7 +11,49 @@ export const sentCrmMessageIds = new Set<string>();
 
 const fileLock = new AsyncLock({ maxPending: Infinity });
 
-async function useRobustMultiFileAuthState(folder: string) {
+// ── Full auth-state persistence to DB ─────────────────────────────────────────
+// Mirrors what Telegram does: store the entire session as one blob so that
+// after a Railway deploy (ephemeral filesystem wiped), we restore everything
+// atomically and WhatsApp never sees an inconsistent session state.
+
+const dbPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+async function persistAllFilesToDb(authDir: string, userId: string): Promise<void> {
+  try {
+    const files = await fs.promises.readdir(authDir).catch(() => [] as string[]);
+    const authFiles: Record<string, string> = {};
+    for (const f of files) {
+      if (f.endsWith(".tmp")) continue;
+      try {
+        authFiles[f] = await fs.promises.readFile(path.join(authDir, f), "utf-8");
+      } catch {}
+    }
+    if (Object.keys(authFiles).length === 0) return;
+    const blob = JSON.stringify(authFiles);
+    // Also keep credsJson populated for the legacy autoReconnect check
+    const credsContent = authFiles["creds.json"] ?? null;
+    await (prisma as any).whatsAppSession.upsert({
+      where: { userId },
+      create: { userId, authFilesJson: blob, credsJson: credsContent },
+      update: { authFilesJson: blob, ...(credsContent ? { credsJson: credsContent } : {}) },
+    });
+    console.log(`[whatsapp] Persisted ${Object.keys(authFiles).length} auth files to DB for ${userId}`);
+  } catch (e) {
+    console.warn("[whatsapp] Failed to persist auth files to DB:", e);
+  }
+}
+
+function schedulePersist(authDir: string, userId: string): void {
+  const existing = dbPersistTimers.get(userId);
+  if (existing) clearTimeout(existing);
+  const t = setTimeout(() => {
+    dbPersistTimers.delete(userId);
+    persistAllFilesToDb(authDir, userId);
+  }, 4_000); // debounce: write to DB 4s after last key change
+  dbPersistTimers.set(userId, t);
+}
+
+async function useRobustMultiFileAuthState(folder: string, userId: string) {
   const fixFileName = (file?: string) => file?.replace(/\//g, "__")?.replace(/:/g, "-");
 
   const writeData = async (data: any, file: string) => {
@@ -85,10 +127,13 @@ async function useRobustMultiFileAuthState(folder: string) {
             }
           }
           await Promise.all(tasks);
+          // Schedule a debounced DB persist after key changes
+          schedulePersist(folder, userId);
         },
       },
     },
     saveCreds: () => {
+      schedulePersist(folder, userId);
       return writeData(creds, "creds.json");
     },
   };
@@ -576,17 +621,30 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
       }).catch(() => {});
     }
   }
-  // Restore credentials from DB if the auth dir was wiped (ephemeral filesystem on Railway)
+  // Restore ALL auth files from DB if the auth dir was wiped (Railway ephemeral FS).
+  // Baileys needs creds + app-state-sync-keys + sender-keys + pre-keys — not just creds.json.
+  // We snapshot the full directory to DB on every connect, so we can restore it atomically.
   if (!fs.existsSync(credsFile)) {
     try {
-      const saved = await (prisma as any).whatsAppSession.findUnique({ where: { userId }, select: { credsJson: true } });
-      if (saved?.credsJson) {
+      const saved = await (prisma as any).whatsAppSession.findUnique({
+        where: { userId },
+        select: { authFilesJson: true, credsJson: true },
+      });
+      if (saved?.authFilesJson) {
+        const authFiles: Record<string, string> = JSON.parse(saved.authFilesJson);
+        fs.mkdirSync(authDir, { recursive: true });
+        for (const [fname, content] of Object.entries(authFiles)) {
+          fs.writeFileSync(path.join(authDir, fname), content, "utf-8");
+        }
+        console.log(`[whatsapp] Restored ${Object.keys(authFiles).length} auth files from DB for ${userId}`);
+      } else if (saved?.credsJson) {
+        // Legacy fallback: only creds.json was stored (will reconnect but may need re-link)
         fs.mkdirSync(authDir, { recursive: true });
         fs.writeFileSync(credsFile, saved.credsJson, "utf-8");
-        console.log(`[whatsapp] Restored creds.json from DB for user ${userId}`);
+        console.log(`[whatsapp] Restored creds.json (legacy) from DB for ${userId}`);
       }
     } catch (e) {
-      console.warn("[whatsapp] Could not restore creds from DB:", e);
+      console.warn("[whatsapp] Could not restore auth files from DB:", e);
     }
   }
 
@@ -612,7 +670,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
   fs.mkdirSync(authDir, { recursive: true });
   loadLidMap(s);
 
-  const { state: authState, saveCreds } = await useRobustMultiFileAuthState(authDir);
+  const { state: authState, saveCreds } = await useRobustMultiFileAuthState(authDir, userId);
 
   // Guard again after the async auth-state load
   if (s.generation !== myGen) return { connected: false };
@@ -689,6 +747,11 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         } catch (e) {
           console.error("[whatsapp] Failed to persist session:", e);
         }
+        // Snapshot all auth files to DB immediately on every successful connect.
+        // This is the equivalent of Telegram's sessionStr — a complete, restorable blob.
+        persistAllFilesToDb(authDir, userId).catch(e =>
+          console.error("[whatsapp] Failed to snapshot auth files on connect:", e)
+        );
         settle({ connected: true });
       }
 
@@ -723,22 +786,9 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     });
 
     // ── Credentials ───────────────────────────────────────────
-    sock.ev.on("creds.update", async () => {
-      await saveCreds();
-      // Persist to DB so credentials survive Railway redeploys (ephemeral filesystem)
-      try {
-        const credsContent = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, "utf-8") : null;
-        if (credsContent) {
-          await (prisma as any).whatsAppSession.upsert({
-            where: { userId },
-            create: { userId, credsJson: credsContent },
-            update: { credsJson: credsContent },
-          });
-        }
-      } catch (e) {
-        console.warn("[whatsapp] Failed to persist creds to DB:", e);
-      }
-    });
+    // saveCreds() already calls schedulePersist which debounces a full auth-file
+    // snapshot to DB — no need for a separate single-file persist here.
+    sock.ev.on("creds.update", () => { saveCreds(); });
 
     // ── Historical messages ───────────────────────────────────
     sock.ev.on("messaging-history.set", async ({ messages: historicalMsgs, contacts }: any) => {

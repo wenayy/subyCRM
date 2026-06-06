@@ -304,17 +304,18 @@ app.listen(PORT, async () => {
     } catch { /* already nullable */ }
   })();
 
-  // ── Schema migration: WhatsApp creds_json column ───────────────
+  // ── Schema migration: WhatsApp creds_json + auth_files_json columns ───────────────
   void (async () => {
     try {
       const { prisma } = await import("./lib/prisma");
       await prisma.$executeRawUnsafe(`
         ALTER TABLE contacts.whatsapp_sessions
-        ADD COLUMN IF NOT EXISTS creds_json TEXT
+        ADD COLUMN IF NOT EXISTS creds_json TEXT,
+        ADD COLUMN IF NOT EXISTS auth_files_json TEXT
       `);
-      console.log("[startup] WhatsApp creds_json column OK");
+      console.log("[startup] WhatsApp session columns OK");
     } catch (e: any) {
-      console.error("[startup] WhatsApp creds_json migration error:", e.message);
+      console.error("[startup] WhatsApp session column migration error:", e.message);
     }
   })();
 
