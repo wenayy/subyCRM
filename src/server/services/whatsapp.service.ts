@@ -97,13 +97,13 @@ async function useRobustMultiFileAuthState(folder: string) {
 const getAuthDir = (userId: string) => path.join(process.cwd(), ".whatsapp-auth", userId);
 const getLidFile = (userId: string) => path.join(getAuthDir(userId), "lid-map.json");
 
-// ── Runtime state ──────────────────────────────────────────────────────────────
-const state: {
+// ── Per-user state ─────────────────────────────────────────────────────────────
+type UserState = {
   sock: any | null;
   connected: boolean;
   qr: string | null;
   phoneNumber: string | null;
-  userId: string | null;
+  userId: string;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectDelay: number;
   reconnecting: boolean;
@@ -114,71 +114,81 @@ const state: {
   // before acting — this prevents a closing socket from triggering scheduleReconnect
   // and creating a second connectSocket call (the cascade-loop root cause).
   generation: number;
-} = {
-  sock: null,
-  connected: false,
-  qr: null,
-  phoneNumber: null,
-  userId: null,
-  reconnectTimer: null,
-  reconnectDelay: 0,
-  reconnecting: false,
-  consecutive440s: 0,
-  lastConnectedAt: 0,
-  generation: 0,
+  lidMap: Map<string, string>;
+  contactsCache: Map<string, any>;
+  pendingLidMessages: Array<{ msg: any; isHistorical: boolean }>;
 };
+
+const sessions = new Map<string, UserState>();
+
+function getSession(userId: string): UserState {
+  let s = sessions.get(userId);
+  if (!s) {
+    s = {
+      sock: null,
+      connected: false,
+      qr: null,
+      phoneNumber: null,
+      userId,
+      reconnectTimer: null,
+      reconnectDelay: 0,
+      reconnecting: false,
+      consecutive440s: 0,
+      lastConnectedAt: 0,
+      generation: 0,
+      lidMap: new Map(),
+      contactsCache: new Map(),
+      pendingLidMessages: [],
+    };
+    sessions.set(userId, s);
+  }
+  return s;
+}
 
 // ── LID → phone mapping (persisted across restarts) ───────────────────────────
 // Key: LID digits (no suffix), Value: phone digits (no suffix)
-const lidMap = new Map<string, string>();
 
-function loadLidMap(userId: string): void {
+function loadLidMap(s: UserState): void {
   try {
-    const lidFile = getLidFile(userId);
+    const lidFile = getLidFile(s.userId);
     if (fs.existsSync(lidFile)) {
       const raw = JSON.parse(fs.readFileSync(lidFile, "utf-8")) as Record<string, string>;
-      for (const [k, v] of Object.entries(raw)) lidMap.set(k, v);
-      console.log(`[whatsapp] Loaded ${lidMap.size} LID entries`);
+      for (const [k, v] of Object.entries(raw)) s.lidMap.set(k, v);
+      console.log(`[whatsapp] Loaded ${s.lidMap.size} LID entries`);
     }
   } catch {}
 }
 
-function saveLidMap(userId: string): void {
+function saveLidMap(s: UserState): void {
   try {
     const obj: Record<string, string> = {};
-    for (const [k, v] of lidMap.entries()) obj[k] = v;
-    fs.writeFileSync(getLidFile(userId), JSON.stringify(obj));
+    for (const [k, v] of s.lidMap.entries()) obj[k] = v;
+    fs.writeFileSync(getLidFile(s.userId), JSON.stringify(obj));
   } catch {}
 }
 
-// ── Contacts cache (for importContacts + LID resolution) ─────────────────────
-const contactsCache = new Map<string, any>();
-
-// Messages that arrived before contacts.upsert populated the LID map — retried after sync
-const pendingLidMessages: Array<{ msg: any; isHistorical: boolean }> = [];
-
-function ingestContacts(contacts: any[]): void {
+function ingestContacts(contacts: any[], s: UserState): void {
   let changed = false;
   for (const c of contacts) {
-    if (c.id) contactsCache.set(c.id, c);
+    if (c.id) s.contactsCache.set(c.id, c);
     // c.lid="<digits>@lid", c.id="<digits>@s.whatsapp.net" → build LID map
     if (c.lid && c.id?.endsWith("@s.whatsapp.net")) {
       const lid   = c.lid.split("@")[0];
       const phone = c.id.split("@")[0];
-      if (lid && phone && lidMap.get(lid) !== phone) {
-        lidMap.set(lid, phone);
+      if (lid && phone && s.lidMap.get(lid) !== phone) {
+        s.lidMap.set(lid, phone);
         changed = true;
       }
     }
   }
   if (changed) {
-    saveLidMap(state.userId ?? "default");
+    saveLidMap(s);
     // Retry messages that were dropped because the LID wasn't in the map yet
-    if (pendingLidMessages.length > 0) {
-      const pending = pendingLidMessages.splice(0);
+    if (s.pendingLidMessages.length > 0) {
+      const pending = s.pendingLidMessages.splice(0);
       console.log(`[whatsapp] Retrying ${pending.length} buffered @lid message(s)…`);
       for (const { msg, isHistorical } of pending) {
-        processMessage(msg, isHistorical).catch(() => {});
+        processMessage(msg, isHistorical, s).catch(() => {});
       }
     }
   }
@@ -214,6 +224,8 @@ export function invalidatePlatformCache(): void {
 // ── JID helpers ───────────────────────────────────────────────────────────────
 
 // Resolve any JID/phone to a sendable @s.whatsapp.net form
+// Note: this exported form has no per-user state — it cannot resolve @lid JIDs
+// without a session. Use the internal resolveJid(jid, s) for full resolution.
 export function resolveJid(jid: string): string | null {
   if (!jid) return null;
   if (jid.endsWith("@g.us")) return jid;
@@ -222,10 +234,26 @@ export function resolveJid(jid: string): string | null {
     return digits ? `${digits}@s.whatsapp.net` : null;
   }
   if (jid.endsWith("@lid")) {
-    const phone = lidMap.get(jid.split("@")[0]);
+    // No session context — cannot resolve @lid here
+    return null;
+  }
+  const digits = jid.replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : null;
+}
+
+// Internal version with full per-user state for @lid resolution
+function resolveJidWithState(jid: string, s: UserState): string | null {
+  if (!jid) return null;
+  if (jid.endsWith("@g.us")) return jid;
+  if (jid.endsWith("@s.whatsapp.net")) {
+    const digits = jid.split("@")[0].replace(/\D/g, "");
+    return digits ? `${digits}@s.whatsapp.net` : null;
+  }
+  if (jid.endsWith("@lid")) {
+    const phone = s.lidMap.get(jid.split("@")[0]);
     if (phone) return `${phone}@s.whatsapp.net`;
     // Try contacts cache
-    const cached = contactsCache.get(jid);
+    const cached = s.contactsCache.get(jid);
     if (cached?.id?.endsWith("@s.whatsapp.net")) return cached.id;
     return null;
   }
@@ -234,12 +262,12 @@ export function resolveJid(jid: string): string | null {
 }
 
 // Get phone digits from a JID (resolves @lid via map, then contactsCache)
-function jidDigits(jid: string): string {
+function jidDigits(jid: string, s: UserState): string {
   if (jid.endsWith("@lid")) {
-    const fromMap = lidMap.get(jid.split("@")[0]);
+    const fromMap = s.lidMap.get(jid.split("@")[0]);
     if (fromMap) return fromMap;
     // Fallback: contactsCache may have the @s.whatsapp.net id before lidMap is saved
-    const cached = contactsCache.get(jid);
+    const cached = s.contactsCache.get(jid);
     if (cached?.id?.endsWith("@s.whatsapp.net")) {
       return cached.id.split("@")[0].replace(/\D/g, "");
     }
@@ -251,9 +279,10 @@ function jidDigits(jid: string): string {
 // Match a JID to a CRM contact
 async function resolveContact(
   jid: string,
-  pushName?: string | null,
+  pushName: string | null | undefined,
+  s: UserState,
 ): Promise<{ contactId: string; contactName: string } | null> {
-  const digits = jidDigits(jid);
+  const digits = jidDigits(jid, s);
   const platforms = await getPlatforms();
 
   if (digits.length >= 5) {
@@ -304,7 +333,7 @@ function mimeToExt(mime: string): string {
   return map[mime] ?? `.${mime.split("/")[1] ?? "bin"}`;
 }
 
-async function downloadAndSaveMedia(msg: any): Promise<string | null> {
+async function downloadAndSaveMedia(msg: any, s: UserState): Promise<string | null> {
   const m = msg.message;
   if (!m) return null;
   const hasMedia = m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.stickerMessage;
@@ -316,7 +345,7 @@ async function downloadAndSaveMedia(msg: any): Promise<string | null> {
       "buffer",
       {},
       { logger: { level: "silent", trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, fatal: () => {}, child: () => ({ level: "silent", trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, fatal: () => {}, child: () => ({} as any) }) } as any,
-        reuploadRequest: state.sock?.updateMediaMessage?.bind(state.sock),
+        reuploadRequest: s.sock?.updateMediaMessage?.bind(s.sock),
       }
     ) as Buffer;
     if (!buffer || !buffer.length) return null;
@@ -338,7 +367,7 @@ async function downloadAndSaveMedia(msg: any): Promise<string | null> {
 }
 
 // ── Message processor ──────────────────────────────────────────────────────────
-async function processMessage(msg: any, isHistorical = false): Promise<void> {
+async function processMessage(msg: any, isHistorical: boolean, s: UserState): Promise<void> {
   const remoteJid: string = msg.key?.remoteJid ?? "";
   if (!remoteJid) return;
   if (
@@ -358,7 +387,7 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
     }
   }
 
-  let contact = await resolveContact(remoteJid, msg.pushName);
+  let contact = await resolveContact(remoteJid, msg.pushName, s);
 
   // For outgoing messages sent from the user's phone: resolveContact uses phone digits,
   // but pushName is null for outgoing so the name fallback never fires.
@@ -376,10 +405,10 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
   if (!contact) {
     if (!isHistorical && remoteJid.endsWith("@lid")) {
       // LID map may not be populated yet — buffer and retry after contacts.upsert
-      pendingLidMessages.push({ msg, isHistorical });
+      s.pendingLidMessages.push({ msg, isHistorical });
       console.log(`[whatsapp] Buffered @lid message (LID not yet resolved): ${remoteJid}`);
     } else if (!isHistorical) {
-      console.log(`[whatsapp] No CRM contact for ${jidDigits(remoteJid) || remoteJid} (pushName: ${msg.pushName ?? "none"})`);
+      console.log(`[whatsapp] No CRM contact for ${jidDigits(remoteJid, s) || remoteJid} (pushName: ${msg.pushName ?? "none"})`);
     }
     return;
   }
@@ -389,7 +418,7 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
     const m = msg.message;
     const hasMedia = m?.imageMessage || m?.videoMessage || m?.audioMessage || m?.documentMessage || m?.stickerMessage;
     if (hasMedia) {
-      const mediaUrl = await downloadAndSaveMedia(msg);
+      const mediaUrl = await downloadAndSaveMedia(msg, s);
       if (mediaUrl) {
         const caption = m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || "";
         const docName = m.documentMessage?.fileName || "file";
@@ -409,7 +438,7 @@ async function processMessage(msg: any, isHistorical = false): Promise<void> {
   await inboxService.upsert({
     platform: "whatsapp",
     externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
-    userId: state.userId ?? "default",
+    userId: s.userId,
     contactId: contact.contactId,
     contactName: contact.contactName,
     senderId: remoteJid,
@@ -433,57 +462,57 @@ async function getBaileys() {
 // Silently drop the socket reference WITHOUT calling end().
 // Calling sock.end() emits connection.update{close} on the OLD socket, which would
 // trigger our handler → scheduleReconnect → another connectSocket = cascade loop.
-// We bump `state.generation` so any in-flight handlers from the old socket see a
+// We bump `s.generation` so any in-flight handlers from the old socket see a
 // stale generation number and exit immediately instead of scheduling another reconnect.
-function dropSocket(): void {
-  state.generation++;
-  if (state.sock) {
-    try { state.sock.end(undefined); } catch {}
+function dropSocket(s: UserState): void {
+  s.generation++;
+  if (s.sock) {
+    try { s.sock.end(undefined); } catch {}
     try {
-      if (state.sock.ws) {
-        state.sock.ws.close();
-        state.sock.sock?.destroy?.();
+      if (s.sock.ws) {
+        s.sock.ws.close();
+        s.sock.sock?.destroy?.();
       }
     } catch {}
-    state.sock = null;
+    s.sock = null;
   }
-  state.connected = false;
-  state.qr = null;
+  s.connected = false;
+  s.qr = null;
 }
 
 // Only used for explicit user-initiated logout — actually ends the WA session.
-function endSocketForLogout(): void {
-  state.generation++;
-  if (state.sock) {
-    try { state.sock.end(undefined); } catch {}
-    state.sock = null;
+function endSocketForLogout(s: UserState): void {
+  s.generation++;
+  if (s.sock) {
+    try { s.sock.end(undefined); } catch {}
+    s.sock = null;
   }
-  state.connected = false;
-  state.qr = null;
+  s.connected = false;
+  s.qr = null;
 }
 
-function scheduleReconnect(gen: number): void {
-  if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+function scheduleReconnect(gen: number, s: UserState): void {
+  if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
   // Always wait at least 3 s to avoid racing WhatsApp's server-side cleanup.
   // Honour the delay already set by the 440 handler — don't double it here.
-  const delay = Math.max(state.reconnectDelay, 3_000);
+  const delay = Math.max(s.reconnectDelay, 3_000);
   console.log(`[whatsapp] Reconnecting in ${delay / 1000}s…`);
-  state.reconnectTimer = setTimeout(() => {
-    state.reconnectTimer = null;
-    state.reconnectDelay = 0; // reset after the wait
+  s.reconnectTimer = setTimeout(() => {
+    s.reconnectTimer = null;
+    s.reconnectDelay = 0; // reset after the wait
     // Only proceed if no newer socket has been created since this was scheduled
-    if (state.generation === gen && state.userId && !state.connected) {
-      connectSocket(state.userId).catch(console.error);
+    if (s.generation === gen && !s.connected) {
+      connectSocket(s.userId).catch(console.error);
     }
   }, delay);
 }
 
-function waitForConnection(ms = 15_000): Promise<void> {
-  if (state.connected) return Promise.resolve();
+function waitForConnection(ms: number, s: UserState): Promise<void> {
+  if (s.connected) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + ms;
     const poll = () => {
-      if (state.connected) return resolve();
+      if (s.connected) return resolve();
       if (Date.now() > deadline) return reject(new Error("timeout"));
       setTimeout(poll, 300);
     };
@@ -493,6 +522,8 @@ function waitForConnection(ms = 15_000): Promise<void> {
 
 // ── Core: create socket and wire events ───────────────────────────────────────
 async function connectSocket(userId: string): Promise<{ qr?: string; connected: boolean }> {
+  const s = getSession(userId);
+
   // Safeguard: Check if AUTH_DIR exists but creds.json is corrupt/empty
   const authDir = getAuthDir(userId);
   const credsFile = path.join(authDir, "creds.json");
@@ -522,10 +553,10 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
 
   // Bump generation FIRST, then drop old socket.
   // Any pending callbacks from the old socket will see a stale generation and no-op.
-  dropSocket();
-  state.reconnecting = true;
+  dropSocket(s);
+  s.reconnecting = true;
 
-  const myGen = state.generation; // capture generation for this socket's lifetime
+  const myGen = s.generation; // capture generation for this socket's lifetime
 
   const {
     default: makeWASocket,
@@ -537,15 +568,15 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
   const pino = (await import("pino")).default;
 
   // Guard: another connectSocket may have started while we were awaiting getBaileys()
-  if (state.generation !== myGen) return { connected: false };
+  if (s.generation !== myGen) return { connected: false };
 
   fs.mkdirSync(authDir, { recursive: true });
-  loadLidMap(userId);
+  loadLidMap(s);
 
   const { state: authState, saveCreds } = await useRobustMultiFileAuthState(authDir);
 
   // Guard again after the async auth-state load
-  if (state.generation !== myGen) return { connected: false };
+  if (s.generation !== myGen) return { connected: false };
 
   let version: [number, number, number];
   try {
@@ -556,7 +587,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     console.log("[whatsapp] Using fallback WA version");
   }
 
-  if (state.generation !== myGen) return { connected: false };
+  if (s.generation !== myGen) return { connected: false };
 
   const sock = makeWASocket({
     version,
@@ -578,19 +609,18 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     },
   });
 
-  state.sock   = sock;
-  state.userId = userId;
+  s.sock = sock;
 
   return new Promise((resolve) => {
     let settled = false;
     const settle = (val: { qr?: string; connected: boolean }) => {
-      if (!settled) { settled = true; state.reconnecting = false; resolve(val); }
+      if (!settled) { settled = true; s.reconnecting = false; resolve(val); }
     };
 
     // ── Connection state ──────────────────────────────────────
     sock.ev.on("connection.update", async (update: any) => {
       // If a newer socket has replaced this one, ignore all events from this socket
-      if (state.generation !== myGen) return;
+      if (s.generation !== myGen) return;
 
       const { connection, lastDisconnect, qr } = update;
 
@@ -598,36 +628,25 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         console.log("[whatsapp] QR code ready. Go to Settings → WhatsApp to scan.");
         try {
           const QRCode = await import("qrcode");
-          state.qr = await QRCode.toDataURL(qr);
+          s.qr = await QRCode.toDataURL(qr);
         } catch {
-          state.qr = qr;
+          s.qr = qr;
         }
-        settle({ qr: state.qr!, connected: false });
+        settle({ qr: s.qr!, connected: false });
       }
 
       if (connection === "open") {
-        state.connected    = true;
-        state.lastConnectedAt = Date.now();
-        state.qr           = null;
-        state.phoneNumber  = sock.user?.id?.split(":")[0] ?? null;
-        console.log(`[whatsapp] Connected as ${state.phoneNumber}`);
+        s.connected    = true;
+        s.lastConnectedAt = Date.now();
+        s.qr           = null;
+        s.phoneNumber  = sock.user?.id?.split(":")[0] ?? null;
+        console.log(`[whatsapp] Connected as ${s.phoneNumber}`);
         try {
           await (prisma as any).whatsAppSession.upsert({
             where:  { userId },
-            create: { userId, connected: true, phoneNumber: state.phoneNumber },
-            update: { connected: true, phoneNumber: state.phoneNumber },
+            create: { userId, connected: true, phoneNumber: s.phoneNumber },
+            update: { connected: true, phoneNumber: s.phoneNumber },
           });
-          // Only one WhatsApp socket can be active — purge all other users' sessions
-          // so autoReconnect never re-attaches a different user's session on restart
-          const others = await (prisma as any).whatsAppSession
-            .findMany({ where: { userId: { not: userId } } })
-            .catch(() => []);
-          for (const other of others) {
-            try { fs.rmSync(getAuthDir(other.userId), { recursive: true, force: true }); } catch {}
-          }
-          await (prisma as any).whatsAppSession
-            .deleteMany({ where: { userId: { not: userId } } })
-            .catch(() => {});
         } catch (e) {
           console.error("[whatsapp] Failed to persist session:", e);
         }
@@ -635,7 +654,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
       }
 
       if (connection === "close") {
-        state.connected = false;
+        s.connected = false;
         const code = (lastDisconnect?.error as InstanceType<typeof Boom>)?.output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut || code === 401;
         console.log(`[whatsapp] Disconnected — code=${code} loggedOut=${loggedOut}`);
@@ -650,23 +669,23 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
           if (code === DisconnectReason.connectionReplaced || code === 440) {
             // 440 = another client (usually the phone) replaced this connection.
             // If we stayed connected < 5s, count it as a consecutive failure.
-            const stayedMs = Date.now() - state.lastConnectedAt;
+            const stayedMs = Date.now() - s.lastConnectedAt;
             if (stayedMs < 5_000) {
-              state.consecutive440s++;
+              s.consecutive440s++;
             } else {
-              state.consecutive440s = 0; // stayed alive long enough — reset
+              s.consecutive440s = 0; // stayed alive long enough — reset
             }
             // Exponential backoff: 10s → 20s → 40s → 60s cap
             // After 3+ fast 440s, use 60s to let the competing client stabilise
-            const base = state.consecutive440s >= 3 ? 60_000 : 10_000 * Math.pow(2, Math.max(0, state.consecutive440s - 1));
-            state.reconnectDelay = Math.min(base, 60_000);
-            console.log(`[whatsapp] Connection replaced (440) — consecutive=${state.consecutive440s}, waiting ${state.reconnectDelay / 1000}s before reconnect`);
+            const base = s.consecutive440s >= 3 ? 60_000 : 10_000 * Math.pow(2, Math.max(0, s.consecutive440s - 1));
+            s.reconnectDelay = Math.min(base, 60_000);
+            console.log(`[whatsapp] Connection replaced (440) — consecutive=${s.consecutive440s}, waiting ${s.reconnectDelay / 1000}s before reconnect`);
           } else {
-            state.consecutive440s = 0;
-            state.reconnectDelay = 0;
+            s.consecutive440s = 0;
+            s.reconnectDelay = 0;
           }
           // Pass myGen so scheduleReconnect won't fire if a newer socket already exists
-          scheduleReconnect(myGen);
+          scheduleReconnect(myGen, s);
         }
       }
     });
@@ -676,24 +695,24 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
 
     // ── Historical messages ───────────────────────────────────
     sock.ev.on("messaging-history.set", async ({ messages: historicalMsgs, contacts }: any) => {
-      if (state.generation !== myGen) return;
-      if (contacts?.length) ingestContacts(contacts);
+      if (s.generation !== myGen) return;
+      if (contacts?.length) ingestContacts(contacts, s);
       if (!historicalMsgs?.length) return;
       console.log(`[whatsapp] Syncing ${historicalMsgs.length} historical messages…`);
       let saved = 0;
       for (const msg of historicalMsgs) {
-        try { await processMessage(msg, true); saved++; } catch {}
+        try { await processMessage(msg, true, s); saved++; } catch {}
       }
       console.log(`[whatsapp] History done — ${saved}/${historicalMsgs.length} saved`);
     });
 
     // ── Contact list updates (builds LID map) ────────────────
-    sock.ev.on("contacts.upsert", (c: any[]) => { if (state.generation === myGen) ingestContacts(c); });
-    sock.ev.on("contacts.update", (c: any[]) => { if (state.generation === myGen) ingestContacts(c); });
+    sock.ev.on("contacts.upsert", (c: any[]) => { if (s.generation === myGen) ingestContacts(c, s); });
+    sock.ev.on("contacts.update", (c: any[]) => { if (s.generation === myGen) ingestContacts(c, s); });
 
     // ── Live messages ─────────────────────────────────────────
     sock.ev.on("messages.upsert", async ({ messages: msgs }: any) => {
-      if (state.generation !== myGen) return;
+      if (s.generation !== myGen) return;
       for (const msg of msgs) {
         try {
           // "Delete for everyone" arrives as a protocol message type=0 with a target key.
@@ -712,7 +731,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
             }
             continue; // confirmed revoke — no need to run processMessage
           }
-          await processMessage(msg);
+          await processMessage(msg, false, s);
         } catch (e) {
           console.error("[whatsapp] Message error:", e);
         }
@@ -722,7 +741,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     // ── Revocations / deletions ───────────────────────────────
     // Handles tombstones: Baileys sets message=null on the original when it's revoked
     sock.ev.on("messages.update", async (updates: any[]) => {
-      if (state.generation !== myGen) return;
+      if (s.generation !== myGen) return;
       for (const update of updates) {
         try {
           if (update.update?.message === null) {
@@ -742,7 +761,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
 
     // Handles direct message deletions/clears synced from the primary phone
     sock.ev.on("messages.delete", async (item) => {
-      if (state.generation !== myGen) return;
+      if (s.generation !== myGen) return;
       try {
         if ("keys" in item) {
           for (const key of item.keys) {
@@ -770,61 +789,63 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
 // ── Public API ─────────────────────────────────────────────────────────────────
 export const whatsappService = {
   async getStatus(userId: string) {
-    if (state.connected) {
-      return { connected: true, qrAvailable: !!state.qr, phoneNumber: state.phoneNumber, lastSync: null };
+    const s = getSession(userId);
+    if (s.connected) {
+      return { connected: true, qrAvailable: !!s.qr, phoneNumber: s.phoneNumber, lastSync: null };
     }
     const saved = await (prisma as any).whatsAppSession
-      .findFirst({ where: { connected: true } })
+      .findFirst({ where: { userId, connected: true } })
       .catch(() => null);
     return {
       connected: !!(saved && fs.existsSync(getAuthDir(userId))),
-      qrAvailable: !!state.qr,
-      phoneNumber: saved?.phoneNumber ?? state.phoneNumber,
+      qrAvailable: !!s.qr,
+      phoneNumber: saved?.phoneNumber ?? s.phoneNumber,
       lastSync: null,
     };
   },
 
-  getQR(): string | null {
-    return state.qr;
+  getQR(userId: string): string | null {
+    return getSession(userId).qr;
   },
 
   async initSession(userId: string): Promise<{ qr?: string; connected: boolean }> {
+    const s = getSession(userId);
     // Already connected as THIS user — nothing to do
-    if (state.connected && state.userId === userId) return { connected: true };
+    if (s.connected && s.userId === userId) return { connected: true };
     // Reconnecting for this same user — wait for it instead of spawning a second socket
-    if (state.reconnecting && state.userId === userId) {
-      try { await waitForConnection(40_000); } catch {}
-      return { connected: state.connected, qr: state.qr ?? undefined };
+    if (s.reconnecting) {
+      try { await waitForConnection(40_000, s); } catch {}
+      return { connected: s.connected, qr: s.qr ?? undefined };
     }
-    // Different user or no session — connectSocket calls dropSocket() internally
+    // No session or not reconnecting — start a new connection
     return connectSocket(userId);
   },
 
-  async ensureConnected(): Promise<void> {
-    if (!state.connected) {
+  async ensureConnected(userId: string): Promise<void> {
+    const s = getSession(userId);
+    if (!s.connected) {
       const saved = await (prisma as any).whatsAppSession
-        .findFirst({ where: { connected: true } })
+        .findFirst({ where: { userId, connected: true } })
         .catch(() => null);
-      if (!saved || !fs.existsSync(getAuthDir(saved?.userId ?? "default"))) {
+      if (!saved || !fs.existsSync(getAuthDir(userId))) {
         throw new Error("WhatsApp is not connected. Go to Settings → WhatsApp to connect.");
       }
-      if (!state.reconnecting && !state.sock) {
+      if (!s.reconnecting && !s.sock) {
         console.log("[whatsapp] Starting reconnect for pending send…");
-        const uid = state.userId ?? saved.userId;
-        state.userId = uid;
-        connectSocket(uid).catch(console.error);
+        connectSocket(userId).catch(console.error);
       }
       try {
-        await waitForConnection(35_000);
+        await waitForConnection(35_000, s);
       } catch {
         throw new Error("WhatsApp is still reconnecting — please try again in a moment.");
       }
     }
-    if (!state.sock) throw new Error("WhatsApp socket not initialized");
+    if (!s.sock) throw new Error("WhatsApp socket not initialized");
   },
 
-  async sendMediaMessage(jid: string, filePath: string, caption?: string): Promise<unknown> {
-    await whatsappService.ensureConnected();
+  async sendMediaMessage(jid: string, filePath: string, caption: string | undefined, userId: string): Promise<unknown> {
+    await whatsappService.ensureConnected(userId);
+    const s = getSession(userId);
     const resolved = resolveJid(jid);
     if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
     console.log(`[whatsapp] Sending image to ${resolved}`);
@@ -836,18 +857,18 @@ export const whatsappService = {
     let result: unknown;
     try {
       if (isVideo) {
-        result = await state.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" });
+        result = await s.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" });
       } else {
-        result = await state.sock.sendMessage(resolved, { image: imageBuffer, caption: caption ?? "" });
+        result = await s.sock.sendMessage(resolved, { image: imageBuffer, caption: caption ?? "" });
       }
     } catch (sendErr) {
-      if (!state.connected) {
+      if (!s.connected) {
         console.log("[whatsapp] Socket closed during send — waiting for reconnect before retry…");
-        await waitForConnection(35_000);
-        if (!state.sock) throw new Error("WhatsApp socket unavailable after reconnect");
+        await waitForConnection(35_000, s);
+        if (!s.sock) throw new Error("WhatsApp socket unavailable after reconnect");
         result = isVideo
-          ? await state.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" })
-          : await state.sock.sendMessage(resolved, { image: imageBuffer, caption: caption ?? "" });
+          ? await s.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" })
+          : await s.sock.sendMessage(resolved, { image: imageBuffer, caption: caption ?? "" });
       } else {
         throw sendErr;
       }
@@ -861,17 +882,19 @@ export const whatsappService = {
     return result;
   },
 
-  async sendReaction(jid: string, messageId: string, fromMe: boolean, emoji: string): Promise<void> {
-    await whatsappService.ensureConnected();
+  async sendReaction(jid: string, messageId: string, fromMe: boolean, emoji: string, userId: string): Promise<void> {
+    await whatsappService.ensureConnected(userId);
+    const s = getSession(userId);
     const resolved = resolveJid(jid);
     if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
-    await state.sock.sendMessage(resolved, {
+    await s.sock.sendMessage(resolved, {
       react: { text: emoji, key: { remoteJid: resolved, fromMe, id: messageId } },
     });
   },
 
-  async sendMessage(jid: string, text: string): Promise<unknown> {
-    await whatsappService.ensureConnected();
+  async sendMessage(jid: string, text: string, userId: string): Promise<unknown> {
+    await whatsappService.ensureConnected(userId);
+    const s = getSession(userId);
 
     const resolved = resolveJid(jid);
     if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
@@ -879,14 +902,14 @@ export const whatsappService = {
 
     let result: unknown;
     try {
-      result = await state.sock.sendMessage(resolved, { text });
+      result = await s.sock.sendMessage(resolved, { text });
     } catch (sendErr) {
       // Socket may have dropped mid-send (e.g. 440 reconnect) — wait for next connection and retry once
-      if (!state.connected) {
+      if (!s.connected) {
         console.log("[whatsapp] Socket closed during send — waiting for reconnect before retry…");
-        await waitForConnection(35_000);
-        if (!state.sock) throw new Error("WhatsApp socket unavailable after reconnect");
-        result = await state.sock.sendMessage(resolved, { text });
+        await waitForConnection(35_000, s);
+        if (!s.sock) throw new Error("WhatsApp socket unavailable after reconnect");
+        result = await s.sock.sendMessage(resolved, { text });
       } else {
         throw sendErr;
       }
@@ -902,43 +925,46 @@ export const whatsappService = {
   },
 
   async autoReconnect(): Promise<void> {
-    if (state.connected || state.reconnecting) return;
-    // Claim the reconnecting slot BEFORE the async DB query so that any concurrent
-    // initSession call sees reconnecting=true and waits instead of spawning a second socket.
-    state.reconnecting = true;
-    const saved = await (prisma as any).whatsAppSession
-      .findFirst({ where: { connected: true } })
-      .catch(() => null);
-    if (!saved || !fs.existsSync(getAuthDir(saved?.userId ?? "default"))) {
-      state.reconnecting = false; // nothing to reconnect — release the slot
-      return;
+    // Reconnect ALL saved sessions — each user gets their own socket
+    const savedSessions = await (prisma as any).whatsAppSession
+      .findMany({ where: { connected: true } })
+      .catch(() => []);
+
+    for (const saved of savedSessions) {
+      const uid: string = saved.userId;
+      if (!fs.existsSync(getAuthDir(uid))) continue; // no auth dir on disk — skip
+
+      const s = getSession(uid);
+      if (s.connected || s.reconnecting) continue; // already running — skip
+
+      console.log(`[whatsapp] Auto-reconnecting saved session for user ${uid}…`);
+      connectSocket(uid).catch((e) => {
+        console.error(`[whatsapp] Auto-reconnect error for user ${uid}:`, e);
+      });
     }
-    console.log("[whatsapp] Auto-reconnecting saved session…");
-    connectSocket(saved.userId).catch((e) => {
-      state.reconnecting = false;
-      console.error("[whatsapp] Auto-reconnect error:", e);
-    });
   },
 
   async disconnect(userId: string): Promise<void> {
-    if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
-    endSocketForLogout(); // sends end() signal — proper logout, not a silent drop
-    state.userId        = null;
-    state.phoneNumber   = null;
-    state.reconnectDelay = 0;
+    const s = getSession(userId);
+    if (s.reconnectTimer) { clearTimeout(s.reconnectTimer); s.reconnectTimer = null; }
+    endSocketForLogout(s); // sends end() signal — proper logout, not a silent drop
+    s.phoneNumber   = null;
+    s.reconnectDelay = 0;
+    sessions.delete(userId);
     try { fs.rmSync(getAuthDir(userId), { recursive: true, force: true }); } catch {}
     await (prisma as any).whatsAppSession.deleteMany({ where: { userId } }).catch(() => {});
     console.log("[whatsapp] Disconnected and session cleared.");
   },
 
-  async importContacts(_userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
-    if (!state.connected || !state.sock) {
+  async importContacts(userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
+    const s = getSession(userId);
+    if (!s.connected || !s.sock) {
       throw new Error("WhatsApp not connected. Connect it in Settings first.");
     }
 
     let imported = 0, updated = 0, skipped = 0;
 
-    for (const [jid, info] of contactsCache.entries()) {
+    for (const [jid, info] of s.contactsCache.entries()) {
       try {
         if (
           jid.endsWith("@g.us") ||
@@ -949,7 +975,7 @@ export const whatsappService = {
         const name = info.name || info.verifiedName || info.notify;
         if (!name) { skipped++; continue; }
 
-        const phoneDigits = jidDigits(jid);
+        const phoneDigits = jidDigits(jid, s);
         if (phoneDigits.length < 5) { skipped++; continue; }
 
         const existing = await prisma.platform.findFirst({

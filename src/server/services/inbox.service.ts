@@ -123,7 +123,7 @@ export const inboxService = {
       if (!jid && msg.senderId && !msg.senderId.endsWith("@lid")) jid = msg.senderId;
       if (!jid) throw new Error("Cannot resolve WhatsApp JID for this contact");
       const { whatsappService } = await import("./whatsapp.service");
-      await whatsappService.sendReaction(jid, msg.externalId, !!msg.fromMe, emoji);
+      await whatsappService.sendReaction(jid, msg.externalId, !!msg.fromMe, emoji, userId ?? "default");
 
     } else if (msg.platform === "telegram") {
       const msgId = parseInt(msg.externalId.replace("personal-", ""), 10);
@@ -335,8 +335,8 @@ export const inboxService = {
           const { whatsappService } = await import("./whatsapp.service");
           const media = parseMediaMarkdown(text);
           const sentMsg = media
-            ? await whatsappService.sendMediaMessage(jid, media.filePath, media.caption)
-            : await whatsappService.sendMessage(jid, text);
+            ? await whatsappService.sendMediaMessage(jid, media.filePath, media.caption, userId ?? "default")
+            : await whatsappService.sendMessage(jid, text, userId ?? "default");
           // Update temp ID to real Baileys message ID so we don't get a duplicate from the echo
           const realId = (sentMsg as any)?.key?.id;
           if (realId) {

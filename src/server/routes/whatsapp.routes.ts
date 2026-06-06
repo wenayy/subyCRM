@@ -20,7 +20,8 @@ router.post("/init", async (req, res, next) => {
 
 router.get("/qr", async (req, res, next) => {
   try {
-    const qr = whatsappService.getQR();
+    const userId = res.locals.session?.user?.id ?? "default";
+    const qr = whatsappService.getQR(userId);
     res.json({ qr });
   } catch (err) { next(err); }
 });
