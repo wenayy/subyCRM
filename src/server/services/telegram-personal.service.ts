@@ -519,10 +519,12 @@ export const telegramPersonalService = {
         if (!entity || entity.className !== "User" || entity.bot || entity.self) continue;
 
         const contact = await findContactForTelegram(entity);
-        if (!contact) continue;
+        const entityName = [entity.firstName, entity.lastName].filter(Boolean).join(" ")
+          || entity.username
+          || String(entity.id);
+        const senderName = contact?.name ?? entityName;
 
         const messages = await client.getMessages(entity, { limit: msgLimit });
-        const contactName = contact.name;
 
         for (const msg of messages) {
           if (!msg.text && !msg.media) continue;
@@ -545,9 +547,9 @@ export const telegramPersonalService = {
             platform: "telegram",
             externalId: `personal-${msg.id}`,
             userId,
-            contactId: contact.id,
-            contactName,
-            senderId: entity.id.toString(),
+            contactId: contact?.id ?? null,
+            contactName: senderName,
+            senderId: contact ? undefined : entity.id.toString(),
             preview: body.slice(0, 120),
             body,
             receivedAt: new Date(msg.date * 1000),

@@ -201,17 +201,16 @@ export async function syncThreads(userId: string): Promise<number> {
   await (prisma as any).gmailThread.deleteMany({ where: { threadId: { in: threadIds } } });
   await (prisma as any).gmailThread.createMany({ data: rows, skipDuplicates: true });
 
-  // Mirror to unified InboxMessage
+  // Mirror to unified InboxMessage — include unmatched threads so inbox isn't empty
   for (const row of rows) {
-    if (!row.contactId) {
-      continue;
-    }
+    const senderEmail = row.contactEmail ?? row.fromEmail ?? null;
     await inboxService.upsert({
       platform: "email",
       externalId: row.threadId,
       userId,
-      contactId: row.contactId,
-      contactName: row.contactEmail ?? row.fromEmail ?? "Unknown",
+      contactId: row.contactId ?? null,
+      contactName: senderEmail ?? "Unknown",
+      senderId: row.contactId ? undefined : senderEmail ?? undefined,
       preview: row.subject ?? row.snippet ?? "",
       body: row.snippet ?? "",
       receivedAt: row.lastDate,
