@@ -13,12 +13,8 @@ function getOpenAI() {
   return _openai;
 }
 
-const ALLOWED_IDS = new Set(
-  (process.env.TELEGRAM_ALLOWED_CHAT_IDS || "")
-    .split(",").map((s) => s.trim()).filter(Boolean),
-);
-function isAllowed(chatId: number): boolean {
-  return ALLOWED_IDS.size === 0 || ALLOWED_IDS.has(String(chatId));
+async function getLinkedUser(chatId: number) {
+  return (prisma as any).telegramBotLink.findUnique({ where: { chatId: String(chatId) } });
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -254,14 +250,12 @@ export async function processVoiceCapture(transcript: string, chatId?: number): 
 // ── Bot message handler ───────────────────────────────────────────────────────
 async function handleMessage(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
-  if (!isAllowed(chatId)) { await bot!.sendMessage(chatId, "⛔ Unauthorised."); return; }
-
   const send = (text: string) => bot!.sendMessage(chatId, text, { parse_mode: "Markdown" });
 
   // ── Account linking (manual code OR /start deep link) ────
-  const linkPayload = msg.text?.match(/^LINK-[A-F0-9]{8}$/)
-    ? msg.text.trim()
-    : msg.text?.match(/^\/start (LINK-[A-F0-9]{8})$/)?.[1] ?? null;
+  const linkPayload = msg.text?.match(/^LINK-[A-F0-9]{8}$/i)
+    ? msg.text.trim().toUpperCase()
+    : msg.text?.match(/^\/start (LINK-[A-F0-9]{8})$/i)?.[1]?.toUpperCase() ?? null;
 
   if (linkPayload) {
     const token = linkPayload;
@@ -286,12 +280,20 @@ async function handleMessage(msg: TelegramBot.Message) {
   }
 
   if (msg.text === "/start") {
+    console.log(`[telegram-bot] /start from chatId=${chatId}`);
     const isLinked = await (prisma as any).telegramBotLink.findUnique({ where: { chatId: String(chatId) } });
     if (isLinked) {
-      await send("✅ Already linked to your CRM account. Send a voice note to get started!");
+      await send(`✅ Already linked\\! Send me a *voice note* or *text*:\n• _"Had a great call with Lena, she's in for the round"_\n• _"Remind me to follow up with Marc on Friday"_\n• _"Mark Sophie as hot"_\n• _"Just met Thomas from Sequoia, he's a partner"_\n\nI'll log it straight into Suby CRM\\. 🚀`);
     } else {
-      await send("👋 Welcome to Suby CRM Bot!\n\nTo link your account, go to *Settings → Voice Assistant* in the app and click *Connect your account*.");
+      await send("👋 Hey\\! I'm *subyassistant\\_bot*\\.\n\nTo link your account, go to *Settings → Voice Assistant* in the Suby CRM app and click *Connect your account*\\.");
     }
+    return;
+  }
+
+  // Require a linked account for all commands beyond /start and linking
+  const linked = await getLinkedUser(chatId);
+  if (!linked) {
+    await send("🔒 Your Telegram is not linked to a Suby CRM account.\n\nGo to *Settings → Voice Assistant* and click *Connect your account* to link.");
     return;
   }
 
@@ -352,15 +354,6 @@ export function startBot() {
   bot = new TelegramBot(token, { polling: { interval: 2000, params: { timeout: 0 } } });
   g.__telegramBot = bot;
   console.log("[telegram-bot] polling started");
-
-  bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    console.log(`[telegram-bot] /start from chatId=${chatId}`);
-    if (!isAllowed(chatId)) { await bot!.sendMessage(chatId, "⛔ Unauthorised."); return; }
-    await bot!.sendMessage(chatId,
-      `👋 Hey! I'm *subyassistant\\_bot*.\n\nSend me a *voice note* or *text*:\n• _"Had a great call with Lena, she's in for the round"_\n• _"Remind me to follow up with Marc on Friday"_\n• _"Mark Sophie as hot"_\n• _"Just met Thomas from Sequoia, he's a partner"_\n\nI'll log it straight into Suby CRM. 🚀`,
-      { parse_mode: "Markdown" });
-  });
 
   bot.on("voice", handleMessage);
   bot.on("message", (msg: TelegramBot.Message) => { if (!msg.voice) handleMessage(msg); });
