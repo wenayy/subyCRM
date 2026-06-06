@@ -37,7 +37,7 @@ export function startSlackSyncWorker() {
       return { synced: totalSynced, users: tokens.length };
     },
     {
-      connection: redis.connection,
+      connection: redis,
       concurrency: 2,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

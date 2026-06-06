@@ -72,7 +72,7 @@ export function startSequenceTickWorker() {
       return { advanced, completed };
     },
     {
-      connection: redis.connection,
+      connection: redis,
       concurrency: 1,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

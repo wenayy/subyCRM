@@ -51,7 +51,7 @@ export function startAiClassifyWorker() {
       return { type, domain, confidence: result.confidence };
     },
     {
-      connection: redis.connection,
+      connection: redis,
       concurrency: 5,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

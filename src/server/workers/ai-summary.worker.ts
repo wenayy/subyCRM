@@ -48,7 +48,7 @@ export function startAiSummaryWorker() {
       return { summary };
     },
     {
-      connection: redis.connection,
+      connection: redis,
       concurrency: 3,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

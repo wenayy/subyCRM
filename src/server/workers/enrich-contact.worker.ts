@@ -19,7 +19,7 @@ export function startEnrichContactWorker() {
       return result;
     },
     {
-      connection: redis.connection,
+      connection: redis,
       concurrency: 2,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },

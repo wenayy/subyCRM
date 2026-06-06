@@ -57,7 +57,7 @@ export function startOutcomePromptWorker() {
       return { sent: true, chatId, contactName, eventTitle };
     },
     {
-      connection: redis.connection,
+      connection: redis,
       concurrency: 2,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },
