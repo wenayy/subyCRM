@@ -72,6 +72,15 @@ export const inboxService = {
     });
   },
 
+  async getThreadBefore(contactId: string, platform: string, before: Date, limit: number = 50) {
+    const msgs = await (prisma as any).inboxMessage.findMany({
+      where: { contactId, platform, receivedAt: { lt: before } },
+      orderBy: { receivedAt: "desc" },
+      take: limit,
+    });
+    return (msgs as any[]).reverse();
+  },
+
   // All messages for a contact across every platform, newest first
   async getContactMessages(contactId: string, userId: string = "default") {
     return (prisma as any).inboxMessage.findMany({
@@ -107,10 +116,22 @@ export const inboxService = {
   },
 
   async markConversationRead(contactId: string, platform: string, userId: string = "default") {
-    return (prisma as any).inboxMessage.updateMany({
+    const result = await (prisma as any).inboxMessage.updateMany({
       where: { userId, contactId, platform, read: false },
       data: { read: true },
     });
+    if (platform === "whatsapp" && result.count > 0) {
+      try {
+        const p = await prisma.platform.findFirst({ where: { contactId, type: "whatsapp" } });
+        if (p) {
+          const jid = p.platformId.includes("@") ? p.platformId : `${p.platformId}@s.whatsapp.net`;
+          const { whatsappService } = await import("./whatsapp.service");
+          void whatsappService.markAsRead(jid, userId).catch(() => {});
+          void whatsappService.subscribePresence(jid, userId).catch(() => {});
+        }
+      } catch {}
+    }
+    return result;
   },
 
   async getUnknownThread(senderId: string, platform: string, userId: string = "default") {
@@ -175,6 +196,10 @@ export const inboxService = {
     receivedAt: Date;
     needsReply?: boolean;
     fromMe?: boolean;
+    waStatus?: string | null;
+    quotedId?: string | null;
+    quotedBody?: string | null;
+    quotedFromMe?: boolean | null;
   }) {
     const { platform, externalId, userId: dataUserId, ...rest } = data;
     const resolvedUserId = dataUserId ?? "default";
@@ -184,7 +209,14 @@ export const inboxService = {
     const result = await (prisma as any).inboxMessage.upsert({
       where: { platform_externalId_userId: { platform, externalId, userId: resolvedUserId } },
       create: { platform, externalId, userId: resolvedUserId, ...rest, ...(read !== undefined ? { read } : {}) },
-      update: { contactId: rest.contactId, contactName: rest.contactName, preview: rest.preview, body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe, needsReply: rest.needsReply },
+      update: {
+        contactId: rest.contactId, contactName: rest.contactName, preview: rest.preview,
+        body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe, needsReply: rest.needsReply,
+        ...(rest.waStatus !== undefined ? { waStatus: rest.waStatus } : {}),
+        ...(rest.quotedId !== undefined ? { quotedId: rest.quotedId } : {}),
+        ...(rest.quotedBody !== undefined ? { quotedBody: rest.quotedBody } : {}),
+        ...(rest.quotedFromMe !== undefined ? { quotedFromMe: rest.quotedFromMe } : {}),
+      },
     });
 
     if (rest.contactId) {
@@ -207,6 +239,9 @@ export const inboxService = {
             contentSnippet: rest.preview || rest.body || "",
             occurredAt: rest.receivedAt,
           },
+        }).catch((e: any) => {
+          if (e?.code !== "P2003") throw e;
+          // Race during initial sync: contact may not be committed yet — inbox message already saved, skip interaction
         });
 
         const contact = await prisma.contact.findUnique({
@@ -252,6 +287,7 @@ export const inboxService = {
       receivedAt: new Date(),
       needsReply: false,
       fromMe: true,
+      waStatus: msg.platform === "whatsapp" ? "sent" : null,
     });
 
     if (msg.contactId) {
@@ -357,9 +393,20 @@ export const inboxService = {
         if (msg.platform === "whatsapp" && jid) {
           const { whatsappService } = await import("./whatsapp.service");
           const media = parseMediaMarkdown(text);
+          // Build quoted message object for WA reply threading
+          let quotedMsg: any;
+          if (replyToId) {
+            const orig = await (prisma as any).inboxMessage.findUnique({ where: { id: replyToId } });
+            if (orig?.externalId) {
+              quotedMsg = {
+                key: { id: orig.externalId, fromMe: !!orig.fromMe, remoteJid: jid },
+                message: { conversation: orig.body || orig.preview || "" },
+              };
+            }
+          }
           const sentMsg = media
             ? await whatsappService.sendMediaMessage(jid, media.filePath, media.caption, userId ?? "default")
-            : await whatsappService.sendMessage(jid, text, userId ?? "default");
+            : await whatsappService.sendMessage(jid, text, userId ?? "default", quotedMsg);
           // Update temp ID to real Baileys message ID so we don't get a duplicate from the echo
           const realId = (sentMsg as any)?.key?.id;
           if (realId) {

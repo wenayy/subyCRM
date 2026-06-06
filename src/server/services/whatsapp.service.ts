@@ -359,6 +359,38 @@ async function resolveContact(
   return null;
 }
 
+// ── WA delivery status → string ────────────────────────────────────────────────
+function waStatusString(status: number | undefined): string | null {
+  if (status === 2) return "sent";
+  if (status === 3) return "delivered";
+  if (status === 4) return "read";
+  if (status === 5) return "played";
+  return null;
+}
+
+// ── Quote context extraction ────────────────────────────────────────────────────
+function extractQuoteContext(msg: any): { quotedId: string | null; quotedBody: string | null; quotedFromMe: boolean | null } {
+  const m = msg.message;
+  if (!m) return { quotedId: null, quotedBody: null, quotedFromMe: null };
+  const ctx =
+    m.extendedTextMessage?.contextInfo ||
+    m.imageMessage?.contextInfo ||
+    m.videoMessage?.contextInfo ||
+    m.audioMessage?.contextInfo ||
+    m.documentMessage?.contextInfo;
+  if (!ctx?.stanzaId) return { quotedId: null, quotedBody: null, quotedFromMe: null };
+  const qm = ctx.quotedMessage;
+  const quotedBody = qm
+    ? qm.conversation || qm.extendedTextMessage?.text ||
+      (qm.imageMessage ? "[Image]" : null) ||
+      (qm.videoMessage ? "[Video]" : null) ||
+      (qm.audioMessage ? "[Voice Note]" : null) ||
+      (qm.documentMessage ? "[Document]" : null) || null
+    : null;
+  const quotedFromMe = ctx.participant ? ctx.participant === msg.key?.remoteJid : true;
+  return { quotedId: ctx.stanzaId, quotedBody, quotedFromMe };
+}
+
 // ── Text extraction ────────────────────────────────────────────────────────────
 function extractText(msg: any): string {
   const m = msg.message;
@@ -453,6 +485,12 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
     }
   }
 
+  // Quote context (reply threading)
+  const { quotedId, quotedBody, quotedFromMe } = extractQuoteContext(msg);
+
+  // Delivery status — only meaningful for outgoing messages
+  const waStatus: string | null = fromMe ? (waStatusString(msg.status) ?? (isHistorical ? null : "sent")) : null;
+
   if (!contact) {
     if (remoteJid.endsWith("@lid")) {
       // LID not yet resolved — buffer and retry after contacts.upsert fires
@@ -485,12 +523,18 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
       receivedAt: new Date((msg.messageTimestamp as number) * 1000),
       needsReply: !fromMe,
       fromMe,
+      waStatus,
+      quotedId,
+      quotedBody,
+      quotedFromMe,
     });
     return;
   }
 
-  // Download media for live messages and store as markdown so the inbox renders it
-  if (!isHistorical) {
+  // Download media for live messages and for recent historical messages (CDN URLs valid ~7 days)
+  const msgAgeMs = Date.now() - (msg.messageTimestamp as number) * 1000;
+  const isRecentEnoughForMedia = msgAgeMs < 7 * 24 * 60 * 60 * 1000;
+  if (!isHistorical || isRecentEnoughForMedia) {
     const m = msg.message;
     const hasMedia = m?.imageMessage || m?.videoMessage || m?.audioMessage || m?.documentMessage || m?.stickerMessage;
     if (hasMedia) {
@@ -523,6 +567,10 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
     receivedAt: new Date((msg.messageTimestamp as number) * 1000),
     needsReply: !fromMe,
     fromMe,
+    waStatus,
+    quotedId,
+    quotedBody,
+    quotedFromMe,
   });
 }
 
@@ -858,13 +906,13 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
       }
     });
 
-    // ── Revocations / deletions ───────────────────────────────
-    // Handles tombstones: Baileys sets message=null on the original when it's revoked
+    // ── Status updates, revocations, deletions ───────────────
     sock.ev.on("messages.update", async (updates: any[]) => {
       if (s.generation !== myGen) return;
       for (const update of updates) {
         try {
           if (update.update?.message === null) {
+            // Tombstone: message revoked
             const revokedId = update.key?.id;
             if (!revokedId) continue;
             const result = await (prisma as any).inboxMessage.deleteMany({
@@ -874,9 +922,31 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
               console.log(`[whatsapp] Reflected deletion (tombstone) of ${revokedId}`);
               broadcastInboxEvent("message_deleted", { externalId: revokedId });
             }
+          } else if (update.update?.status !== undefined) {
+            // Delivery/read status change
+            const waStatus = waStatusString(update.update.status);
+            const msgId = update.key?.id;
+            if (waStatus && msgId) {
+              await (prisma as any).inboxMessage.updateMany({
+                where: { platform: "whatsapp", externalId: msgId },
+                data: { waStatus },
+              });
+              broadcastInboxEvent("status_update", { externalId: msgId, waStatus });
+            }
           }
         } catch {}
       }
+    });
+
+    // ── Typing / presence updates ─────────────────────────────
+    sock.ev.on("presence.update", ({ id, presences }: any) => {
+      if (s.generation !== myGen) return;
+      try {
+        const presence = presences?.[id];
+        if (!presence) return;
+        const typing = presence.lastKnownPresence === "composing" || presence.lastKnownPresence === "recording";
+        broadcastInboxEvent("typing", { senderId: id, typing, userId: s.userId });
+      } catch {}
     });
 
     // Handles direct message deletions/clears synced from the primary phone
@@ -1038,7 +1108,7 @@ export const whatsappService = {
     });
   },
 
-  async sendMessage(jid: string, text: string, userId: string): Promise<unknown> {
+  async sendMessage(jid: string, text: string, userId: string, quoted?: any): Promise<unknown> {
     await whatsappService.ensureConnected(userId);
     const s = getSession(userId);
 
@@ -1046,16 +1116,19 @@ export const whatsappService = {
     if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
     console.log(`[whatsapp] Sending to ${resolved}`);
 
+    const payload: any = { text };
+    if (quoted) payload.quoted = quoted;
+
     let result: unknown;
     try {
-      result = await s.sock.sendMessage(resolved, { text });
+      result = await s.sock.sendMessage(resolved, payload);
     } catch (sendErr) {
       // Socket may have dropped mid-send (e.g. 440 reconnect) — wait for next connection and retry once
       if (!s.connected) {
         console.log("[whatsapp] Socket closed during send — waiting for reconnect before retry…");
         await waitForConnection(35_000, s);
         if (!s.sock) throw new Error("WhatsApp socket unavailable after reconnect");
-        result = await s.sock.sendMessage(resolved, { text });
+        result = await s.sock.sendMessage(resolved, payload);
       } else {
         throw sendErr;
       }
@@ -1068,6 +1141,34 @@ export const whatsappService = {
     }
 
     return result;
+  },
+
+  async markAsRead(jid: string, userId: string): Promise<void> {
+    const s = getSession(userId);
+    if (!s?.connected || !s.sock) return;
+    const resolved = resolveJid(jid) ?? jid;
+    try {
+      // Find the last inbound message from this chat to mark read up to that point
+      const lastMsg = await (prisma as any).inboxMessage.findFirst({
+        where: { platform: "whatsapp", senderId: resolved, fromMe: false },
+        orderBy: { receivedAt: "desc" },
+        select: { externalId: true },
+      });
+      if (!lastMsg?.externalId) return;
+      await s.sock.readMessages([{ remoteJid: resolved, id: lastMsg.externalId, fromMe: false }]);
+    } catch (e) {
+      console.error("[whatsapp] markAsRead error:", e);
+    }
+  },
+
+  async subscribePresence(jid: string, userId: string): Promise<void> {
+    const s = getSession(userId);
+    if (!s?.connected || !s.sock) return;
+    const resolved = resolveJid(jid);
+    if (!resolved) return;
+    try {
+      await s.sock.presenceSubscribe(resolved);
+    } catch {}
   },
 
   async autoReconnect(): Promise<void> {

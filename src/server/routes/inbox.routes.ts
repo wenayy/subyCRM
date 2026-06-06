@@ -29,6 +29,26 @@ router.get("/thread", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.get("/thread-more", async (req, res, next) => {
+  try {
+    const { contactId, platform, before, limit } = req.query as { contactId: string; platform: string; before: string; limit?: string };
+    if (!contactId || !platform || !before) { res.status(400).json({ error: "contactId, platform, before required" }); return; }
+    res.json(await inboxService.getThreadBefore(contactId, platform, new Date(before), parseInt(limit ?? "50") || 50));
+  } catch (err) { next(err); }
+});
+
+router.post("/subscribe-presence", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { jid } = req.body as { jid: string };
+    if (jid) {
+      const { whatsappService } = await import("../services/whatsapp.service");
+      void whatsappService.subscribePresence(jid, userId).catch(() => {});
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 // All messages for a contact across all platforms — used by contact detail view
 router.get("/contact/:contactId", async (req, res, next) => {
   try {

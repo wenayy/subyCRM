@@ -317,6 +317,10 @@ export interface InboxMessageApi {
   fromMe: boolean;
   receivedAt: string;
   senderId: string | null;
+  waStatus?: string | null;
+  quotedId?: string | null;
+  quotedBody?: string | null;
+  quotedFromMe?: boolean | null;
 }
 
 export interface InboxConversationApi {
@@ -361,6 +365,10 @@ export const inboxApi = {
       method: "POST",
       body: JSON.stringify({ filename, fileData }),
     }),
+  getThreadMore: (contactId: string, platform: string, before: string, limit = 50) =>
+    apiFetch<InboxMessageApi[]>(`/api/inbox/thread-more?contactId=${encodeURIComponent(contactId)}&platform=${encodeURIComponent(platform)}&before=${encodeURIComponent(before)}&limit=${limit}`),
+  subscribePresence: (jid: string) =>
+    apiFetch<{ ok: boolean }>("/api/inbox/subscribe-presence", { method: "POST", body: JSON.stringify({ jid }) }),
 };
 
 // ─── Discord API ────────────────────────────────────────────

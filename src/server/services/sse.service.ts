@@ -24,7 +24,9 @@ export type SSEEvent =
   | "send_failed"
   | "reminder_created"
   | "reminder_updated"
-  | "reminder_deleted";
+  | "reminder_deleted"
+  | "status_update"
+  | "typing";
 
 export function broadcastInboxEvent(event: SSEEvent, data: object = {}) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;

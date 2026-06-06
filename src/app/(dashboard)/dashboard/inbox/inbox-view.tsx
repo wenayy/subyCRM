@@ -123,6 +123,8 @@ export function InboxView() {
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<InboxMessageApi | null>(null);
   const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
+  const [typingContactIds, setTypingContactIds] = useState<Set<string>>(new Set());
+  const [loadingMore, setLoadingMore] = useState(false);
   const [addToContactsFor, setAddToContactsFor] = useState<InboxConversationApi | null>(null);
   const [addToContactsName, setAddToContactsName] = useState("");
   const [addToContactsSaving, setAddToContactsSaving] = useState(false);
@@ -290,6 +292,30 @@ export function InboxView() {
       fetchConvsRef.current?.();
     });
 
+    es.addEventListener("typing", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data || "{}");
+        if (!data.senderId) return;
+        setTypingContactIds((prev) => {
+          const next = new Set(prev);
+          if (data.typing) next.add(data.senderId); else next.delete(data.senderId);
+          return next;
+        });
+        if (data.typing) {
+          setTimeout(() => setTypingContactIds((prev) => { const next = new Set(prev); next.delete(data.senderId); return next; }), 10_000);
+        }
+      } catch {}
+    });
+
+    es.addEventListener("status_update", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data || "{}");
+        if (data.externalId && data.waStatus) {
+          setThread((prev) => prev.map((m) => (m as any).externalId === data.externalId ? { ...m, waStatus: data.waStatus } : m));
+        }
+      } catch {}
+    });
+
     es.addEventListener("send_failed", (e) => {
       try {
         const data = JSON.parse((e as any).data || "{}");
@@ -405,11 +431,14 @@ export function InboxView() {
         }
       });
 
-    // Mark all messages in this conversation as read
+    // Mark all messages in this conversation as read + send WA read receipts + subscribe to presence
     if (conv.contactId) {
       inboxApi.markConversationRead(conv.contactId, conv.platform).catch(() => {});
     } else if (conv.senderId) {
       inboxApi.markUnknownConversationRead(conv.senderId, conv.platform).catch(() => {});
+    }
+    if (conv.platform === "whatsapp" && conv.senderId) {
+      inboxApi.subscribePresence(conv.senderId).catch(() => {});
     }
     setConversations((prev) => prev.map((c) =>
       c.key === conv.key ? { ...c, unreadCount: 0, latestMessage: { ...c.latestMessage, read: true } } : c
@@ -759,6 +788,9 @@ export function InboxView() {
                     {PLATFORM_LABEL[selected.platform] ?? selected.platform}
                     {selected.messageCount > 1 && ` · ${selected.messageCount} messages`}
                     {!selected.contactId && <span style={{ color: "#f59e0b", fontWeight: 600 }}> · Not in contacts</span>}
+                    {selected.platform === "whatsapp" && selected.senderId && typingContactIds.has(selected.senderId) && (
+                      <span style={{ color: "#25d366", fontWeight: 600, fontStyle: "italic", marginLeft: 4 }}>typing…</span>
+                    )}
                     {threadLoading && (
                       <span
                         className="inline-block rounded-full border border-current border-t-transparent animate-spin ml-1.5"
@@ -804,6 +836,33 @@ export function InboxView() {
               {/* Messages thread */}
               <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex",
                 flexDirection: "column", gap: 12 }}>
+                {/* Load older messages */}
+                {selected.contactId && thread.length >= 50 && (
+                  <div style={{ textAlign: "center" }}>
+                    <button
+                      onClick={async () => {
+                        if (loadingMore || !selected.contactId) return;
+                        setLoadingMore(true);
+                        try {
+                          const oldest = thread[0];
+                          if (!oldest) return;
+                          const more = await inboxApi.getThreadMore(selected.contactId, selected.platform, oldest.receivedAt);
+                          if (more.length > 0) {
+                            setThread((prev) => {
+                              const ids = new Set(prev.map((m) => m.id));
+                              return [...more.filter((m) => !ids.has(m.id)), ...prev];
+                            });
+                          }
+                        } catch {}
+                        finally { setLoadingMore(false); }
+                      }}
+                      disabled={loadingMore}
+                      style={{ fontSize: 11, color: "var(--t3)", background: "var(--muted)", border: "1px solid var(--bd)",
+                        borderRadius: 12, padding: "4px 14px", cursor: loadingMore ? "default" : "pointer", opacity: loadingMore ? 0.6 : 1 }}>
+                      {loadingMore ? "Loading…" : "Load older messages"}
+                    </button>
+                  </div>
+                )}
                 {(() => {
                   // Merge DB thread + locally sent, sort by time
                   const contactInitials = initials(selected.contactName);
@@ -853,23 +912,38 @@ export function InboxView() {
                             padding: "8px 12px", fontSize: 13, lineHeight: 1.5, wordBreak: "break-word",
                             opacity: isSending ? 0.7 : 1,
                           }}>
+                            {/* Quoted message bubble */}
+                            {"quotedBody" in msg && (msg as InboxMessageApi).quotedBody && (
+                              <div style={{
+                                fontSize: 11, marginBottom: 6, padding: "4px 8px",
+                                borderLeft: `2px solid ${isMe ? "rgba(255,255,255,0.5)" : "#2563eb"}`,
+                                background: isMe ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.05)",
+                                borderRadius: "0 4px 4px 0",
+                                color: isMe ? "rgba(255,255,255,0.75)" : "var(--t2)",
+                                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                              }}>
+                                <span style={{ fontWeight: 600, marginRight: 4 }}>
+                                  {(msg as InboxMessageApi).quotedFromMe ? (me.name ?? "You") : (selected.contactName ?? "Contact")}:
+                                </span>
+                                {(msg as InboxMessageApi).quotedBody}
+                              </div>
+                            )}
                             {renderMessageBody(text, setLightboxUrl)}
                           </div>
                           <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 3,
                             display: "flex", gap: 5, alignItems: "center" }}>
                             {fmtAgo(time)}
-                            {isMe && (
-                              <span style={{ fontSize: 11, display: "inline-flex", alignItems: "center" }}>
-                                {isSending ? (
-                                  <span className="inline-block rounded-full border border-current border-t-transparent animate-spin"
-                                    style={{ width: 10, height: 10, opacity: 0.6 }} />
-                                ) : isFailed ? (
-                                  <span style={{ color: "var(--rc)", fontWeight: "bold" }} title="Delivery failed">⚠️</span>
-                                ) : (
-                                  <span style={{ color: "#2563eb", opacity: 0.8 }} title="Sent">✓</span>
-                                )}
-                              </span>
-                            )}
+                            {isMe && (() => {
+                              const dbStatus = "waStatus" in msg ? (msg as InboxMessageApi).waStatus : undefined;
+                              if (isSending) return (
+                                <span className="inline-block rounded-full border border-current border-t-transparent animate-spin"
+                                  style={{ width: 10, height: 10, opacity: 0.6 }} />
+                              );
+                              if (isFailed) return <span style={{ color: "var(--rc)", fontWeight: "bold" }} title="Delivery failed">⚠️</span>;
+                              if (dbStatus === "read" || dbStatus === "played") return <span style={{ color: "#53bdeb", fontSize: 13 }} title="Read">✓✓</span>;
+                              if (dbStatus === "delivered") return <span style={{ color: "var(--t3)", fontSize: 13 }} title="Delivered">✓✓</span>;
+                              return <span style={{ color: "var(--t3)", fontSize: 13 }} title="Sent">✓</span>;
+                            })()}
                           </div>
                         </div>
                         {/* Action buttons on hover */}
