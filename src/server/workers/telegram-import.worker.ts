@@ -3,6 +3,7 @@ import { redis } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { telegramPersonalService } from "../services/telegram-personal.service";
+import { inboxService } from "../services/inbox.service";
 
 const BATCH = 20;
 
@@ -102,6 +103,13 @@ export function startTelegramImportWorker() {
                 contact: { id: created.id, name: created.name, lastContactDate },
               });
 
+              // Retroactively link any inbox messages saved before this contact existed
+              // Messages from unmatched contacts use senderId = numeric entity ID
+              await inboxService.linkMessagesToContact(created.id, "telegram", idStr).catch(() => {});
+              if (platformId !== idStr) {
+                await inboxService.linkMessagesToContact(created.id, "telegram", platformId).catch(() => {});
+              }
+
               // Cross-link WhatsApp if phone known
               if (phone) {
                 const phoneDigits = phone.replace(/\D/g, "");
@@ -143,7 +151,7 @@ export function startTelegramImportWorker() {
 
       return { imported, updated, skipped };
     },
-    { connection: redis, concurrency: 1 }
+    { connection: redis, concurrency: 1, lockDuration: 300_000 }
   );
 
   worker.on("failed", (job, err) => {

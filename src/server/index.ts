@@ -322,6 +322,41 @@ app.listen(PORT, async () => {
     }
   })();
 
+  // ── Backfill: link inbox messages to contacts retroactively ───
+  // Messages saved before their contact existed have contactId=null.
+  // This pass matches them to CRM platform records so threads/timelines are populated.
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      const { inboxService } = await import("./services/inbox.service");
+
+      // Fetch all platform records
+      const platforms = await prisma.platform.findMany({
+        select: { contactId: true, type: true, platformId: true },
+      });
+
+      // Only process platforms that are known messaging channels
+      const messagingPlatforms = platforms.filter((p) =>
+        ["telegram", "whatsapp", "email", "slack", "discord"].includes(p.type)
+      );
+
+      let total = 0;
+      for (const p of messagingPlatforms) {
+        const unlinked = await (prisma as any).inboxMessage.count({
+          where: { platform: p.type, contactId: null, senderId: { contains: p.platformId } },
+        });
+        if (unlinked > 0) {
+          await inboxService.linkMessagesToContact(p.contactId, p.type, p.platformId).catch(() => {});
+          total += unlinked;
+        }
+      }
+
+      if (total > 0) console.log(`[startup] Inbox backfill: linked ${total} message(s) to contacts`);
+    } catch (e: any) {
+      console.error("[startup] Inbox backfill error:", e.message);
+    }
+  })();
+
   // X (Twitter) uses scheduled BullMQ sync — no persistent socket to reconnect
 
   const { telegramPersonalService } = await import("./services/telegram-personal.service");

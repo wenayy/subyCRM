@@ -3,6 +3,7 @@ import { redis } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { whatsappService } from "../services/whatsapp.service";
+import { inboxService } from "../services/inbox.service";
 
 const BATCH = 20;
 
@@ -86,6 +87,17 @@ export function startWhatsAppImportWorker() {
                 },
               });
               existingMap.set(phoneDigits, { contactId: "", currentName: name });
+
+              // Retroactively link any inbox messages saved before this contact existed
+              const newContact = await prisma.platform.findFirst({
+                where: { type: "whatsapp", platformId: phoneDigits },
+                select: { contactId: true },
+              });
+              if (newContact) {
+                await inboxService.linkMessagesToContact(newContact.contactId, "whatsapp", phoneDigits).catch(() => {});
+                await inboxService.linkMessagesToContact(newContact.contactId, "whatsapp", jid).catch(() => {});
+              }
+
               imported++;
             } catch {
               skipped++;
@@ -114,7 +126,7 @@ export function startWhatsAppImportWorker() {
 
       return { imported, updated, skipped };
     },
-    { connection: redis, concurrency: 1 }
+    { connection: redis, concurrency: 1, lockDuration: 300_000 }
   );
 
   worker.on("failed", (job, err) => {

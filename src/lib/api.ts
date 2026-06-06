@@ -321,7 +321,7 @@ export interface InboxMessageApi {
 
 export interface InboxConversationApi {
   key: string;
-  contactId: string;
+  contactId: string | null;
   contactName: string | null;
   platform: string;
   senderId: string | null;
@@ -345,6 +345,10 @@ export const inboxApi = {
 
   markConversationRead: (contactId: string, platform: string) =>
     apiFetch<{ success: boolean }>("/api/inbox/mark-read", { method: "POST", body: JSON.stringify({ contactId, platform }) }),
+  getUnknownThread: (senderId: string, platform: string) =>
+    apiFetch<InboxMessageApi[]>(`/api/inbox/unknown-thread?senderId=${encodeURIComponent(senderId)}&platform=${encodeURIComponent(platform)}`),
+  markUnknownConversationRead: (senderId: string, platform: string) =>
+    apiFetch<{ success: boolean }>("/api/inbox/mark-unknown-read", { method: "POST", body: JSON.stringify({ senderId, platform }) }),
 
   delete: (id: string) =>
     apiFetch<{ success: boolean }>(`/api/inbox/${id}`, { method: "DELETE" }),

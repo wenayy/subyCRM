@@ -65,9 +65,9 @@ export const inboxService = {
       .sort((a, b) => +new Date(b.latestMessage.receivedAt) - +new Date(a.latestMessage.receivedAt));
   },
 
-  async getThread(contactId: string, platform: string, userId: string = "default") {
+  async getThread(contactId: string, platform: string, _userId: string = "default") {
     return (prisma as any).inboxMessage.findMany({
-      where: { userId, contactId, platform },
+      where: { contactId, platform },
       orderBy: { receivedAt: "asc" },
     });
   },

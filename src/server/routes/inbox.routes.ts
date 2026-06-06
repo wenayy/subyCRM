@@ -62,6 +62,25 @@ router.post("/mark-read", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.get("/unknown-thread", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { senderId, platform } = req.query as { senderId: string; platform: string };
+    if (!senderId || !platform) { res.status(400).json({ error: "senderId and platform required" }); return; }
+    res.json(await inboxService.getUnknownThread(senderId, platform, userId));
+  } catch (err) { next(err); }
+});
+
+router.post("/mark-unknown-read", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { senderId, platform } = req.body as { senderId: string; platform: string };
+    if (!senderId || !platform) { res.status(400).json({ error: "senderId and platform required" }); return; }
+    await inboxService.markUnknownConversationRead(senderId, platform, userId);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 router.delete("/:id", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";

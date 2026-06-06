@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { inboxApi, meApi, gmailApi, slackApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
+import { inboxApi, meApi, gmailApi, slackApi, contactsApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
 import { PlatformIcon } from "@/components/platform-icon";
 import { Star } from "lucide-react";
 import type { PlatformType } from "@/lib/types";
@@ -26,6 +26,13 @@ function fmtAgo(iso: string): string {
 function initials(name: string | null): string {
   if (!name) return "?";
   return name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("");
+}
+
+function formatSenderId(platform: string, senderId: string | null): string {
+  if (!senderId) return "Unknown";
+  if (platform === "whatsapp") return "+" + senderId.replace(/@.+$/, "");
+  if (platform === "email") return senderId;
+  return senderId.replace(/^@/, "");
 }
 
 function renderMessageBody(text: string, onImageClick?: (url: string) => void) {
@@ -116,6 +123,10 @@ export function InboxView() {
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<InboxMessageApi | null>(null);
   const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
+  const [addToContactsFor, setAddToContactsFor] = useState<InboxConversationApi | null>(null);
+  const [addToContactsName, setAddToContactsName] = useState("");
+  const [addToContactsSaving, setAddToContactsSaving] = useState(false);
+  const [addToContactsError, setAddToContactsError] = useState("");
 
   const REACTIONS = ["👍", "❤️", "😂", "🙏", "😮", "😢"];
 
@@ -214,7 +225,6 @@ export function InboxView() {
     const es = new EventSource(`${API_BASE}/api/inbox/events`, { withCredentials: true });
 
     es.addEventListener("new_message", (e) => {
-      // Refresh sidebar conversation list
       fetchConvsRef.current?.();
 
       try {
@@ -222,18 +232,25 @@ export function InboxView() {
         const msg = data.message;
         const sel = selectedRef.current;
 
-        if (msg && sel && data.contactId === sel.contactId && data.platform === sel.platform) {
-          // Message is for the open conversation — append instantly, no round-trip
-          setThread((prev) => prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]);
-        } else if (sel) {
-          // Message is for a different conversation — just refresh thread in case
-          inboxApi.getThread(sel.contactId, sel.platform).then(setThread).catch(() => {});
+        if (msg && sel) {
+          const isKnownMatch = data.contactId && data.contactId === sel.contactId && data.platform === sel.platform;
+          const isUnknownMatch = !data.contactId && !sel.contactId && data.platform === sel.platform && msg.senderId === sel.senderId;
+          if (isKnownMatch || isUnknownMatch) {
+            setThread((prev) => prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]);
+          } else {
+            const fetchFn = sel.contactId
+              ? inboxApi.getThread(sel.contactId, sel.platform)
+              : sel.senderId ? inboxApi.getUnknownThread(sel.senderId, sel.platform) : null;
+            fetchFn?.then(setThread).catch(() => {});
+          }
         }
       } catch {
-        // Fallback: full thread refresh
-        if (selectedRef.current) {
-          inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
-            .then(setThread).catch(() => {});
+        const sel = selectedRef.current;
+        if (sel) {
+          const fetchFn = sel.contactId
+            ? inboxApi.getThread(sel.contactId, sel.platform)
+            : sel.senderId ? inboxApi.getUnknownThread(sel.senderId, sel.platform) : null;
+          fetchFn?.then(setThread).catch(() => {});
         }
       }
     });
@@ -244,14 +261,22 @@ export function InboxView() {
         const data = JSON.parse((e as MessageEvent).data || "{}");
         if (data.id) {
           setThread((prev) => prev.filter((m) => m.id !== data.id));
-        } else if (selectedRef.current) {
-          inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
-            .then(setThread).catch(() => {});
+        } else {
+          const sel = selectedRef.current;
+          if (sel) {
+            const fetchFn = sel.contactId
+              ? inboxApi.getThread(sel.contactId, sel.platform)
+              : sel.senderId ? inboxApi.getUnknownThread(sel.senderId, sel.platform) : null;
+            fetchFn?.then(setThread).catch(() => {});
+          }
         }
       } catch {
-        if (selectedRef.current) {
-          inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
-            .then(setThread).catch(() => {});
+        const sel = selectedRef.current;
+        if (sel) {
+          const fetchFn = sel.contactId
+            ? inboxApi.getThread(sel.contactId, sel.platform)
+            : sel.senderId ? inboxApi.getUnknownThread(sel.senderId, sel.platform) : null;
+          fetchFn?.then(setThread).catch(() => {});
         }
       }
     });
@@ -269,11 +294,13 @@ export function InboxView() {
       } catch {}
     });
 
-    // On SSE reconnect, re-fetch thread so we don't miss messages sent during disconnect
     es.addEventListener("open", () => {
-      if (selectedRef.current) {
-        inboxApi.getThread(selectedRef.current.contactId, selectedRef.current.platform)
-          .then(setThread).catch(() => {});
+      const sel = selectedRef.current;
+      if (sel) {
+        const fetchFn = sel.contactId
+          ? inboxApi.getThread(sel.contactId, sel.platform)
+          : sel.senderId ? inboxApi.getUnknownThread(sel.senderId, sel.platform) : null;
+        fetchFn?.then(setThread).catch(() => {});
       }
     });
 
@@ -308,8 +335,13 @@ export function InboxView() {
   useEffect(() => {
     if (!selected) return;
     const iv = setInterval(() => {
-      inboxApi.getThread(selected.contactId, selected.platform)
-        .then((msgs) => setThread((prev) => msgs.length >= prev.length ? msgs : prev))
+      const fetchFn = selected.contactId
+        ? inboxApi.getThread(selected.contactId, selected.platform)
+        : selected.senderId
+          ? inboxApi.getUnknownThread(selected.senderId, selected.platform)
+          : null;
+      fetchFn
+        ?.then((msgs) => setThread((prev) => msgs.length >= prev.length ? msgs : prev))
         .catch(() => {});
     }, 3_000);
     return () => clearInterval(iv);
@@ -338,22 +370,26 @@ export function InboxView() {
     if (textareaRef.current) textareaRef.current.value = "";
     setSendError("");
     setReplyingTo(null);
-    
+
     // Clear & pre-populate thread with the latest message instantly
     setThread([conv.latestMessage]);
     threadLoadingRef.current = true;
     setThreadLoading(true);
 
-    inboxApi.getThread(conv.contactId, conv.platform)
+    const threadPromise = conv.contactId
+      ? inboxApi.getThread(conv.contactId, conv.platform)
+      : conv.senderId
+        ? inboxApi.getUnknownThread(conv.senderId, conv.platform)
+        : Promise.resolve([conv.latestMessage]);
+
+    threadPromise
       .then((res) => {
         if (selectedRef.current?.key === conv.key) {
-          setThread(res);
+          setThread(res.length > 0 ? res : [conv.latestMessage]);
         }
       })
       .catch(() => {
-        if (selectedRef.current?.key === conv.key) {
-          setThread([conv.latestMessage]);
-        }
+        if (selectedRef.current?.key === conv.key) setThread([conv.latestMessage]);
       })
       .finally(() => {
         if (selectedRef.current?.key === conv.key) {
@@ -363,7 +399,11 @@ export function InboxView() {
       });
 
     // Mark all messages in this conversation as read
-    inboxApi.markConversationRead(conv.contactId, conv.platform).catch(() => {});
+    if (conv.contactId) {
+      inboxApi.markConversationRead(conv.contactId, conv.platform).catch(() => {});
+    } else if (conv.senderId) {
+      inboxApi.markUnknownConversationRead(conv.senderId, conv.platform).catch(() => {});
+    }
     setConversations((prev) => prev.map((c) =>
       c.key === conv.key ? { ...c, unreadCount: 0, latestMessage: { ...c.latestMessage, read: true } } : c
     ));
@@ -417,6 +457,29 @@ export function InboxView() {
     });
   };
 
+  const handleAddToContacts = async () => {
+    if (!addToContactsFor || !addToContactsName.trim()) return;
+    setAddToContactsSaving(true);
+    setAddToContactsError("");
+    try {
+      const contact = await contactsApi.create({ name: addToContactsName.trim() } as any);
+      if (addToContactsFor.senderId) {
+        await contactsApi.addPlatform(contact.id, {
+          type: addToContactsFor.platform,
+          platformId: addToContactsFor.senderId,
+          displayName: addToContactsFor.contactName ?? undefined,
+        });
+      }
+      setAddToContactsFor(null);
+      setAddToContactsName("");
+      await fetchConvsRef.current?.();
+    } catch (err: any) {
+      setAddToContactsError(err?.message ?? "Failed to save contact");
+    } finally {
+      setAddToContactsSaving(false);
+    }
+  };
+
   const PLATFORM_LABEL: Record<string, string> = {
     telegram: "Telegram", email: "Email", x: "X", linkedin: "LinkedIn",
     discord: "Discord", slack: "Slack", whatsapp: "WhatsApp",
@@ -435,6 +498,59 @@ export function InboxView() {
             style={{ position: "absolute", top: 16, right: 16, background: "rgba(255,255,255,0.15)",
               border: "none", color: "#fff", fontSize: 20, width: 36, height: 36, borderRadius: "50%",
               cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+        </div>
+      )}
+      {/* Add to Contacts modal */}
+      {addToContactsFor && (
+        <div onClick={() => setAddToContactsFor(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--card)", borderRadius: 14, padding: 24, width: 340,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.2)", display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: "var(--t1)", margin: 0 }}>Add to Contacts</h3>
+              <button onClick={() => setAddToContactsFor(null)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)", fontSize: 20, lineHeight: 1 }}>×</button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+              background: "var(--muted)", borderRadius: 8 }}>
+              <PlatformIcon type={addToContactsFor.platform as PlatformType} size={14} />
+              <div>
+                <div style={{ fontSize: 11, color: "var(--t3)", textTransform: "capitalize" }}>
+                  {addToContactsFor.platform}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--t1)", fontWeight: 500 }}>
+                  {formatSenderId(addToContactsFor.platform, addToContactsFor.senderId)}
+                </div>
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: "var(--t2)", fontWeight: 500, display: "block", marginBottom: 6 }}>
+                Contact name
+              </label>
+              <input
+                value={addToContactsName}
+                onChange={(e) => setAddToContactsName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !addToContactsSaving) handleAddToContacts(); }}
+                placeholder="Enter a name…"
+                autoFocus
+                style={{ width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8,
+                  border: "1px solid var(--bd)", background: "var(--card)", color: "var(--t1)", outline: "none",
+                  boxSizing: "border-box" }}
+              />
+            </div>
+            {addToContactsError && (
+              <p style={{ fontSize: 12, color: "var(--rc)", margin: 0 }}>{addToContactsError}</p>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="outline" size="sm" onClick={() => setAddToContactsFor(null)}>Cancel</Button>
+              <Button size="sm" disabled={!addToContactsName.trim() || addToContactsSaving}
+                onClick={handleAddToContacts}>
+                {addToContactsSaving ? "Saving…" : "Save contact"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
       {/* Session expired banner */}
@@ -489,7 +605,8 @@ export function InboxView() {
           ) : (
             filtered.map((conv) => {
               const isActive = selected?.key === conv.key;
-              const name = conv.contactName ?? conv.latestMessage.externalId;
+              const isUnknown = !conv.contactId;
+              const name = conv.contactName ?? (isUnknown ? formatSenderId(conv.platform, conv.senderId) : conv.latestMessage.externalId);
               return (
                 <button key={conv.key} onClick={() => selectConversation(conv)}
                   style={{
@@ -503,17 +620,17 @@ export function InboxView() {
                   {/* Avatar */}
                   <div style={{
                     width: 36, height: 36, borderRadius: "50%", flexShrink: 0, marginTop: 1,
-                    background: isActive ? "var(--ac)" : "var(--muted)",
-                    color: isActive ? "#fff" : "var(--t2)",
+                    background: isActive ? "var(--ac)" : isUnknown ? "#f59e0b" : "var(--muted)",
+                    color: isActive || isUnknown ? "#fff" : "var(--t2)",
                     display: "flex", alignItems: "center", justifyContent: "center",
                     fontSize: 12, fontWeight: 700,
                   }}>
-                    {initials(name)}
+                    {initials(conv.contactName)}
                   </div>
 
                   {/* Content */}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    {/* Row 1: platform icon + name + star + time */}
+                    {/* Row 1: platform icon + name + time */}
                     <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
                       <PlatformIcon type={conv.platform as PlatformType} size={13} />
                       <span style={{
@@ -536,8 +653,14 @@ export function InboxView() {
                       {conv.latestMessage.preview ?? conv.latestMessage.body ?? ""}
                     </div>
                     {/* Row 3: badges */}
-                    {(conv.needsReply || conv.unreadCount > 0) && (
+                    {(conv.needsReply || conv.unreadCount > 0 || isUnknown) && (
                       <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                        {isUnknown && (
+                          <span style={{
+                            fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                            background: "#fef3c7", color: "#92400e", letterSpacing: "0.04em",
+                          }}>NOT IN CONTACTS</span>
+                        )}
                         {conv.needsReply && (
                           <span style={{
                             fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
@@ -587,16 +710,17 @@ export function InboxView() {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "var(--t1)" }}>
-                    {selected.contactName ?? selected.latestMessage.externalId}
+                    {selected.contactName ?? (selected.contactId ? selected.latestMessage.externalId : formatSenderId(selected.platform, selected.senderId))}
                   </div>
                   <div style={{ fontSize: 11, color: "var(--t3)", display: "flex", alignItems: "center", gap: 4 }}>
                     <PlatformIcon type={selected.platform as PlatformType} size={10} />
                     {PLATFORM_LABEL[selected.platform] ?? selected.platform}
                     {selected.messageCount > 1 && ` · ${selected.messageCount} messages`}
+                    {!selected.contactId && <span style={{ color: "#f59e0b", fontWeight: 600 }}> · Not in contacts</span>}
                     {threadLoading && (
-                      <span 
-                        className="inline-block rounded-full border border-current border-t-transparent animate-spin ml-1.5" 
-                        style={{ width: 10, height: 10, borderWidth: "1.5px", color: "var(--t3)" }} 
+                      <span
+                        className="inline-block rounded-full border border-current border-t-transparent animate-spin ml-1.5"
+                        style={{ width: 10, height: 10, borderWidth: "1.5px", color: "var(--t3)" }}
                       />
                     )}
                   </div>
@@ -617,10 +741,20 @@ export function InboxView() {
                     background: "transparent", border: "none" }}>
                   <Star size={18} fill={selected.starred ? "#f59e0b" : "none"} />
                 </div>
-                {selected.contactId && (
+                {selected.contactId ? (
                   <Button size="sm" variant="outline"
                     onClick={() => router.push(`/dashboard/contacts/${selected.contactId}`)}>
                     Open contact
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="outline"
+                    style={{ borderColor: "#f59e0b", color: "#92400e" }}
+                    onClick={() => {
+                      setAddToContactsName(selected.contactName ?? "");
+                      setAddToContactsError("");
+                      setAddToContactsFor(selected);
+                    }}>
+                    + Add to contacts
                   </Button>
                 )}
               </div>
