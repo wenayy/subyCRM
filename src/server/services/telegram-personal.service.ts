@@ -243,9 +243,10 @@ export const telegramPersonalService = {
           update: { phoneNumber: me.phone ?? "", apiId: resolvedApiId, apiHash: resolvedApiHash, sessionStr: savedSession, connected: true },
         });
 
-        // Register message listener and warm entity cache in background
+        // Register message listener, warm entity cache, and sync history
         telegramPersonalService._attachListener(userId, client);
         warmEntityCache(userId, client);
+        telegramPersonalService.sync(userId, { deep: true }).catch(console.error);
       } catch (err: any) {
         console.error("QR Code auth loop finished with error:", err);
         userState.error = err.message || String(err);
@@ -325,9 +326,10 @@ export const telegramPersonalService = {
       data: { sessionStr, connected: true },
     });
 
-    // Register live message listener and warm entity cache in background
+    // Register live message listener, warm entity cache, and sync history
     telegramPersonalService._attachListener(userId, client);
     warmEntityCache(userId, client);
+    telegramPersonalService.sync(userId, { deep: true }).catch(console.error);
 
     return { connected: true };
   },
@@ -461,8 +463,21 @@ export const telegramPersonalService = {
         const entity = dialog.entity as any;
         if (!entity || entity.className !== "User" || entity.bot || entity.self) continue;
 
-        const contact = await findContactForTelegram(entity);
-        if (!contact) continue; // Only sync CRM contacts
+        let contact = await findContactForTelegram(entity);
+        if (!contact) {
+          const name = [entity.firstName, entity.lastName].filter(Boolean).join(" ").trim() || entity.username || entity.id?.toString();
+          const platformId = entity.username ?? entity.id?.toString();
+          if (!name || !platformId) continue;
+          contact = await prisma.contact.create({
+            data: {
+              name,
+              type: "other",
+              domain: "other",
+              relationshipStrength: "cold",
+              platforms: { create: [{ type: "telegram" as const, platformId, displayName: name }] },
+            },
+          });
+        }
 
         const messages = await client.getMessages(entity, { limit: msgLimit });
         const contactName = contact.name;
@@ -535,8 +550,22 @@ export const telegramPersonalService = {
             }
 
             if (!contact || !chatEntity) {
-              // Privacy filter: ignore messages from non-CRM contacts
-              return;
+              // Auto-create contact from incoming Telegram message
+              const entity = chatEntity ?? await msg.getSender();
+              if (!entity) return;
+              const name = [entity.firstName, entity.lastName].filter(Boolean).join(" ").trim() || entity.username || entity.id?.toString();
+              const platformId = entity.username ?? entity.id?.toString();
+              if (!name || !platformId) return;
+              contact = await prisma.contact.create({
+                data: {
+                  name,
+                  type: "other",
+                  domain: "other",
+                  relationshipStrength: "cold",
+                  platforms: { create: [{ type: "telegram" as const, platformId, displayName: name }] },
+                },
+              });
+              chatEntity = entity;
             }
 
             let body = msg.text || "";
