@@ -365,7 +365,8 @@ async function downloadAndSaveMedia(msg: any, s: UserState): Promise<string | nu
     const mediaDir = path.join(process.cwd(), "public", "media");
     await fs.promises.mkdir(mediaDir, { recursive: true });
     await fs.promises.writeFile(path.join(mediaDir, uniqueName), buffer);
-    return `/media/${uniqueName}`;
+    const apiBase = (process.env.AUTH_BASE_URL || "http://localhost:4002").replace(/\/$/, "");
+    return `${apiBase}/media/${uniqueName}`;
   } catch (e) {
     console.error("[whatsapp] Media download failed:", e);
     return null;

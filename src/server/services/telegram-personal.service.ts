@@ -149,7 +149,8 @@ async function downloadTelegramMedia(client: any, msg: any): Promise<string | nu
 
     const filename = `tg_${msg.id ?? Date.now()}.${ext}`;
     await fs.writeFile(path.join(dir, filename), buffer);
-    return `/media/${filename}`;
+    const apiBase = (process.env.AUTH_BASE_URL || "http://localhost:4002").replace(/\/$/, "");
+    return `${apiBase}/media/${filename}`;
   } catch (err) {
     console.error(`[telegram-personal] Failed to download media for msg ${msg.id}:`, err);
     return null;

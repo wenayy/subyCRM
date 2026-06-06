@@ -159,7 +159,7 @@ export const inboxService = {
     const isOld = data.receivedAt < new Date(Date.now() - 24 * 60 * 60 * 1000);
     const read = data.fromMe || isOld ? true : undefined; // undefined = let DB default handle new messages
     const result = await (prisma as any).inboxMessage.upsert({
-      where: { platform_externalId: { platform, externalId } },
+      where: { platform_externalId_userId: { platform, externalId, userId: resolvedUserId } },
       create: { platform, externalId, userId: resolvedUserId, ...rest, ...(read !== undefined ? { read } : {}) },
       update: { contactId: rest.contactId, contactName: rest.contactName, preview: rest.preview, body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe, needsReply: rest.needsReply },
     });

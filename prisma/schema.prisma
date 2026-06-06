@@ -453,7 +453,7 @@ model InboxMessage {
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
 
-  @@unique([platform, externalId])
+  @@unique([platform, externalId, userId])
   @@index([userId])
   @@index([receivedAt])
   @@index([contactId])

@@ -86,6 +86,16 @@ app.use("/api/linkedin", linkedinCallbackRouter); // callback must bypass requir
 app.use("/api/discord", discordCallbackRouter);   // callback must bypass requireAuth
 app.use("/api/matrix", matrixRouter);             // Matrix appservice webhook — no user auth
 
+// ─── Static media files (uploaded attachments, WA/Telegram media) ────────────
+import path from "path";
+import fs from "fs";
+const mediaDir = path.join(process.cwd(), "public", "media");
+fs.mkdirSync(mediaDir, { recursive: true });
+app.use("/media", express.static(path.join(process.cwd(), "public", "media"), {
+  maxAge: "7d",
+  setHeaders: (res) => { res.setHeader("Access-Control-Allow-Origin", "*"); },
+}));
+
 app.use(express.json({ limit: "20mb" }));
 
 // ─── Rate limiting ──────────────────────────────────────────
@@ -212,6 +222,55 @@ app.listen(PORT, async () => {
       console.log("[startup] Platform constraint migration OK");
     } catch (e: any) {
       console.error("[startup] Platform constraint migration error:", e.message);
+    }
+  })();
+
+  // ── Schema migration: inbox_messages unique constraint per-user ──
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      await prisma.$executeRawUnsafe(`
+        DO $mig2$
+        DECLARE v_conname text;
+        BEGIN
+          -- Drop any 2-col unique constraint on (platform, external_id) without user_id
+          FOR v_conname IN
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'inbox_messages' AND n.nspname = 'contacts'
+              AND c.contype = 'u'
+              AND array_length(c.conkey, 1) = 2
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform'    AND attnum = ANY(c.conkey))
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'external_id' AND attnum = ANY(c.conkey))
+          LOOP
+            EXECUTE 'ALTER TABLE contacts.inbox_messages DROP CONSTRAINT IF EXISTS ' || quote_ident(v_conname);
+            RAISE NOTICE 'Dropped old inbox constraint: %', v_conname;
+          END LOOP;
+
+          -- Add 3-col constraint if not present
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'inbox_messages' AND n.nspname = 'contacts'
+              AND c.contype = 'u'
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform'    AND attnum = ANY(c.conkey))
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'external_id' AND attnum = ANY(c.conkey))
+              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'user_id'     AND attnum = ANY(c.conkey))
+          ) THEN
+            ALTER TABLE contacts.inbox_messages
+              ADD CONSTRAINT inbox_messages_platform_external_id_user_id_key
+              UNIQUE (platform, external_id, user_id);
+            RAISE NOTICE 'Added per-user inbox uniqueness constraint';
+          END IF;
+        END
+        $mig2$
+      `);
+      console.log("[startup] Inbox constraint migration OK");
+    } catch (e: any) {
+      console.error("[startup] Inbox constraint migration error:", e.message);
     }
   })();
 

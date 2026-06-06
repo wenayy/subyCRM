@@ -357,3 +357,7 @@ Copy the output and paste into the Railway Variable panels.
 1. Someone DMs you on X → mautrix-twitter picks it up → pushes to Conduit → Conduit calls `PUT /api/matrix/transactions/:id` on your CRM → contact auto-created if new → message appears in Inbox.
 2. Same for LinkedIn DMs.
 3. Real-time, no polling, no cookie expiry issues.
+
+
+! docker run -d --name redis-local -p 6379:6379 redis:alpine
+! docker compose -f docker-compose.matrix.yml up --build
