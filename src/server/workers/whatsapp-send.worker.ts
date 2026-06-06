@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { redisConnection } from "../lib/redis";
+import { redis } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
 import { broadcastInboxEvent } from "../services/sse.service";
@@ -26,7 +26,7 @@ export function startWhatsAppSendWorker() {
         });
       }
     },
-    { connection: redisConnection, concurrency: 3 }
+    { connection: redis, concurrency: 3 }
   );
 
   worker.on("failed", (job, _err) => {
