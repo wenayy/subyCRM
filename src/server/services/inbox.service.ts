@@ -27,6 +27,7 @@ export const inboxService = {
       where: { userId, contactId: { not: null } },
       orderBy: { receivedAt: "desc" },
       take: 2000,
+      include: { contact: { select: { id: true, name: true } } },
     });
 
     // Group by contactId — one conversation per contact per platform
@@ -38,18 +39,21 @@ export const inboxService = {
 
     for (const msg of messages) {
       const key = `${msg.contactId}:${msg.platform}`;
+      // Always use the live CRM contact name so renames propagate immediately
+      const currentName = msg.contact?.name ?? msg.contactName;
       if (!map.has(key)) {
         map.set(key, {
-          key, contactId: msg.contactId, contactName: msg.contactName,
+          key, contactId: msg.contactId, contactName: currentName,
           platform: msg.platform, senderId: msg.senderId,
-          latestMessage: msg, unreadCount: 0, needsReply: !!msg.needsReply, messageCount: 0, starred: false,
+          latestMessage: { ...msg, contactName: currentName },
+          unreadCount: 0, needsReply: !!msg.needsReply, messageCount: 0, starred: false,
         });
       }
       const conv = map.get(key)!;
+      conv.contactName = currentName; // keep updated
       conv.messageCount++;
       if (!msg.read) conv.unreadCount++;
       if (msg.starred) conv.starred = true;
-      // latestMessage is already set to the most recent (messages sorted desc)
     }
 
     return Array.from(map.values())

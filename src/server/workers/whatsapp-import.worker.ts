@@ -27,12 +27,17 @@ export function startWhatsAppImportWorker() {
 
       let imported = 0, updated = 0, skipped = 0;
 
-      // Pre-fetch only this user's existing WhatsApp platform records
-      const existing = await prisma.platform.findMany({
+      // Pre-fetch only this user's existing WhatsApp platform records (id → contactId)
+      const existingPlatforms = await prisma.platform.findMany({
         where: { type: "whatsapp", contact: { userId } },
         select: { platformId: true, contactId: true },
+        include: { contact: { select: { name: true } } },
       });
-      const existingSet = new Set(existing.map((p) => p.platformId));
+      // Map: phoneDigits/jid → { contactId, currentName }
+      const existingMap = new Map(existingPlatforms.map((p) => [
+        p.platformId,
+        { contactId: p.contactId, currentName: (p as any).contact?.name ?? "" },
+      ]));
 
       // Split into batches and process in parallel
       for (let i = 0; i < contacts.length; i += BATCH) {
@@ -41,10 +46,34 @@ export function startWhatsAppImportWorker() {
         await Promise.allSettled(
           batch.map(async ({ jid, name, phoneDigits }) => {
             try {
-              if (existingSet.has(phoneDigits) || existingSet.has(jid)) {
+              const hit = existingMap.get(phoneDigits) ?? existingMap.get(jid);
+              if (hit) {
+                // If the incoming name is a real phone-book name (info.name, not notify/pushName),
+                // update the CRM contact name to stay in sync with the user's phone contacts.
+                // We detect "better" names by checking if it lacks the telltale notify-format markers.
+                const isBetterName = name && name !== hit.currentName && !name.match(/^[+\d]/) && name.length > 1;
+                if (isBetterName) {
+                  await prisma.contact.update({
+                    where: { id: hit.contactId },
+                    data: { name },
+                  }).catch(() => {});
+                }
                 updated++;
                 return;
               }
+
+              // Before creating, check if a contact already exists with this phone in ANY platform
+              // to avoid duplicating manually-added contacts that don't have a WA platform yet
+              const contactByPhone = await prisma.platform.findFirst({
+                where: { type: "whatsapp", platformId: phoneDigits },
+                select: { contactId: true },
+              });
+              if (contactByPhone) {
+                existingMap.set(phoneDigits, { contactId: contactByPhone.contactId, currentName: name });
+                updated++;
+                return;
+              }
+
               await prisma.contact.create({
                 data: {
                   name,
@@ -57,7 +86,7 @@ export function startWhatsAppImportWorker() {
                   },
                 },
               });
-              existingSet.add(phoneDigits);
+              existingMap.set(phoneDigits, { contactId: "", currentName: name });
               imported++;
             } catch {
               skipped++;
