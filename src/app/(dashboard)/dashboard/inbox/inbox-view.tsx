@@ -294,7 +294,8 @@ export function InboxView() {
       try {
         const data = JSON.parse((e as any).data || "{}");
         if (selectedRef.current?.contactId === data.contactId) {
-          setSendError("Message failed to deliver — please try again");
+          const errText = data.error ?? "Message failed to deliver — please try again";
+          setSendError(errText);
         }
       } catch {}
     });
@@ -1017,7 +1018,12 @@ export function InboxView() {
                   </Button>
                 </div>
                 {sendError && (
-                  <p style={{ fontSize: 11, color: "var(--rc)", marginTop: 4 }}>{sendError}</p>
+                  <p style={{ fontSize: 11, color: "var(--rc)", marginTop: 4 }}>
+                    {sendError}
+                    {(sendError.includes("re-authorization") || sendError.includes("reconnect")) && (
+                      <> — <a href="/dashboard/settings" style={{ color: "var(--rc)", textDecoration: "underline" }}>Go to Settings</a></>
+                    )}
+                  </p>
                 )}
               </div>
             </>

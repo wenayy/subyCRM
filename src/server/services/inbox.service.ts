@@ -427,12 +427,33 @@ export const inboxService = {
           const originalSubject = msg.preview ?? "";
           const subject = originalSubject.match(/^re:/i) ? originalSubject : `Re: ${originalSubject}`;
           const { sendEmailViaGmailApi } = await import("./gmail.service");
-          // Pass threadId (= externalId) so Gmail keeps the reply in the same thread
+
+          // Extract the real Gmail thread ID.
+          // New format: externalId = "${threadId}:${messageId}" → take the part before ":"
+          // Old format: externalId = "${threadId}" (legacy single-record-per-thread)
+          // Temp format: externalId starts with "sent-" → look up from other messages
+          const parseThreadId = (externalId: string | null): string | undefined => {
+            if (!externalId || externalId.startsWith("sent-")) return undefined;
+            return externalId.includes(":") ? externalId.split(":")[0] : externalId;
+          };
+          let gmailThreadId: string | undefined = parseThreadId(msg.externalId);
+          if (!gmailThreadId && msg.contactId) {
+            const original = await (prisma as any).inboxMessage.findFirst({
+              where: {
+                contactId: msg.contactId,
+                platform: "email",
+                NOT: { externalId: { startsWith: "sent-" } },
+              },
+              orderBy: { receivedAt: "asc" },
+            });
+            gmailThreadId = parseThreadId(original?.externalId ?? null);
+          }
+
           await sendEmailViaGmailApi(userId ?? "default", {
             to: toEmail,
             subject,
             text,
-            threadId: msg.externalId ?? undefined,
+            threadId: gmailThreadId,
           });
         }
       } catch (err: any) {
@@ -453,8 +474,9 @@ export const inboxService = {
             console.error("[inbox] Failed to queue WA send retry:", qErr);
           }
         }
+        const errMsg = err?.message ?? "Unknown error";
         console.error(`[inbox] Background send failed (${msg.platform}):`, err);
-        broadcastInboxEvent("send_failed", { platform: msg.platform, tempId, contactId: msg.contactId });
+        broadcastInboxEvent("send_failed", { platform: msg.platform, tempId, contactId: msg.contactId, error: errMsg });
       }
     })();
   },

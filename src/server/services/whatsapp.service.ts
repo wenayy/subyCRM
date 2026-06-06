@@ -878,6 +878,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
       if (s.generation !== myGen) return;
       try {
         if ("keys" in item) {
+          // Individual message deletions ("delete for me" or "delete for everyone")
           for (const key of item.keys) {
             if (key.id) {
               const result = await (prisma as any).inboxMessage.deleteMany({
@@ -885,9 +886,33 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
               });
               if (result.count > 0) {
                 console.log(`[whatsapp] Reflected deletion (messages.delete) of ${key.id}`);
-                broadcastInboxEvent("message_deleted", { externalId: key.id });
+                broadcastInboxEvent("message_deleted", {});
               }
             }
+          }
+        } else if ("all" in item && item.all) {
+          // "Clear chat" on primary phone — delete all messages for this conversation
+          const jid: string = (item as any).jid ?? "";
+          const phone = jid.replace(/@.+$/, "");
+          if (!phone) return;
+
+          // Delete by senderId (unknown contacts) + by contactId via platform record
+          const platform = await prisma.platform.findFirst({
+            where: { type: "whatsapp", platformId: { contains: phone } },
+          });
+          const deleted = await (prisma as any).inboxMessage.deleteMany({
+            where: {
+              platform: "whatsapp",
+              OR: [
+                { senderId: jid },
+                { senderId: `${phone}@s.whatsapp.net` },
+                ...(platform ? [{ contactId: platform.contactId }] : []),
+              ],
+            },
+          });
+          if (deleted.count > 0) {
+            console.log(`[whatsapp] Clear-chat: removed ${deleted.count} messages for ${jid}`);
+            broadcastInboxEvent("conversations_changed", {});
           }
         }
       } catch (e) {

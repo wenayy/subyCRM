@@ -638,11 +638,14 @@ export const telegramPersonalService = {
 
             const ids: number[] = update.messages ?? [];
             for (const msgId of ids) {
-              const stored = await (prisma as any).inboxMessage.findFirst({
+              // Delete directly (no userId filter) — inboxService.deleteMessage defaults
+              // userId to "default" which won't match real user UUIDs.
+              const result = await (prisma as any).inboxMessage.deleteMany({
                 where: { platform: "telegram", externalId: `personal-${msgId}` },
               });
-              if (stored) {
-                await inboxService.deleteMessage(stored.id);
+              if (result.count > 0) {
+                const { broadcastInboxEvent } = await import("./sse.service");
+                broadcastInboxEvent("message_deleted", {});
                 console.log(`[telegram-personal] Reflected deletion of personal-${msgId}`);
               }
             }
