@@ -409,13 +409,28 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
   }
 
   if (!contact) {
-    if (!isHistorical && remoteJid.endsWith("@lid")) {
-      // LID map may not be populated yet — buffer and retry after contacts.upsert
-      s.pendingLidMessages.push({ msg, isHistorical });
-      console.log(`[whatsapp] Buffered @lid message (LID not yet resolved): ${remoteJid}`);
-    } else if (!isHistorical) {
-      console.log(`[whatsapp] No CRM contact for ${jidDigits(remoteJid, s) || remoteJid} (pushName: ${msg.pushName ?? "none"})`);
+    if (remoteJid.endsWith("@lid")) {
+      // LID not yet resolved — buffer and retry after contacts.upsert fires
+      if (!isHistorical) s.pendingLidMessages.push({ msg, isHistorical });
+      return;
     }
+    if (isHistorical) return; // skip historical messages from unknown senders (too noisy)
+
+    // Save unknown live messages so they appear in inbox with "+ Add to contacts"
+    const displayName = msg.pushName || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "");
+    await inboxService.upsert({
+      platform: "whatsapp",
+      externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
+      userId: s.userId,
+      contactId: null,
+      contactName: displayName,
+      senderId: remoteJid,
+      preview: text.slice(0, 120),
+      body: text,
+      receivedAt: new Date((msg.messageTimestamp as number) * 1000),
+      needsReply: !fromMe,
+      fromMe,
+    });
     return;
   }
 
