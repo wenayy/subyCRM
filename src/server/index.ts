@@ -229,44 +229,29 @@ app.listen(PORT, async () => {
   void (async () => {
     try {
       const { prisma } = await import("./lib/prisma");
+      // Drop the old 2-col constraint by its Prisma-generated name, then ensure 3-col exists.
+      // Also deduplicate any rows that would violate the new constraint before adding it.
       await prisma.$executeRawUnsafe(`
-        DO $mig2$
-        DECLARE v_conname text;
-        BEGIN
-          -- Drop any 2-col unique constraint on (platform, external_id) without user_id
-          FOR v_conname IN
-            SELECT c.conname
-            FROM pg_constraint c
-            JOIN pg_class t ON t.oid = c.conrelid
-            JOIN pg_namespace n ON n.oid = t.relnamespace
-            WHERE t.relname = 'inbox_messages' AND n.nspname = 'contacts'
-              AND c.contype = 'u'
-              AND array_length(c.conkey, 1) = 2
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform'    AND attnum = ANY(c.conkey))
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'external_id' AND attnum = ANY(c.conkey))
-          LOOP
-            EXECUTE 'ALTER TABLE contacts.inbox_messages DROP CONSTRAINT IF EXISTS ' || quote_ident(v_conname);
-            RAISE NOTICE 'Dropped old inbox constraint: %', v_conname;
-          END LOOP;
-
-          -- Add 3-col constraint if not present
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint c
-            JOIN pg_class t ON t.oid = c.conrelid
-            JOIN pg_namespace n ON n.oid = t.relnamespace
-            WHERE t.relname = 'inbox_messages' AND n.nspname = 'contacts'
-              AND c.contype = 'u'
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'platform'    AND attnum = ANY(c.conkey))
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'external_id' AND attnum = ANY(c.conkey))
-              AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = t.oid AND attname = 'user_id'     AND attnum = ANY(c.conkey))
-          ) THEN
-            ALTER TABLE contacts.inbox_messages
-              ADD CONSTRAINT inbox_messages_platform_external_id_user_id_key
-              UNIQUE (platform, external_id, user_id);
-            RAISE NOTICE 'Added per-user inbox uniqueness constraint';
-          END IF;
-        END
-        $mig2$
+        ALTER TABLE contacts.inbox_messages
+          DROP CONSTRAINT IF EXISTS inbox_messages_platform_external_id_key;
+      `);
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE contacts.inbox_messages
+          DROP CONSTRAINT IF EXISTS inbox_messages_platform_external_id_user_id_key;
+      `);
+      // Remove any exact duplicates (keep the row with the lowest id)
+      await prisma.$executeRawUnsafe(`
+        DELETE FROM contacts.inbox_messages a
+        USING contacts.inbox_messages b
+        WHERE a.id > b.id
+          AND a.platform  = b.platform
+          AND a.external_id = b.external_id
+          AND a.user_id   = b.user_id;
+      `);
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE contacts.inbox_messages
+          ADD CONSTRAINT inbox_messages_platform_external_id_user_id_key
+          UNIQUE (platform, external_id, user_id);
       `);
       console.log("[startup] Inbox constraint migration OK");
     } catch (e: any) {

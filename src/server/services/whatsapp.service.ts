@@ -686,19 +686,12 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         } else {
           settle({ connected: false });
           if (code === DisconnectReason.connectionReplaced || code === 440) {
-            // 440 = another client (usually the phone) replaced this connection.
-            // If we stayed connected < 5s, count it as a consecutive failure.
-            const stayedMs = Date.now() - s.lastConnectedAt;
-            if (stayedMs < 5_000) {
-              s.consecutive440s++;
-            } else {
-              s.consecutive440s = 0; // stayed alive long enough — reset
-            }
-            // Exponential backoff: 10s → 20s → 40s → 60s cap
-            // After 3+ fast 440s, use 60s to let the competing client stabilise
-            const base = s.consecutive440s >= 3 ? 60_000 : 10_000 * Math.pow(2, Math.max(0, s.consecutive440s - 1));
-            s.reconnectDelay = Math.min(base, 60_000);
-            console.log(`[whatsapp] Connection replaced (440) — consecutive=${s.consecutive440s}, waiting ${s.reconnectDelay / 1000}s before reconnect`);
+            // 440 = another client (e.g. Beeper) replaced this session.
+            // Use a long backoff so both clients don't kick each other in a tight loop.
+            s.consecutive440s++;
+            // 5 min flat backoff — long enough for the competing client to stabilise
+            s.reconnectDelay = 5 * 60_000;
+            console.log(`[whatsapp] Connection replaced (440) — count=${s.consecutive440s}, waiting 5 min before reconnect`);
           } else {
             s.consecutive440s = 0;
             s.reconnectDelay = 0;
