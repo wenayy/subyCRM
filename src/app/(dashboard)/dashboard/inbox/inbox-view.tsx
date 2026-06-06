@@ -613,8 +613,11 @@ export function InboxView() {
                 ? "No messages yet. Connect integrations in Settings."
                 : "Nothing here."}
             </div>
-          ) : (
-            filtered.map((conv) => {
+          ) : (() => {
+            const knownConvs = filtered.filter((c) => !!c.contactId);
+            const unknownConvs = filtered.filter((c) => !c.contactId);
+
+            const renderConv = (conv: InboxConversationApi) => {
               const isActive = selected?.key === conv.key;
               const isUnknown = !conv.contactId;
               const name = conv.contactName ?? (isUnknown ? formatSenderId(conv.platform, conv.senderId) : conv.latestMessage.externalId);
@@ -627,8 +630,6 @@ export function InboxView() {
                     textAlign: "left",
                     borderLeft: isActive ? "3px solid var(--ac)" : conv.unreadCount > 0 ? "3px solid #2563eb" : "3px solid transparent",
                   }}>
-
-                  {/* Avatar */}
                   <div style={{
                     width: 36, height: 36, borderRadius: "50%", flexShrink: 0, marginTop: 1,
                     background: isActive ? "var(--ac)" : isUnknown ? "#f59e0b" : "var(--muted)",
@@ -638,10 +639,7 @@ export function InboxView() {
                   }}>
                     {initials(conv.contactName)}
                   </div>
-
-                  {/* Content */}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    {/* Row 1: platform icon + name + time */}
                     <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
                       <PlatformIcon type={conv.platform as PlatformType} size={13} />
                       <span style={{
@@ -655,7 +653,6 @@ export function InboxView() {
                         {fmtAgo(conv.latestMessage.receivedAt)}
                       </span>
                     </div>
-                    {/* Row 2: preview */}
                     <div style={{
                       fontSize: 12, color: conv.unreadCount > 0 ? "var(--t2)" : "var(--t3)",
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -663,15 +660,8 @@ export function InboxView() {
                     }}>
                       {conv.latestMessage.preview ?? conv.latestMessage.body ?? ""}
                     </div>
-                    {/* Row 3: badges */}
-                    {(conv.needsReply || conv.unreadCount > 0 || isUnknown) && (
+                    {(conv.needsReply || conv.unreadCount > 0) && (
                       <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                        {isUnknown && (
-                          <span style={{
-                            fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
-                            background: "#fef3c7", color: "#92400e", letterSpacing: "0.04em",
-                          }}>NOT IN CONTACTS</span>
-                        )}
                         {conv.needsReply && (
                           <span style={{
                             fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
@@ -691,7 +681,34 @@ export function InboxView() {
                   </div>
                 </button>
               );
-            }))}
+            };
+
+            return (
+              <>
+                {knownConvs.map(renderConv)}
+                {unknownConvs.length > 0 && (
+                  <>
+                    <div style={{
+                      padding: "8px 14px 6px", display: "flex", alignItems: "center", gap: 8,
+                      borderBottom: "1px solid var(--bd)", borderTop: knownConvs.length > 0 ? "2px solid var(--bd)" : "none",
+                      background: "var(--muted)",
+                    }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                        Not in contacts
+                      </span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
+                        background: "#f59e0b", color: "#fff",
+                      }}>
+                        {unknownConvs.length}
+                      </span>
+                    </div>
+                    {unknownConvs.map(renderConv)}
+                  </>
+                )}
+              </>
+            );
+          })()}
         </div>
 
         {/* Right: Thread view — hidden on mobile when no thread selected */}
