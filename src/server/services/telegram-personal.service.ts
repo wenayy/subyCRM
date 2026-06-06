@@ -463,21 +463,8 @@ export const telegramPersonalService = {
         const entity = dialog.entity as any;
         if (!entity || entity.className !== "User" || entity.bot || entity.self) continue;
 
-        let contact = await findContactForTelegram(entity);
-        if (!contact) {
-          const name = [entity.firstName, entity.lastName].filter(Boolean).join(" ").trim() || entity.username || entity.id?.toString();
-          const platformId = entity.username ?? entity.id?.toString();
-          if (!name || !platformId) continue;
-          contact = await prisma.contact.create({
-            data: {
-              name,
-              type: "other",
-              domain: "other",
-              relationshipStrength: "cold",
-              platforms: { create: [{ type: "telegram" as const, platformId, displayName: name }] },
-            },
-          });
-        }
+        const contact = await findContactForTelegram(entity);
+        if (!contact) continue;
 
         const messages = await client.getMessages(entity, { limit: msgLimit });
         const contactName = contact.name;
@@ -549,24 +536,7 @@ export const telegramPersonalService = {
               }
             }
 
-            if (!contact || !chatEntity) {
-              // Auto-create contact from incoming Telegram message
-              const entity = chatEntity ?? await msg.getSender();
-              if (!entity) return;
-              const name = [entity.firstName, entity.lastName].filter(Boolean).join(" ").trim() || entity.username || entity.id?.toString();
-              const platformId = entity.username ?? entity.id?.toString();
-              if (!name || !platformId) return;
-              contact = await prisma.contact.create({
-                data: {
-                  name,
-                  type: "other",
-                  domain: "other",
-                  relationshipStrength: "cold",
-                  platforms: { create: [{ type: "telegram" as const, platformId, displayName: name }] },
-                },
-              });
-              chatEntity = entity;
-            }
+            if (!contact || !chatEntity) return;
 
             let body = msg.text || "";
             if (msg.media) {
