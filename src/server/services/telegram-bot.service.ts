@@ -291,7 +291,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       update: { chatId: String(chatId) },
     });
     await (prisma as any).telegramBotLinkToken.delete({ where: { token } });
-    await send("✅ *Linked!* Your Suby CRM account is now connected to this Telegram account. Send voice notes to log contacts.");
+    await send("✅ *Linked\\!* Your Suby CRM account is now connected to this Telegram account\\.");
+    await send(`🚀 You're all set\\! Send me a *voice note* or *text*:\n• _"Had a great call with Lena, she's in for the round"_\n• _"Remind me to follow up with Marc on Friday"_\n• _"Mark Sophie as hot"_\n• _"Just met Thomas from Sequoia, he's a partner"_\n\nI'll log it straight into Suby CRM\\.`);
     return;
   }
 
