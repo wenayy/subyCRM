@@ -45,7 +45,7 @@ const SOURCES = [
   {
     key: "whatsapp",
     name: "WhatsApp",
-    description: "WhatsApp contacts are imported automatically via Beeper above. Direct WhatsApp import is coming soon.",
+    description: "Import all people from your WhatsApp contacts. Requires WhatsApp to be connected in Settings.",
     icon: "W",
     color: "#25D366",
     bg: "#25D36615",
