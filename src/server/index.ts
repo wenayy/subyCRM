@@ -215,6 +215,20 @@ app.listen(PORT, async () => {
     }
   })();
 
+  // ── Schema migration: WhatsApp creds_json column ───────────────
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE contacts.whatsapp_sessions
+        ADD COLUMN IF NOT EXISTS creds_json TEXT
+      `);
+      console.log("[startup] WhatsApp creds_json column OK");
+    } catch (e: any) {
+      console.error("[startup] WhatsApp creds_json migration error:", e.message);
+    }
+  })();
+
   // ── Backfill: link contacts to companies by name string ────────
   // Contacts created from the contacts page have company: "Acme" but no companyId.
   // This one-time pass sets companyId on any such contacts so company detail pages

@@ -196,18 +196,18 @@ function ingestContacts(contacts: any[], s: UserState): void {
   }
 }
 
-// ── DB platform cache ─────────────────────────────────────────────────────────
+// ── DB platform cache (per-user) ──────────────────────────────────────────────
 type PlatformRow = { contactId: string; contactName: string; phoneDigits: string };
-let platformCache: PlatformRow[] = [];
-let platformCacheExpiry = 0;
+const platformCacheByUser = new Map<string, { rows: PlatformRow[]; expiry: number }>();
 
-async function getPlatforms(): Promise<PlatformRow[]> {
-  if (Date.now() < platformCacheExpiry && platformCache.length > 0) return platformCache;
+async function getPlatforms(userId: string): Promise<PlatformRow[]> {
+  const cached = platformCacheByUser.get(userId);
+  if (cached && Date.now() < cached.expiry && cached.rows.length > 0) return cached.rows;
   const rows = await prisma.platform.findMany({
-    where: { type: "whatsapp" },
+    where: { type: "whatsapp", contact: { userId } },
     include: { contact: true },
   });
-  platformCache = rows
+  const result = rows
     .filter((r) => r.contact)
     .map((r) => ({
       contactId: r.contact!.id,
@@ -215,12 +215,16 @@ async function getPlatforms(): Promise<PlatformRow[]> {
       phoneDigits: r.platformId.replace(/\D/g, ""),
     }))
     .filter((r) => r.phoneDigits.length >= 5);
-  platformCacheExpiry = Date.now() + 5 * 60 * 1000;
-  return platformCache;
+  platformCacheByUser.set(userId, { rows: result, expiry: Date.now() + 5 * 60 * 1000 });
+  return result;
 }
 
-export function invalidatePlatformCache(): void {
-  platformCacheExpiry = 0;
+export function invalidatePlatformCache(userId?: string): void {
+  if (userId) {
+    platformCacheByUser.delete(userId);
+  } else {
+    platformCacheByUser.clear();
+  }
 }
 
 // ── JID helpers ───────────────────────────────────────────────────────────────
@@ -278,14 +282,14 @@ function jidDigits(jid: string, s: UserState): string {
   return jid.split("@")[0].replace(/\D/g, "");
 }
 
-// Match a JID to a CRM contact
+// Match a JID to a CRM contact (scoped to the owning user)
 async function resolveContact(
   jid: string,
   pushName: string | null | undefined,
   s: UserState,
 ): Promise<{ contactId: string; contactName: string } | null> {
   const digits = jidDigits(jid, s);
-  const platforms = await getPlatforms();
+  const platforms = await getPlatforms(s.userId);
 
   if (digits.length >= 5) {
     const hit = platforms.find(
@@ -396,7 +400,7 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
   // Look up the contact from previous inbox messages where this JID was the sender.
   if (!contact && fromMe && !isHistorical) {
     const prev = await (prisma as any).inboxMessage.findFirst({
-      where: { platform: "whatsapp", senderId: remoteJid, contactId: { not: null }, fromMe: false },
+      where: { platform: "whatsapp", userId: s.userId, senderId: remoteJid, contactId: { not: null }, fromMe: false },
     });
     if (prev?.contactId) {
       contact = { contactId: prev.contactId, contactName: prev.contactName };
@@ -526,7 +530,8 @@ function waitForConnection(ms: number, s: UserState): Promise<void> {
 async function connectSocket(userId: string): Promise<{ qr?: string; connected: boolean }> {
   const s = getSession(userId);
 
-  // Safeguard: Check if AUTH_DIR exists but creds.json is corrupt/empty
+  // Safeguard: Check if AUTH_DIR exists but creds.json is corrupt/empty.
+  // Also restore from DB if the filesystem is missing (e.g. after a Railway redeploy).
   const authDir = getAuthDir(userId);
   const credsFile = path.join(authDir, "creds.json");
   if (fs.existsSync(credsFile)) {
@@ -536,20 +541,31 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         console.warn("[whatsapp] creds.json is empty. Cleaning up auth directory.");
         fs.rmSync(authDir, { recursive: true, force: true });
         await (prisma as any).whatsAppSession.updateMany({
-          where: { userId },
-          data: { connected: false },
+          where: { userId }, data: { connected: false },
         }).catch(() => {});
       } else {
         const content = fs.readFileSync(credsFile, "utf-8");
-        JSON.parse(content); // Test if valid JSON
+        JSON.parse(content); // validate
       }
     } catch (e) {
       console.warn("[whatsapp] creds.json is corrupt. Cleaning up auth directory.");
       fs.rmSync(authDir, { recursive: true, force: true });
       await (prisma as any).whatsAppSession.updateMany({
-        where: { userId },
-        data: { connected: false },
+        where: { userId }, data: { connected: false },
       }).catch(() => {});
+    }
+  }
+  // Restore credentials from DB if the auth dir was wiped (ephemeral filesystem on Railway)
+  if (!fs.existsSync(credsFile)) {
+    try {
+      const saved = await (prisma as any).whatsAppSession.findUnique({ where: { userId }, select: { credsJson: true } });
+      if (saved?.credsJson) {
+        fs.mkdirSync(authDir, { recursive: true });
+        fs.writeFileSync(credsFile, saved.credsJson, "utf-8");
+        console.log(`[whatsapp] Restored creds.json from DB for user ${userId}`);
+      }
+    } catch (e) {
+      console.warn("[whatsapp] Could not restore creds from DB:", e);
     }
   }
 
@@ -693,7 +709,22 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     });
 
     // ── Credentials ───────────────────────────────────────────
-    sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("creds.update", async () => {
+      await saveCreds();
+      // Persist to DB so credentials survive Railway redeploys (ephemeral filesystem)
+      try {
+        const credsContent = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, "utf-8") : null;
+        if (credsContent) {
+          await (prisma as any).whatsAppSession.upsert({
+            where: { userId },
+            create: { userId, credsJson: credsContent },
+            update: { credsJson: credsContent },
+          });
+        }
+      } catch (e) {
+        console.warn("[whatsapp] Failed to persist creds to DB:", e);
+      }
+    });
 
     // ── Historical messages ───────────────────────────────────
     sock.ev.on("messaging-history.set", async ({ messages: historicalMsgs, contacts }: any) => {
