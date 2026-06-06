@@ -24,33 +24,38 @@ export function parseMediaMarkdown(text: string): { filePath: string; caption: s
 export const inboxService = {
   async getConversations(userId: string = "default") {
     const messages = await (prisma as any).inboxMessage.findMany({
-      where: { userId, contactId: { not: null } },
+      where: { userId },
       orderBy: { receivedAt: "desc" },
       take: 2000,
-      include: { contact: { select: { id: true, name: true } } },
     });
 
-    // Group by contactId — one conversation per contact per platform
+    // Known contacts: group by contactId:platform; unknown senders: group by unknown:senderId:platform
     const map = new Map<string, {
-      key: string; contactId: string; contactName: string | null;
+      key: string; contactId: string | null; contactName: string | null;
       platform: string; senderId: string | null;
       latestMessage: any; unreadCount: number; needsReply: boolean; messageCount: number; starred: boolean;
     }>();
 
     for (const msg of messages) {
-      const key = `${msg.contactId}:${msg.platform}`;
-      // Always use the live CRM contact name so renames propagate immediately
-      const currentName = msg.contact?.name ?? msg.contactName;
+      let key: string;
+      if (msg.contactId) {
+        key = `${msg.contactId}:${msg.platform}`;
+      } else if (msg.senderId) {
+        key = `unknown:${msg.senderId}:${msg.platform}`;
+      } else {
+        continue; // no way to group without either identifier
+      }
+      const currentName = msg.contactName;
       if (!map.has(key)) {
         map.set(key, {
-          key, contactId: msg.contactId, contactName: currentName,
+          key, contactId: msg.contactId ?? null, contactName: currentName,
           platform: msg.platform, senderId: msg.senderId,
           latestMessage: { ...msg, contactName: currentName },
           unreadCount: 0, needsReply: !!msg.needsReply, messageCount: 0, starred: false,
         });
       }
       const conv = map.get(key)!;
-      conv.contactName = currentName; // keep updated
+      conv.contactName = currentName;
       conv.messageCount++;
       if (!msg.read) conv.unreadCount++;
       if (msg.starred) conv.starred = true;
@@ -104,6 +109,20 @@ export const inboxService = {
   async markConversationRead(contactId: string, platform: string, userId: string = "default") {
     return (prisma as any).inboxMessage.updateMany({
       where: { userId, contactId, platform, read: false },
+      data: { read: true },
+    });
+  },
+
+  async getUnknownThread(senderId: string, platform: string, userId: string = "default") {
+    return (prisma as any).inboxMessage.findMany({
+      where: { userId, contactId: null, senderId, platform },
+      orderBy: { receivedAt: "asc" },
+    });
+  },
+
+  async markUnknownConversationRead(senderId: string, platform: string, userId: string = "default") {
+    return (prisma as any).inboxMessage.updateMany({
+      where: { userId, contactId: null, senderId, platform, read: false },
       data: { read: true },
     });
   },
