@@ -2,6 +2,7 @@ import { Worker } from "bullmq";
 import { redisConnection } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
+import { whatsappService } from "../services/whatsapp.service";
 
 const BATCH = 20;
 
@@ -9,12 +10,20 @@ export function startWhatsAppImportWorker() {
   const worker = new Worker(
     QUEUE_NAMES.WHATSAPP_IMPORT,
     async (job) => {
-      const { userId, importJobId, contacts } = job.data as {
+      const { userId, importJobId } = job.data as {
         userId: string;
         importJobId: string;
-        // Serialized from in-memory contactsCache at dispatch time
-        contacts: Array<{ jid: string; name: string; phoneDigits: string }>;
       };
+
+      // Fetch contacts from the live in-memory cache at job-run time (same process as service)
+      const contacts = whatsappService.getContactsForImport(userId);
+      if (!contacts.length) {
+        await prisma.importJob.update({
+          where: { id: importJobId },
+          data: { status: "failed", errorLog: { error: "No WhatsApp contacts in cache — WhatsApp may still be syncing. Wait a moment and try again." }, completedAt: new Date() },
+        });
+        return { imported: 0, updated: 0, skipped: 0 };
+      }
 
       let imported = 0, updated = 0, skipped = 0;
 

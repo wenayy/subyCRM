@@ -167,18 +167,11 @@ router.post("/whatsapp", async (req, res, next) => {
       return;
     }
 
-    // Serialize in-memory contacts cache into job payload now (worker can't access memory)
-    const contacts = whatsappService.getContactsForImport(userId);
-    if (!contacts.length) {
-      res.status(400).json({ error: "No WhatsApp contacts found in cache. Try reconnecting WhatsApp." });
-      return;
-    }
-
     const job = await prisma.importJob.create({
       data: { userId, source: "whatsapp_export", status: "running", startedAt: new Date() },
     });
 
-    await queues.whatsappImport.add("whatsapp-import", { userId, importJobId: job.id, contacts });
+    await queues.whatsappImport.add("whatsapp-import", { userId, importJobId: job.id });
     res.json({ status: "started", jobId: job.id });
   } catch (err) {
     next(err);

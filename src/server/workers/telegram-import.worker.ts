@@ -2,6 +2,7 @@ import { Worker } from "bullmq";
 import { redisConnection } from "../lib/redis";
 import { QUEUE_NAMES } from "../lib/queues";
 import { prisma } from "../lib/prisma";
+import { telegramPersonalService } from "../services/telegram-personal.service";
 
 const BATCH = 20;
 
@@ -11,22 +12,7 @@ export function startTelegramImportWorker() {
     async (job) => {
       const { userId, importJobId } = job.data as { userId: string; importJobId: string };
 
-      const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
-      if (!rec?.sessionStr) throw new Error("Telegram not connected");
-
-      const { TelegramClient, StringSession } = await (async () => {
-        const { TelegramClient } = await import("telegram");
-        const { StringSession } = await import("telegram/sessions");
-        return { TelegramClient, StringSession };
-      })();
-
-      const client = new TelegramClient(
-        new StringSession(rec.sessionStr),
-        rec.apiId,
-        rec.apiHash,
-        { connectionRetries: 3 }
-      );
-      await client.connect();
+      const client = await telegramPersonalService.getOrCreateClient(userId);
 
       const dialogs = await client.getDialogs({ limit: 500 });
 
@@ -141,7 +127,7 @@ export function startTelegramImportWorker() {
         }).catch(() => {});
       }
 
-      await client.disconnect();
+      // Don't disconnect — the shared client is still used by the live listener
 
       await prisma.importJob.update({
         where: { id: importJobId },

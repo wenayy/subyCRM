@@ -864,6 +864,34 @@ export const telegramPersonalService = {
     await (prisma as any).telegramPersonalSession.deleteMany({ where: { userId } });
   },
 
+  async getOrCreateClient(userId: string): Promise<any> {
+    const existing = clients.get(userId);
+    if (existing) return existing;
+
+    const { TelegramClient, StringSession } = await getTelegramLib();
+    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    if (!rec?.sessionStr) throw new Error("Telegram not connected");
+
+    try {
+      const client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, {
+        connectionRetries: 5,
+        requestRetries: 3,
+        floodSleepThreshold: 60,
+      });
+      await client.connect();
+      clients.set(userId, client);
+      telegramPersonalService._attachListener(userId, client);
+      warmEntityCache(userId, client);
+      return client;
+    } catch (err) {
+      if (isSessionExpired(err)) {
+        await clearSession(userId);
+        throw new Error("Telegram session expired — go to Settings → Telegram to reconnect.");
+      }
+      throw err;
+    }
+  },
+
   async autoReconnect() {
     const sessions = await (prisma as any).telegramPersonalSession.findMany();
     for (const session of sessions) {
