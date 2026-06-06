@@ -138,8 +138,7 @@ router.post("/upload", async (req, res, next) => {
 
     await fs.writeFile(path.join(mediaDir, uniqueName), buffer);
 
-    const apiBase = (process.env.AUTH_BASE_URL || "http://localhost:4002").replace(/\/$/, "");
-    res.json({ url: `${apiBase}/media/${uniqueName}` });
+    res.json({ url: `/media/${uniqueName}` });
   } catch (err) {
     next(err);
   }

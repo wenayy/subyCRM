@@ -127,51 +127,56 @@ export function InboxView() {
   const [addToContactsName, setAddToContactsName] = useState("");
   const [addToContactsSaving, setAddToContactsSaving] = useState(false);
   const [addToContactsError, setAddToContactsError] = useState("");
+  const [pendingAttachment, setPendingAttachment] = useState<{
+    previewUrl: string; markdownTag: string; name: string; isImage: boolean;
+  } | null>(null);
 
   const REACTIONS = ["👍", "❤️", "😂", "🙏", "😮", "😢"];
+
+  const uploadFile = async (file: File) => {
+    setUploading(true);
+    setSendError("");
+    return new Promise<void>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const fileData = event.target?.result as string;
+        if (!fileData) { setSendError("Failed to read file"); setUploading(false); resolve(); return; }
+        try {
+          const res = await inboxApi.upload(file.name, fileData);
+          const isImage = file.type.startsWith("image/") || file.type.startsWith("video/");
+          const markdownTag = isImage ? `![${file.name}](${res.url})` : `[${file.name}](${res.url})`;
+          // Show preview using the returned URL (relative path, works via Vercel proxy)
+          setPendingAttachment({ previewUrl: res.url, markdownTag, name: file.name, isImage });
+        } catch (err: any) {
+          setSendError(err.message || "Failed to upload attachment");
+        } finally {
+          setUploading(false);
+          resolve();
+        }
+      };
+      reader.onerror = () => { setSendError("Failed to read file"); setUploading(false); resolve(); };
+      reader.readAsDataURL(file);
+    });
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selected) return;
+    await uploadFile(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
-    setUploading(true);
-    setSendError("");
-    const reader = new FileReader();
-
-    reader.onload = async (event) => {
-      const fileData = event.target?.result as string;
-      if (!fileData) {
-        setSendError("Failed to read file");
-        setUploading(false);
-        return;
-      }
-
-      try {
-        const res = await inboxApi.upload(file.name, fileData);
-        const isImage = file.type.startsWith("image/");
-        const markdownTag = isImage
-          ? `![${file.name}](${res.url})`
-          : `[${file.name}](${res.url})`;
-        if (textareaRef.current) {
-          textareaRef.current.value = textareaRef.current.value
-            ? `${textareaRef.current.value} ${markdownTag}`
-            : markdownTag;
-          textareaRef.current.focus();
-        }
-      } catch (err: any) {
-        setSendError(err.message || "Failed to upload attachment");
-      } finally {
-        setUploading(false);
-        if (fileInputRef.current) fileInputRef.current.value = "";
-      }
-    };
-
-    reader.onerror = () => {
-      setSendError("Failed to read file");
-      setUploading(false);
-    };
-
-    reader.readAsDataURL(file);
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find((item) => item.type.startsWith("image/"));
+    if (!imageItem || !selected) return;
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    // Give it a timestamped name since clipboard items have no filename
+    const ext = file.type.split("/")[1] ?? "png";
+    const namedFile = new File([file], `image_${Date.now()}.${ext}`, { type: file.type });
+    await uploadFile(namedFile);
   };
 
   useEffect(() => {
@@ -370,6 +375,7 @@ export function InboxView() {
     if (textareaRef.current) textareaRef.current.value = "";
     setSendError("");
     setReplyingTo(null);
+    setPendingAttachment(null);
 
     // Clear & pre-populate thread with the latest message instantly
     setThread([conv.latestMessage]);
@@ -421,15 +427,20 @@ export function InboxView() {
   const totalStarred = conversations.filter((c) => c.starred).length;
 
   const handleSend = () => {
-    const body = textareaRef.current?.value.trim();
+    const textBody = textareaRef.current?.value.trim() ?? "";
+    const attachment = pendingAttachment;
+    const body = attachment
+      ? textBody ? `${textBody}\n\n${attachment.markdownTag}` : attachment.markdownTag
+      : textBody;
     if (!body || !selected) return;
 
     const lastMsg = thread[thread.length - 1] ?? selected.latestMessage;
     const tempId = `sent-${Date.now()}`;
     const replyToId = replyingTo?.id;
 
-    // Clear input and quote immediately — feels instant
+    // Clear input and attachment immediately — feels instant
     if (textareaRef.current) textareaRef.current.value = "";
+    setPendingAttachment(null);
     setReplyingTo(null);
     setSendError("");
 
@@ -901,6 +912,34 @@ export function InboxView() {
                   style={{ display: "none" }}
                   onChange={handleFileUpload}
                 />
+                {/* Pending attachment preview */}
+                {pendingAttachment && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6,
+                    padding: "6px 10px", borderRadius: 8, background: "var(--muted)",
+                    border: "1px solid var(--bd)" }}>
+                    {pendingAttachment.isImage ? (
+                      <img src={pendingAttachment.previewUrl} alt={pendingAttachment.name}
+                        style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+                    ) : (
+                      <div style={{ width: 48, height: 48, borderRadius: 6, background: "var(--al)",
+                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 20 }}>
+                        📎
+                      </div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: "var(--t1)", fontWeight: 500,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {pendingAttachment.name}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--t3)" }}>
+                        {pendingAttachment.isImage ? "Image ready to send" : "File ready to send"}
+                      </div>
+                    </div>
+                    <button onClick={() => setPendingAttachment(null)}
+                      style={{ background: "none", border: "none", cursor: "pointer",
+                        color: "var(--t3)", fontSize: 18, lineHeight: 1, flexShrink: 0 }}>×</button>
+                  </div>
+                )}
                 {/* Reply-to quote preview */}
                 {replyingTo && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6,
@@ -938,7 +977,8 @@ export function InboxView() {
                   </button>
                   <textarea ref={textareaRef}
                     onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSend(); }}
-                    placeholder={`Message ${selected.contactName ?? ""}… (⌘↵ to send)`}
+                    onPaste={handlePaste}
+                    placeholder={`Message ${selected.contactName ?? ""}… (⌘↵ to send, paste image)`}
                     rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px",
                       borderRadius: 10, border: "1px solid var(--bd)", background: "var(--card)",
                       color: "var(--t1)", outline: "none", lineHeight: 1.4 }} />

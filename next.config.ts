@@ -11,6 +11,10 @@ const nextConfig: NextConfig = {
       source: "/api/:path*",
       destination: `${validApiUrl}/api/:path*`,
     },
+    {
+      source: "/media/:path*",
+      destination: `${validApiUrl}/media/:path*`,
+    },
   ],
   headers: async () => {
     return [{ source: "/(.*)", headers: [
