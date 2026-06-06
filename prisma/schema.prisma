@@ -235,8 +235,9 @@ model Platform {
 
   contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
-  @@unique([type, platformId])
+  @@unique([type, platformId, contactId])
   @@index([contactId])
+  @@index([type, platformId])
   @@map("platforms")
   @@schema("contacts")
 }

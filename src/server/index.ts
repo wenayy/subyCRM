@@ -161,6 +161,18 @@ discordService.autoReconnect();
 app.listen(PORT, async () => {
   console.log(`Suby Contacts API running on port ${PORT}`);
 
+  // ── Schema migration: platform unique constraint per-contact ───
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      await prisma.$executeRawUnsafe(`ALTER TABLE contacts.platforms DROP CONSTRAINT IF EXISTS platforms_type_platform_id_key`);
+      await prisma.$executeRawUnsafe(`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platforms_type_platform_id_contact_id_key') THEN ALTER TABLE contacts.platforms ADD CONSTRAINT platforms_type_platform_id_contact_id_key UNIQUE (type, platform_id, contact_id); END IF; END $$`);
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS platforms_type_platform_id_idx ON contacts.platforms (type, platform_id)`);
+    } catch (e: any) {
+      console.error("[startup] Platform constraint migration error:", e.message);
+    }
+  })();
+
   // ── Backfill: link contacts to companies by name string ────────
   // Contacts created from the contacts page have company: "Acme" but no companyId.
   // This one-time pass sets companyId on any such contacts so company detail pages

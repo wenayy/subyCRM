@@ -178,16 +178,20 @@ export const contactService = {
     }>;
   }) {
     const { platforms, ...contactData } = data;
-    return prisma.contact.create({
-      data: {
-        ...contactData as any,
-        userId,
-        platforms: platforms?.length
-          ? { create: platforms as any }
-          : undefined,
-      },
+    const contact = await prisma.contact.create({
+      data: { ...contactData as any, userId },
       include: { platforms: true },
     });
+    if (platforms?.length) {
+      for (const p of platforms) {
+        const normalizedId = normalizePlatformId(p.type, p.platformId);
+        await prisma.platform.create({
+          data: { contactId: contact.id, type: p.type as any, platformId: normalizedId, displayName: p.displayName },
+        }).catch(() => {}); // ignore duplicate platform errors
+      }
+      return prisma.contact.findUnique({ where: { id: contact.id }, include: { platforms: true } }) as any;
+    }
+    return contact;
   },
 
   async update(userId: string, id: string, data: Record<string, unknown>) {
