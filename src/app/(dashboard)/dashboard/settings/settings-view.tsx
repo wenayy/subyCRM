@@ -931,16 +931,6 @@ export function SettingsView() {
                           {syncing === "linkedin" && <Spinner />}{syncing === "linkedin" ? "Syncing…" : "Sync"}
                         </Button>
                       )}
-                      {k === "telegram_personal" && isConnected && (
-                        <>
-                          <Button size="sm" variant="outline" onClick={() => syncTelegram(false)} disabled={syncing === "telegram_personal"} className="min-w-[70px]">
-                            {syncing === "telegram_personal" && <Spinner />}{syncing === "telegram_personal" ? "Syncing…" : "Sync"}
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => syncTelegram(true)} disabled={syncing === "telegram_personal"} title="Import full message history (slower)" className="min-w-[110px] text-xs">
-                            Sync Full History
-                          </Button>
-                        </>
-                      )}
                       <Button size="sm" variant={isConnected ? "outline" : "default"} onClick={() => toggle(k)} disabled={isPending} className="min-w-[100px]">
                         {isPending && <Spinner />}{isPending ? (isConnected ? "Disconnecting…" : "Connecting…") : isConnected ? "Disconnect" : "Connect"}
                       </Button>
