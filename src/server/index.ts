@@ -229,29 +229,60 @@ app.listen(PORT, async () => {
   void (async () => {
     try {
       const { prisma } = await import("./lib/prisma");
-      // Drop the old 2-col constraint by its Prisma-generated name, then ensure 3-col exists.
-      // Also deduplicate any rows that would violate the new constraint before adding it.
+      // Drop ALL unique constraints on inbox_messages that cover only (platform, external_id)
+      // regardless of what name they were given — catches any naming variant.
       await prisma.$executeRawUnsafe(`
-        ALTER TABLE contacts.inbox_messages
-          DROP CONSTRAINT IF EXISTS inbox_messages_platform_external_id_key;
-      `);
-      await prisma.$executeRawUnsafe(`
-        ALTER TABLE contacts.inbox_messages
-          DROP CONSTRAINT IF EXISTS inbox_messages_platform_external_id_user_id_key;
-      `);
-      // Remove any exact duplicates (keep the row with the lowest id)
-      await prisma.$executeRawUnsafe(`
-        DELETE FROM contacts.inbox_messages a
-        USING contacts.inbox_messages b
-        WHERE a.id > b.id
-          AND a.platform  = b.platform
-          AND a.external_id = b.external_id
-          AND a.user_id   = b.user_id;
-      `);
-      await prisma.$executeRawUnsafe(`
-        ALTER TABLE contacts.inbox_messages
-          ADD CONSTRAINT inbox_messages_platform_external_id_user_id_key
-          UNIQUE (platform, external_id, user_id);
+        DO $$
+        DECLARE v_conname text;
+        BEGIN
+          FOR v_conname IN
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'contacts'
+              AND t.relname = 'inbox_messages'
+              AND c.contype = 'u'
+              AND (
+                -- old 2-col constraint (platform + external_id only)
+                (SELECT array_agg(a.attname ORDER BY a.attname)
+                 FROM pg_attribute a
+                 WHERE a.attrelid = c.conrelid
+                   AND a.attnum = ANY(c.conkey)
+                ) = ARRAY['external_id','platform']
+              )
+          LOOP
+            EXECUTE 'ALTER TABLE contacts.inbox_messages DROP CONSTRAINT IF EXISTS ' || quote_ident(v_conname);
+            RAISE NOTICE 'Dropped old inbox constraint: %', v_conname;
+          END LOOP;
+
+          -- Deduplicate before adding 3-col constraint
+          DELETE FROM contacts.inbox_messages a
+          USING contacts.inbox_messages b
+          WHERE a.id > b.id
+            AND a.platform    = b.platform
+            AND a.external_id = b.external_id
+            AND a.user_id     = b.user_id;
+
+          -- Add 3-col constraint if not already present
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'contacts'
+              AND t.relname = 'inbox_messages'
+              AND c.contype = 'u'
+              AND (SELECT array_agg(a.attname ORDER BY a.attname)
+                   FROM pg_attribute a
+                   WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                  ) = ARRAY['external_id','platform','user_id']
+          ) THEN
+            ALTER TABLE contacts.inbox_messages
+              ADD CONSTRAINT inbox_messages_platform_external_id_user_id_key
+              UNIQUE (platform, external_id, user_id);
+            RAISE NOTICE 'Added 3-col inbox constraint';
+          END IF;
+        END$$;
       `);
       console.log("[startup] Inbox constraint migration OK");
     } catch (e: any) {
