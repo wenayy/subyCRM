@@ -445,27 +445,27 @@ app.listen(PORT, async () => {
   );
   console.log("[server] Sequence tick scheduled every hour");
 
-  // ── BullMQ: Gmail sync every 5 minutes ─────────────────────
+  // ── BullMQ: Gmail sync every 10 minutes ────────────────────
   await queues.gmailSync
-    .removeRepeatable("gmail-sync", { cron: "*/5 * * * *" })
+    .removeRepeatable("gmail-sync", { cron: "*/10 * * * *" })
     .catch(() => {});
   await queues.gmailSync.add(
     "gmail-sync",
     {},
-    { repeat: { cron: "*/5 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+    { repeat: { cron: "*/10 * * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
-  console.log("[server] Gmail sync scheduled every 5 minutes");
+  console.log("[server] Gmail sync scheduled every 10 minutes");
 
-  // ── BullMQ: X DM sync every 10 minutes ─────────────────────
+  // ── BullMQ: X DM sync every 12 hours (not active yet) ──────
   await queues.xDmSync
-    .removeRepeatable("x-dm-sync", { cron: "*/10 * * * *" })
+    .removeRepeatable("x-dm-sync", { cron: "0 */12 * * *" })
     .catch(() => {});
   await queues.xDmSync.add(
     "x-dm-sync",
     {},
-    { repeat: { cron: "*/10 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+    { repeat: { cron: "0 */12 * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
-  console.log("[server] X DM sync scheduled every 10 minutes");
+  console.log("[server] X DM sync scheduled every 12 hours");
 
   // ── BullMQ: Slack DM sync every 5 minutes ──────────────────
   await queues.slackSync
@@ -478,27 +478,27 @@ app.listen(PORT, async () => {
   );
   console.log("[server] Slack sync scheduled every 5 minutes");
 
-  // ── BullMQ: Discord sync every 15 minutes (fallback for bot) ─
+  // ── BullMQ: Discord sync every 5 minutes (DMs arrive via bot listener) ─
   await queues.discordSync
-    .removeRepeatable("discord-sync", { cron: "*/15 * * * *" })
+    .removeRepeatable("discord-sync", { cron: "*/5 * * * *" })
     .catch(() => {});
   await queues.discordSync.add(
     "discord-sync",
     {},
-    { repeat: { cron: "*/15 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+    { repeat: { cron: "*/5 * * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
-  console.log("[server] Discord sync scheduled every 15 minutes");
+  console.log("[server] Discord sync scheduled every 5 minutes");
 
-  // ── BullMQ: LinkedIn sync every 15 minutes ─────────────────
+  // ── BullMQ: LinkedIn sync every 12 hours (not active yet) ──
   await queues.linkedinSync
-    .removeRepeatable("linkedin-sync", { cron: "*/15 * * * *" })
+    .removeRepeatable("linkedin-sync", { cron: "0 */12 * * *" })
     .catch(() => {});
   await queues.linkedinSync.add(
     "linkedin-sync",
     {},
-    { repeat: { cron: "*/15 * * * *" }, ...DEFAULT_JOB_OPTIONS },
+    { repeat: { cron: "0 */12 * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
-  console.log("[server] LinkedIn sync scheduled every 15 minutes");
+  console.log("[server] LinkedIn sync scheduled every 12 hours");
 });
 
 export default app;

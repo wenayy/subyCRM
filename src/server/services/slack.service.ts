@@ -5,7 +5,10 @@ import { inboxService } from "./inbox.service";
 const CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/slack/callback`;
-const SCOPES = ["im:read", "im:history", "im:write", "chat:write", "channels:read", "users:read", "mpim:read", "mpim:write"];
+// bot scopes: needed to read workspace members and channels
+const BOT_SCOPES = ["channels:read", "users:read"];
+// user scopes: needed to read/send DMs as the logged-in Slack user
+const USER_SCOPES = ["im:read", "im:history", "mpim:read", "mpim:history", "chat:write"];
 
 function buildState(userId: string): string {
   const payload = JSON.stringify({ userId, ts: Date.now() });
@@ -39,7 +42,8 @@ export const slackService = {
     if (!CLIENT_ID) throw new Error("SLACK_CLIENT_ID not set");
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
-      scope: SCOPES.join(","),
+      scope: BOT_SCOPES.join(","),
+      user_scope: USER_SCOPES.join(","),
       redirect_uri: REDIRECT_URI,
       state: buildState(userId),
     });
@@ -61,8 +65,16 @@ export const slackService = {
       create: { userId, accessToken: token, teamId: data.team?.id, teamName: data.team?.name },
       update: { accessToken: token, teamId: data.team?.id, teamName: data.team?.name },
     });
-    // Auto-sync
+    // Auto-sync messages then queue contact import
     await slackService.sync(userId);
+    try {
+      const { queues } = await import("../lib/queues");
+      const job = await prisma.importJob.create({
+        data: { userId, source: "slack_api", status: "running", startedAt: new Date() },
+      });
+      await queues.slackImport.add("slack-import", { userId, importJobId: job.id });
+      console.log(`[slack] Auto-import queued for user ${userId}`);
+    } catch { /* non-fatal */ }
   },
 
   async getStatus(userId: string) {
@@ -123,14 +135,12 @@ export const slackService = {
             include: { contact: true },
           });
 
-          if (!plat) continue; // privacy filter — skip non-CRM contacts
-
           await inboxService.upsert({
             platform: "slack",
             externalId: `${ch.id}-${msg.ts}`,
             userId,
-            contactId: plat.contact.id,
-            contactName: plat.contact.name,
+            contactId: plat?.contact.id ?? null,
+            contactName: plat?.contact.name ?? displayName,
             senderId: ch.id, // channel ID — used by reply to post back
             preview: msg.text.slice(0, 120),
             body: msg.text,
@@ -158,5 +168,77 @@ export const slackService = {
       const data = await r.json() as { ok: boolean; error?: string };
       if (!data.ok) throw new Error(`Slack send failed: ${data.error}`);
     });
+  },
+
+  async importContacts(userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
+    const rec = await (prisma as any).slackToken.findUnique({ where: { userId } });
+    if (!rec) throw new Error("Slack not connected");
+    const token = rec.accessToken;
+
+    const usersRes = await slackFetch<{
+      members: Array<{ id: string; name: string; real_name?: string; is_bot: boolean; deleted: boolean; profile?: { email?: string; display_name?: string } }>;
+    }>("/users.list", token, { limit: "500" }).catch(() => ({ members: [] }));
+
+    let imported = 0, updated = 0, skipped = 0;
+
+    for (const member of usersRes.members) {
+      if (member.is_bot || member.deleted) continue;
+      const displayName = member.profile?.display_name || member.real_name || member.name;
+      const email = member.profile?.email;
+      const slackId = member.id;
+
+      try {
+        // Check if already in CRM by Slack ID or email
+        const existing = await (prisma as any).platform.findFirst({
+          where: {
+            OR: [
+              { type: "slack", platformId: slackId },
+              ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
+            ],
+          },
+          include: { contact: true },
+        });
+
+        if (existing) {
+          const updates: Record<string, any> = {};
+          if (existing.contact.userId === "default") updates.userId = userId;
+          if (Object.keys(updates).length) {
+            await prisma.contact.update({ where: { id: existing.contact.id }, data: updates });
+          }
+          // Ensure Slack platform entry exists
+          const hasSlack = await (prisma as any).platform.findFirst({
+            where: { type: "slack", platformId: slackId, contactId: existing.contact.id },
+          });
+          if (!hasSlack) {
+            await (prisma as any).platform.create({
+              data: { contactId: existing.contact.id, type: "slack", platformId: slackId, displayName },
+            });
+          }
+          updated++;
+          continue;
+        }
+
+        await prisma.contact.create({
+          data: {
+            userId,
+            name: displayName,
+            type: "other",
+            domain: "other",
+            relationshipStrength: "cold",
+            platforms: {
+              create: [
+                { type: "slack", platformId: slackId, displayName },
+                ...(email ? [{ type: "email", platformId: email, displayName }] : []),
+              ],
+            },
+          },
+        });
+        imported++;
+      } catch {
+        skipped++;
+      }
+    }
+
+    return { imported, updated, skipped };
   },
 };

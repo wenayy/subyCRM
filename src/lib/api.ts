@@ -148,6 +148,9 @@ export const importApi = {
   runDiscord: () =>
     apiFetch<{ status: string; jobId: string }>("/api/imports/discord", { method: "POST" }),
 
+  runSlack: () =>
+    apiFetch<{ status: string; jobId: string }>("/api/imports/slack", { method: "POST" }),
+
   runWhatsApp: () =>
     apiFetch<{ status: string; jobId: string }>("/api/imports/whatsapp", { method: "POST" }),
 

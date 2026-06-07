@@ -67,7 +67,7 @@ const SOURCES = [
     icon: "S",
     color: "#E01E5A",
     bg: "#E01E5A15",
-    status: "coming_soon",
+    status: "ready",
   },
 ];
 
@@ -142,6 +142,19 @@ export function ImportView() {
       pollJob(res.jobId, "Telegram");
     } catch (e: any) {
       setMessage({ text: e?.message ?? "Failed to start Telegram import.", type: "error" });
+      setImporting(null);
+    }
+  };
+
+  const handleSlackImport = async () => {
+    setImporting("slack");
+    setMessage(null);
+    try {
+      const res = await importApi.runSlack();
+      setMessage({ text: "Slack import started — scanning workspace members…", type: "success" });
+      pollJob(res.jobId, "Slack");
+    } catch (e: any) {
+      setMessage({ text: e?.message ?? "Failed to start Slack import.", type: "error" });
       setImporting(null);
     }
   };
@@ -280,6 +293,8 @@ export function ImportView() {
                       ? handleTelegramImport
                       : s.key === "discord"
                       ? handleDiscordImport
+                      : s.key === "slack"
+                      ? handleSlackImport
                       : s.key === "whatsapp"
                       ? handleWhatsAppImport
                       : handleBeeperImport

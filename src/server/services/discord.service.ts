@@ -62,15 +62,14 @@ async function findContactForDiscord(author: { id: string; username: string; glo
 function startBot() {
   if (g.__discordClient || !BOT_TOKEN) return;
 
-  import("discord.js").then(({ Client, GatewayIntentBits, Events }) => {
+  import("discord.js").then(({ Client, GatewayIntentBits, Events, ChannelType, Partials }) => {
     const client = new Client({
       intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.MessageContent,
       ],
+      // Required for bots to receive DM events in discord.js v14
+      partials: [Partials.Channel, Partials.Message],
     });
 
     client.once(Events.ClientReady, (c) => {
@@ -80,6 +79,8 @@ function startBot() {
     client.on(Events.MessageCreate, async (message) => {
       try {
         if (message.author.bot) return;
+        // Only process DMs to the bot — ignore all server/guild channel messages
+        if (message.channel.type !== ChannelType.DM) return;
         const text = message.content?.trim();
         if (!text) return;
         const displayName = message.author.globalName ?? message.author.username;
@@ -90,12 +91,6 @@ function startBot() {
           globalName: message.author.globalName,
         });
 
-        // Privacy filter: skip message if not from a CRM contact
-        if (!contact) {
-          console.log(`[discord] Ignoring message from non-CRM user: ${displayName}`);
-          return;
-        }
-
         // Look up userId from the discord token record
         const discordTokenRec = await (prisma as any).discordToken.findFirst();
         const botUserId = discordTokenRec?.userId ?? "default";
@@ -103,8 +98,8 @@ function startBot() {
           platform: "discord",
           externalId: message.id,
           userId: botUserId,
-          contactId: contact.id,
-          contactName: contact.name,
+          contactId: contact?.id ?? null,
+          contactName: contact?.name ?? displayName,
           senderId: message.channelId,
           preview: text.slice(0, 120),
           body: text,
@@ -118,6 +113,17 @@ function startBot() {
       .then(() => { g.__discordClient = client; })
       .catch((err) => { console.error("[discord] Bot login failed:", err.message); });
   }).catch((err) => console.error("[discord] Failed to load discord.js:", err));
+}
+
+async function triggerImport(userId: string) {
+  try {
+    const { queues } = await import("../lib/queues");
+    const job = await prisma.importJob.create({
+      data: { userId, source: "discord_api", status: "running", startedAt: new Date() },
+    });
+    await queues.discordImport.add("discord-import", { userId, importJobId: job.id });
+    console.log(`[discord] Auto-import queued for user ${userId}`);
+  } catch { /* non-fatal */ }
 }
 
 export const discordService = {
@@ -169,6 +175,7 @@ export const discordService = {
     });
 
     startBot();
+    void triggerImport(userId);
   },
 
   async getStatus(userId: string) {
@@ -191,6 +198,7 @@ export const discordService = {
     if (!rec) return;
     console.log("[discord] Auto-reconnecting bot…");
     startBot();
+    void triggerImport(rec.userId);
   },
 
   async legacyConnect(userId: string, botToken: string) {
@@ -205,6 +213,7 @@ export const discordService = {
       update: { botToken, discordUserId: me.id, username: me.username },
     });
     startBot();
+    void triggerImport(userId);
     return { username: me.username };
   },
 
@@ -212,66 +221,10 @@ export const discordService = {
   get callbackErrorRedirect() { return `${FRONTEND_URL}/dashboard/settings?discord=error`; },
 
   async sync(userId: string): Promise<{ synced: number }> {
-    const token = BOT_TOKEN;
-    if (!token) throw new Error("DISCORD_BOT_TOKEN not configured");
-
-    const guildsRes = await fetch("https://discord.com/api/v10/users/@me/guilds", {
-      headers: { Authorization: `Bot ${token}` },
-    });
-    if (!guildsRes.ok) throw new Error(`Discord API error: ${await guildsRes.text()}`);
-    const guilds = await guildsRes.json() as Array<{ id: string; name: string }>;
-
-    let synced = 0;
-    for (const guild of guilds.slice(0, 5)) {
-      try {
-        const chRes = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/channels`, {
-          headers: { Authorization: `Bot ${token}` },
-        });
-        if (!chRes.ok) continue;
-        const channels = await chRes.json() as Array<{ id: string; type: number }>;
-
-        for (const channel of channels.filter((c) => c.type === 0).slice(0, 3)) {
-          try {
-            const msgRes = await fetch(`https://discord.com/api/v10/channels/${channel.id}/messages?limit=20`, {
-              headers: { Authorization: `Bot ${token}` },
-            });
-            if (!msgRes.ok) continue;
-            const messages = await msgRes.json() as Array<{ id: string; content: string; author: { id: string; username: string; global_name?: string }; timestamp: string }>;
-            for (const msg of messages) {
-              if (!msg.content.trim()) continue;
-              const displayName = msg.author.global_name ?? msg.author.username;
-              
-              const contact = await findContactForDiscord({
-                id: msg.author.id,
-                username: msg.author.username,
-                globalName: msg.author.global_name,
-              });
-
-              // Privacy filter: skip message if not from a CRM contact
-              if (!contact) {
-                continue;
-              }
-
-              await inboxService.upsert({
-                platform: "discord",
-                externalId: msg.id,
-                userId,
-                contactId: contact.id,
-                contactName: contact.name,
-                preview: msg.content.slice(0, 120),
-                body: msg.content,
-                receivedAt: new Date(msg.timestamp),
-                needsReply: false,
-              });
-              synced++;
-            }
-          } catch { /* skip channel */ }
-        }
-      } catch { /* skip guild */ }
-    }
-
+    // Discord doesn't expose bot DM history via API — messages arrive live via MessageCreate.
+    // Sync just marks the timestamp so the Settings page shows "Last synced".
     await (prisma as any).discordToken.update({ where: { userId }, data: { lastSyncAt: new Date() } });
-    return { synced };
+    return { synced: 0 };
   },
 
   async sendMessage(userId: string, channelId: string, text: string): Promise<void> {
@@ -290,84 +243,53 @@ export const discordService = {
   },
 
   async importContacts(userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
-    let client = g.__discordClient;
-    if (!client) {
-      if (!BOT_TOKEN) throw new Error("DISCORD_BOT_TOKEN not configured");
-      const { Client, GatewayIntentBits } = await import("discord.js");
-      client = new Client({
-        intents: [
-          GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildMessages,
-          GatewayIntentBits.MessageContent,
-          GatewayIntentBits.DirectMessages,
-          GatewayIntentBits.GuildMembers,
-        ],
-      });
-      await client.login(BOT_TOKEN);
-      g.__discordClient = client;
-    }
+    if (!BOT_TOKEN) throw new Error("DISCORD_BOT_TOKEN not configured");
 
-    if (!client.readyAt) {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Discord client ready timeout")), 10000);
-        client.once("ready", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
-    }
-
+    // Use REST API directly — avoids gateway intent issues with the DM-only live bot
+    const headers = { Authorization: `Bot ${BOT_TOKEN}` };
     let imported = 0, updated = 0, skipped = 0;
-    const discordUsers = new Map<string, { id: string; username: string; globalName?: string | null; lastActive?: Date }>();
+    const discordUsers = new Map<string, { id: string; username: string; globalName?: string | null }>();
 
-    try {
-      const guilds = await client.guilds.fetch();
-      for (const guildOAuth2 of guilds.values()) {
-        try {
-          const guild = await guildOAuth2.fetch();
-          
-          try {
-            const members = await guild.members.fetch({ limit: 1000 });
-            for (const member of members.values()) {
-              if (member.user.bot) continue;
-              discordUsers.set(member.user.id, {
-                id: member.user.id,
-                username: member.user.username,
-                globalName: member.user.globalName ?? member.displayName,
+    // Fetch all guilds the bot is in
+    const guildsRes = await fetch("https://discord.com/api/v10/users/@me/guilds", { headers });
+    if (!guildsRes.ok) throw new Error(`Discord API error fetching guilds: ${await guildsRes.text()}`);
+    const guilds = await guildsRes.json() as Array<{ id: string; name: string }>;
+
+    for (const guild of guilds) {
+      // Fetch members via REST (works without gateway GuildMembers intent)
+      const membersRes = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/members?limit=1000`, { headers });
+      if (membersRes.ok) {
+        const members = await membersRes.json() as Array<{ user: { id: string; username: string; global_name?: string | null; bot?: boolean }; nick?: string | null }>;
+        for (const m of members) {
+          if (m.user.bot) continue;
+          discordUsers.set(m.user.id, {
+            id: m.user.id,
+            username: m.user.username,
+            globalName: m.nick ?? m.user.global_name ?? m.user.username,
+          });
+        }
+      } else {
+        console.warn(`[discord-import] Members REST failed for ${guild.name}: ${membersRes.status} — falling back to channel messages`);
+        // Fallback: scan recent channel messages for authors
+        const chRes = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/channels`, { headers });
+        if (!chRes.ok) continue;
+        const channels = await chRes.json() as Array<{ id: string; type: number }>;
+        for (const ch of channels.filter((c) => c.type === 0).slice(0, 5)) {
+          const msgRes = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages?limit=100`, { headers });
+          if (!msgRes.ok) continue;
+          const msgs = await msgRes.json() as Array<{ author: { id: string; username: string; global_name?: string | null; bot?: boolean } }>;
+          for (const msg of msgs) {
+            if (msg.author.bot) continue;
+            if (!discordUsers.has(msg.author.id)) {
+              discordUsers.set(msg.author.id, {
+                id: msg.author.id,
+                username: msg.author.username,
+                globalName: msg.author.global_name ?? msg.author.username,
               });
             }
-          } catch (memberErr) {
-            console.warn(`[discord-import] Failed to fetch members for guild ${guild.name}:`, memberErr);
           }
-
-          const channels = await guild.channels.fetch();
-          const textChannels = channels.filter((c: any) => c && c.type === 0);
-          for (const channel of textChannels.values()) {
-            try {
-              const messages = await channel.messages.fetch({ limit: 50 });
-              for (const msg of messages.values()) {
-                if (msg.author.bot) continue;
-                const existingUser = discordUsers.get(msg.author.id);
-                const msgDate = msg.createdAt;
-                if (!existingUser || !existingUser.lastActive || msgDate > existingUser.lastActive) {
-                  discordUsers.set(msg.author.id, {
-                    id: msg.author.id,
-                    username: msg.author.username,
-                    globalName: msg.author.globalName ?? msg.member?.displayName,
-                    lastActive: msgDate,
-                  });
-                }
-              }
-            } catch (msgErr) {
-              // skip channel
-            }
-          }
-        } catch (guildErr) {
-          console.warn(`[discord-import] Failed to process guild ${guildOAuth2.name}:`, guildErr);
         }
       }
-    } catch (err) {
-      console.error("[discord-import] Failed to fetch guilds:", err);
     }
 
     for (const dUser of discordUsers.values()) {
@@ -383,13 +305,13 @@ export const discordService = {
         });
 
         if (contact) {
-          if (dUser.lastActive) {
-            if (!contact.lastContactDate || dUser.lastActive > contact.lastContactDate) {
-              await prisma.contact.update({
-                where: { id: contact.id },
-                data: { lastContactDate: dUser.lastActive }
-              });
-            }
+          const updates: Record<string, any> = {};
+          if (contact.userId === "default") updates.userId = userId;
+          if (dUser.lastActive && (!contact.lastContactDate || dUser.lastActive > contact.lastContactDate)) {
+            updates.lastContactDate = dUser.lastActive;
+          }
+          if (Object.keys(updates).length) {
+            await prisma.contact.update({ where: { id: contact.id }, data: updates });
           }
           updated++;
           continue;
@@ -397,6 +319,7 @@ export const discordService = {
 
         await prisma.contact.create({
           data: {
+            userId,
             name: globalName,
             lastContactDate: dUser.lastActive ?? null,
             firstContactDate: dUser.lastActive ?? null,

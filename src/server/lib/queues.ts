@@ -18,6 +18,8 @@ export const QUEUE_NAMES = {
   LINKEDIN_SYNC: "linkedin-sync",
   WHATSAPP_IMPORT: "whatsapp-import",
   TELEGRAM_IMPORT: "telegram-import",
+  DISCORD_IMPORT: "discord-import",
+  SLACK_IMPORT: "slack-import",
   WHATSAPP_SEND: "whatsapp-send",
 } as const;
 
@@ -40,6 +42,8 @@ export const queues = {
   linkedinSync: new Queue(QUEUE_NAMES.LINKEDIN_SYNC, redisConnection),
   whatsappImport: new Queue(QUEUE_NAMES.WHATSAPP_IMPORT, redisConnection),
   telegramImport: new Queue(QUEUE_NAMES.TELEGRAM_IMPORT, redisConnection),
+  discordImport: new Queue(QUEUE_NAMES.DISCORD_IMPORT, redisConnection),
+  slackImport: new Queue(QUEUE_NAMES.SLACK_IMPORT, redisConnection),
   whatsappSend: new Queue(QUEUE_NAMES.WHATSAPP_SEND, redisConnection),
 };
 

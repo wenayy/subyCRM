@@ -4,6 +4,7 @@ import { contactService } from "../services/contact.service";
 import { importService } from "../services/import.service";
 import { telegramPersonalService } from "../services/telegram-personal.service";
 import { discordService } from "../services/discord.service";
+import { slackService } from "../services/slack.service";
 import { whatsappService } from "../services/whatsapp.service";
 import { queues } from "../lib/queues";
 import type { CsvImportJobData } from "../workers/csv-import.worker";
@@ -127,30 +128,8 @@ router.post("/discord", async (req, res, next) => {
       data: { userId, source: "discord_api", status: "running", startedAt: new Date() },
     });
 
+    await queues.discordImport.add("discord-import", { userId, importJobId: job.id });
     res.json({ status: "started", jobId: job.id });
-
-    // Run in background
-    discordService.importContacts(userId)
-      .then(async ({ imported, updated, skipped }) => {
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: {
-            status: "completed",
-            totalFound: imported + updated + skipped,
-            imported,
-            deduplicated: updated,
-            errors: skipped,
-            completedAt: new Date(),
-          },
-        });
-      })
-      .catch(async (err) => {
-        console.error("[import/discord]", err);
-        await prisma.importJob.update({
-          where: { id: job.id },
-          data: { status: "failed", errorLog: { error: err.message }, completedAt: new Date() },
-        });
-      });
   } catch (err) {
     next(err);
   }
@@ -233,6 +212,28 @@ router.post("/csv", async (req, res, next) => {
     // Enqueue — worker handles all DB work, HTTP responds immediately
     await queues.csvImport.add("csv-import", { jobId: job.id, userId, rows, totalFound: rows.length } satisfies CsvImportJobData);
 
+    res.json({ status: "started", jobId: job.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/imports/slack — import contacts from Slack workspace
+router.post("/slack", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+
+    const status = await slackService.getStatus(userId);
+    if (!status.connected) {
+      res.status(400).json({ error: "Slack not connected. Connect it in Settings first." });
+      return;
+    }
+
+    const job = await prisma.importJob.create({
+      data: { userId, source: "slack_api", status: "running", startedAt: new Date() },
+    });
+
+    await queues.slackImport.add("slack-import", { userId, importJobId: job.id });
     res.json({ status: "started", jobId: job.id });
   } catch (err) {
     next(err);
