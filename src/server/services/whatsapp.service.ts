@@ -360,6 +360,11 @@ async function resolveContact(
 }
 
 // ── WA delivery status → string ────────────────────────────────────────────────
+// Detect WhatsApp pushName-style names (e.g. "Vatsal_Kumar_20232057") vs clean phone-book names.
+function looksLikePushName(name: string): boolean {
+  return /_\d{4,}/.test(name) || (name.includes("_") && /\d/.test(name) && name.split("_").length > 2);
+}
+
 function waStatusString(status: number | undefined): string | null {
   if (status === 2) return "sent";
   if (status === 3) return "delivered";
@@ -876,7 +881,34 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         }
       }
     });
-    sock.ev.on("contacts.update", (c: any[]) => { if (s.generation === myGen) ingestContacts(c, s); });
+    sock.ev.on("contacts.update", async (c: any[]) => {
+      if (s.generation !== myGen) return;
+      ingestContacts(c, s);
+      // When phone address book names arrive (info.name), update CRM contact names
+      // that were previously set from pushName (WhatsApp display name set by contact).
+      for (const upd of c) {
+        if (!upd.name || !upd.id?.endsWith("@s.whatsapp.net")) continue;
+        const digits = upd.id.split("@")[0].replace(/\D/g, "");
+        if (digits.length < 5) continue;
+        try {
+          const plat = await prisma.platform.findFirst({
+            where: { type: "whatsapp", platformId: digits, contact: { userId: s.userId } },
+            include: { contact: true },
+          });
+          if (!plat?.contact || plat.contact.name === upd.name) continue;
+          // Only overwrite if current name looks like a pushName (underscores+digits)
+          // vs the incoming name which is the phone-saved name.
+          if (looksLikePushName(plat.contact.name) && !looksLikePushName(upd.name)) {
+            await prisma.contact.update({ where: { id: plat.contact.id }, data: { name: upd.name } });
+            await (prisma as any).inboxMessage.updateMany({
+              where: { contactId: plat.contact.id },
+              data: { contactName: upd.name },
+            });
+            invalidatePlatformCache(s.userId);
+          }
+        } catch {}
+      }
+    });
 
     // ── Live messages ─────────────────────────────────────────
     sock.ev.on("messages.upsert", async ({ messages: msgs }: any) => {

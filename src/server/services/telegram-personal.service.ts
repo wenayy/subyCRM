@@ -558,6 +558,14 @@ export const telegramPersonalService = {
           });
           synced++;
         }
+
+        // Retroactively link any messages saved before this contact was resolved
+        if (contact) {
+          const telegramId = entity.id?.toString();
+          if (telegramId) {
+            await inboxService.linkMessagesToContact(contact.id, "telegram", telegramId).catch(() => {});
+          }
+        }
       } catch (err) {
         console.error("[telegram-sync] dialog skipped:", (err as any)?.message ?? err);
       }
@@ -611,19 +619,22 @@ export const telegramPersonalService = {
             }
             if (!body) body = "[Unknown message type]";
 
+            const telegramIdStr = chatEntity.id.toString();
             await inboxService.upsert({
               platform: "telegram",
               externalId: `personal-${msg.id}`,
               userId,
               contactId: contact.id,
               contactName: contact.name,
-              senderId: chatEntity.id.toString(),
+              senderId: telegramIdStr,
               preview: body.slice(0, 120),
               body,
               receivedAt: new Date(msg.date * 1000),
               needsReply: !msg.out,
               fromMe: !!msg.out,
             });
+            // Link any prior messages that were saved without a contactId
+            await inboxService.linkMessagesToContact(contact.id, "telegram", telegramIdStr).catch(() => {});
           } catch (e) {
             console.error("[telegram-personal] Live listener handler error:", e);
           }

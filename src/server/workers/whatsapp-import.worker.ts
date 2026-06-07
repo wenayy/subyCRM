@@ -51,8 +51,10 @@ export function startWhatsAppImportWorker() {
                 // If the incoming name is a real phone-book name (info.name, not notify/pushName),
                 // update the CRM contact name to stay in sync with the user's phone contacts.
                 // We detect "better" names by checking if it lacks the telltale notify-format markers.
-                const isBetterName = name && name !== hit.currentName && !name.match(/^[+\d]/) && name.length > 1;
-                if (isBetterName) {
+                const looksLikePushName = (n: string) => /_\d{4,}/.test(n) || (n.includes("_") && /\d/.test(n) && n.split("_").length > 2);
+              const isBetterName = name && name !== hit.currentName && !name.match(/^[+\d]/) && name.length > 1
+                && !(looksLikePushName(name) && !looksLikePushName(hit.currentName));
+              if (isBetterName) {
                   await prisma.contact.update({
                     where: { id: hit.contactId },
                     data: { name },
