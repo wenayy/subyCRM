@@ -5,10 +5,15 @@ import { inboxService } from "./inbox.service";
 const CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/slack/callback`;
-// bot scopes: needed to read workspace members and channels
-const BOT_SCOPES = ["channels:read", "users:read"];
-// user scopes: needed to read/send DMs as the logged-in Slack user
-const USER_SCOPES = ["im:read", "im:history", "mpim:read", "mpim:history", "chat:write"];
+const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN || "";
+// bot scopes: minimal bot presence
+const BOT_SCOPES = ["channels:read"];
+// user scopes: DM access + user lookup (users:read needed to resolve names)
+const USER_SCOPES = ["im:read", "im:history", "mpim:read", "mpim:history", "chat:write", "users:read"];
+
+const g = global as any;
+// Cache my own Slack user ID per token to avoid calling auth.test on every message
+const mySlackIdCache = new Map<string, string>();
 
 function buildState(userId: string): string {
   const payload = JSON.stringify({ userId, ts: Date.now() });
@@ -35,6 +40,85 @@ async function slackFetch<T>(path: string, token: string, params?: Record<string
   const json = await res.json() as { ok: boolean; error?: string } & T;
   if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
   return json;
+}
+
+async function startSocket() {
+  if (g.__slackSocket || !SLACK_APP_TOKEN) return;
+
+  try {
+    const { SocketModeClient } = await import("@slack/socket-mode");
+    const client = new SocketModeClient({ appToken: SLACK_APP_TOKEN, logLevel: "warn" as any });
+
+    client.on("message", async ({ event, ack }: any) => {
+      await ack();
+      try {
+        // Only DMs, no bot messages, no subtypes (edits/deletes)
+        if (event.bot_id || event.subtype || !event.text || event.channel_type !== "im") return;
+
+        const slackUserId = event.user as string;
+        const channelId = event.channel as string;
+        const text = event.text as string;
+        const ts = event.ts as string;
+
+        // Find which CRM user owns this Slack connection
+        const tokenRec = await (prisma as any).slackToken.findFirst();
+        if (!tokenRec) return;
+        const { userId, accessToken: token } = tokenRec;
+
+        // Resolve my own Slack ID (cached per token)
+        if (!mySlackIdCache.has(token)) {
+          const auth = await slackFetch<{ user_id: string }>("/auth.test", token).catch(() => ({ user_id: "" }));
+          if (auth.user_id) mySlackIdCache.set(token, auth.user_id);
+        }
+        const mySlackId = mySlackIdCache.get(token) ?? "";
+        const fromMe = slackUserId === mySlackId;
+
+        // Resolve display name + email for this Slack user
+        const userRes = await slackFetch<{ user: { real_name?: string; name: string; profile?: { email?: string } } }>(
+          "/users.info", token, { user: slackUserId },
+        ).catch(() => null);
+        const slackUser = userRes?.user;
+        const displayName = slackUser?.real_name || slackUser?.name || slackUserId;
+        const email = slackUser?.profile?.email;
+
+        // Find CRM contact
+        const plat = await (prisma as any).platform.findFirst({
+          where: {
+            OR: [
+              { type: "slack", platformId: slackUserId },
+              ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
+              { contact: { name: { contains: displayName.split(" ")[0], mode: "insensitive" } } },
+            ],
+          },
+          include: { contact: true },
+        });
+
+        await inboxService.upsert({
+          platform: "slack",
+          externalId: `${channelId}-${ts}`,
+          userId,
+          contactId: plat?.contact.id ?? null,
+          contactName: plat?.contact.name ?? displayName,
+          senderId: channelId,
+          preview: text.slice(0, 120),
+          body: text,
+          receivedAt: new Date(parseFloat(ts) * 1000),
+          needsReply: !fromMe,
+          fromMe,
+        });
+
+        console.log(`[slack-socket] ${fromMe ? "OUT" : "IN"} from ${displayName}: ${text.slice(0, 60)}`);
+      } catch (err) {
+        console.error("[slack-socket] Error processing message:", err);
+      }
+    });
+
+    await client.start();
+    g.__slackSocket = client;
+    console.log("[slack] Socket Mode connected — real-time DMs active");
+  } catch (err) {
+    console.error("[slack] Socket Mode failed to start:", err);
+  }
 }
 
 export const slackService = {
@@ -65,6 +149,8 @@ export const slackService = {
       create: { userId, accessToken: token, teamId: data.team?.id, teamName: data.team?.name },
       update: { accessToken: token, teamId: data.team?.id, teamName: data.team?.name },
     });
+    // Start real-time socket (no-op if already running)
+    void startSocket();
     // Auto-sync messages then queue contact import
     await slackService.sync(userId);
     try {
@@ -240,5 +326,13 @@ export const slackService = {
     }
 
     return { imported, updated, skipped };
+  },
+
+  async autoReconnect() {
+    if (g.__slackSocket || !SLACK_APP_TOKEN) return;
+    const rec = await (prisma as any).slackToken.findFirst().catch(() => null);
+    if (!rec) return;
+    console.log("[slack] Auto-reconnecting socket...");
+    void startSocket();
   },
 };

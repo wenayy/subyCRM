@@ -172,6 +172,10 @@ whatsappService.autoReconnect();
 import { discordService } from "./services/discord.service";
 discordService.autoReconnect();
 
+// ─── Slack socket auto-reconnect ──────────────────────────────
+import { slackService } from "./services/slack.service";
+slackService.autoReconnect();
+
 // ─── Start server ────────────────────────────────────────────
 app.listen(PORT, async () => {
   console.log(`Suby Contacts API running on port ${PORT}`);

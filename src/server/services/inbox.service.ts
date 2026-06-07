@@ -320,6 +320,8 @@ export const inboxService = {
       let jid: string | null = null;
       let telegramChatId: string | null = null;
       let toEmail: string | null = null;
+      let discordChannelId: string | undefined;
+      let slackChannelId: string | undefined;
 
       try {
         // ── Resolve destination in background ─────────────────────────────────────────
@@ -387,17 +389,19 @@ export const inboxService = {
           if (!channelId) throw new Error("No Slack channel ID found — try syncing Slack in Settings");
           const { slackService } = await import("./slack.service");
           await slackService.sendMessage(userId!, channelId, text);
+          slackChannelId = channelId;
         } else if (msg.platform === "discord") {
           const channelId = msg.senderId;
           if (!channelId) throw new Error("No Discord channel ID found — try syncing Discord in Settings");
           const { discordService } = await import("./discord.service");
           await discordService.sendMessage(userId!, channelId, text);
+          discordChannelId = channelId;
         } else {
           throw new Error(`Sending via ${msg.platform} is not yet supported`);
         }
 
         // Update the message in DB to have the correct resolved destination
-        const resolvedSenderId = jid ?? telegramChatId ?? toEmail ?? undefined;
+        const resolvedSenderId = jid ?? telegramChatId ?? toEmail ?? slackChannelId ?? discordChannelId ?? undefined;
         if (resolvedSenderId) {
           await (prisma as any).inboxMessage.updateMany({
             where: { platform: msg.platform, externalId: tempId },
