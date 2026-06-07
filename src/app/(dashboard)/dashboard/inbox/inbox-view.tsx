@@ -185,10 +185,9 @@ export function InboxView() {
     meApi.get().then((u) => setMe(u)).catch(() => {});
   }, []);
 
-  // Kick off a background sync for Gmail and Slack on mount so messages are fresh immediately.
-  // These are fire-and-forget — SSE will push new messages as they arrive.
+  // Slack sync on mount — lightweight. Gmail is handled by the 5-min BullMQ cron; no need to also
+  // trigger it here (doing so causes socket hang-up when the sync takes longer than the proxy timeout).
   useEffect(() => {
-    gmailApi.sync().catch(() => {});
     slackApi.sync().catch(() => {});
   }, []);
 

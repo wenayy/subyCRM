@@ -225,53 +225,54 @@ export const inboxService = {
       void (prisma as any).inboxMessage.update({ where: { id: result.id }, data: waFields }).catch(() => {});
     }
 
-    if (rest.contactId) {
-      const direction = rest.fromMe ? "outbound" : "inbound";
-      const existingInteraction = await prisma.interaction.findFirst({
-        where: {
-          contactId: rest.contactId,
-          platform: platform as any,
-          direction,
-          occurredAt: rest.receivedAt,
-        },
-      });
+    // Fire SSE immediately after the DB save — don't wait for interaction/contact updates
+    broadcastInboxEvent("new_message", { platform, contactId: rest.contactId, fromMe: rest.fromMe, message: result });
 
-      if (!existingInteraction) {
-        await prisma.interaction.create({
-          data: {
-            contactId: rest.contactId,
+    // Update interactions and contact dates in the background — never blocks message display
+    if (rest.contactId) {
+      void (async () => {
+        const direction = rest.fromMe ? "outbound" : "inbound";
+        const existingInteraction = await prisma.interaction.findFirst({
+          where: {
+            contactId: rest.contactId!,
             platform: platform as any,
             direction,
-            contentSnippet: rest.preview || rest.body || "",
             occurredAt: rest.receivedAt,
           },
-        }).catch((e: any) => {
-          if (e?.code !== "P2003") throw e;
-          // Race during initial sync: contact may not be committed yet — inbox message already saved, skip interaction
         });
 
-        const contact = await prisma.contact.findUnique({
-          where: { id: rest.contactId },
-          select: { lastContactDate: true, firstContactDate: true, contactFrequency: true },
-        });
-        if (contact) {
-          const updates: any = {};
-          if (!contact.lastContactDate || rest.receivedAt > contact.lastContactDate) {
-            updates.lastContactDate = rest.receivedAt;
-          }
-          if (!contact.firstContactDate || rest.receivedAt < contact.firstContactDate) {
-            updates.firstContactDate = rest.receivedAt;
-          }
-          updates.contactFrequency = (contact.contactFrequency || 0) + 1;
-          await prisma.contact.update({
-            where: { id: rest.contactId },
-            data: updates,
+        if (!existingInteraction) {
+          await prisma.interaction.create({
+            data: {
+              contactId: rest.contactId!,
+              platform: platform as any,
+              direction,
+              contentSnippet: rest.preview || rest.body || "",
+              occurredAt: rest.receivedAt,
+            },
+          }).catch((e: any) => {
+            if (e?.code !== "P2003") throw e;
           });
+
+          const contact = await prisma.contact.findUnique({
+            where: { id: rest.contactId! },
+            select: { lastContactDate: true, firstContactDate: true, contactFrequency: true },
+          });
+          if (contact) {
+            const updates: any = {};
+            if (!contact.lastContactDate || rest.receivedAt > contact.lastContactDate) {
+              updates.lastContactDate = rest.receivedAt;
+            }
+            if (!contact.firstContactDate || rest.receivedAt < contact.firstContactDate) {
+              updates.firstContactDate = rest.receivedAt;
+            }
+            updates.contactFrequency = (contact.contactFrequency || 0) + 1;
+            await prisma.contact.update({ where: { id: rest.contactId! }, data: updates });
+          }
         }
-      }
+      })().catch(() => {});
     }
 
-    broadcastInboxEvent("new_message", { platform, contactId: rest.contactId, fromMe: rest.fromMe, message: result });
     return result;
   },
 
@@ -281,6 +282,11 @@ export const inboxService = {
 
     // ── Save to DB immediately → SSE fires → UI updates in < 100ms ─────────────
     const tempId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    // Pre-fetch quoted message so the quote bubble shows in inbox immediately
+    let quotedOriginal: any = null;
+    if (replyToId) {
+      quotedOriginal = await (prisma as any).inboxMessage.findUnique({ where: { id: replyToId } }).catch(() => null);
+    }
     await inboxService.upsert({
       platform: msg.platform,
       externalId: tempId,
@@ -294,6 +300,9 @@ export const inboxService = {
       needsReply: false,
       fromMe: true,
       waStatus: msg.platform === "whatsapp" ? "sent" : null,
+      quotedId: quotedOriginal?.externalId ?? null,
+      quotedBody: quotedOriginal?.body ?? quotedOriginal?.preview ?? null,
+      quotedFromMe: quotedOriginal != null ? !!quotedOriginal.fromMe : null,
     });
 
     if (msg.contactId) {

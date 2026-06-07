@@ -259,7 +259,7 @@ async function getPlatforms(userId: string): Promise<PlatformRow[]> {
       contactName: r.contact!.name,
       phoneDigits: r.platformId.replace(/\D/g, ""),
     }))
-    .filter((r) => r.phoneDigits.length >= 5);
+    .filter((r) => r.phoneDigits.length >= 10);
   platformCacheByUser.set(userId, { rows: result, expiry: Date.now() + 5 * 60 * 1000 });
   return result;
 }
@@ -336,11 +336,27 @@ async function resolveContact(
   const digits = jidDigits(jid, s);
   const platforms = await getPlatforms(s.userId);
 
-  if (digits.length >= 5) {
+  if (digits.length >= 10) {
+    // Exact match first (full number with country code)
+    const exact = platforms.find((p) => p.phoneDigits === digits);
+    if (exact) {
+      // Prefer the phone-saved name (info.name) from contacts cache over CRM name
+      const cached = s.contactsCache.get(jid) || s.contactsCache.get(`${digits}@s.whatsapp.net`);
+      const name = cached?.name || exact.contactName;
+      return { contactId: exact.contactId, contactName: name };
+    }
+
+    // Last-10-digit match — strips country code variation (91xxxxxxxxxx vs xxxxxxxxxx)
+    // Both sides must have ≥10 digits to prevent short stored numbers causing false matches
+    const last10 = digits.slice(-10);
     const hit = platforms.find(
-      (p) => digits.endsWith(p.phoneDigits) || p.phoneDigits.endsWith(digits),
+      (p) => p.phoneDigits.length >= 10 && p.phoneDigits.slice(-10) === last10,
     );
-    if (hit) return { contactId: hit.contactId, contactName: hit.contactName };
+    if (hit) {
+      const cached = s.contactsCache.get(jid) || s.contactsCache.get(`${digits}@s.whatsapp.net`);
+      const name = cached?.name || hit.contactName;
+      return { contactId: hit.contactId, contactName: name };
+    }
   }
 
   // pushName fallback for unresolved @lid — EXACT match only.
@@ -1083,7 +1099,7 @@ export const whatsappService = {
         connectSocket(userId).catch(console.error);
       }
       try {
-        await waitForConnection(35_000, s);
+        await waitForConnection(5_000, s);
       } catch {
         throw new Error("WhatsApp is still reconnecting — please try again in a moment.");
       }
@@ -1112,7 +1128,7 @@ export const whatsappService = {
     } catch (sendErr) {
       if (!s.connected) {
         console.log("[whatsapp] Socket closed during send — waiting for reconnect before retry…");
-        await waitForConnection(35_000, s);
+        await waitForConnection(5_000, s);
         if (!s.sock) throw new Error("WhatsApp socket unavailable after reconnect");
         result = isVideo
           ? await s.sock.sendMessage(resolved, { video: imageBuffer, caption: caption ?? "" })
@@ -1148,19 +1164,19 @@ export const whatsappService = {
     if (!resolved) throw new Error(`Invalid WhatsApp JID: ${jid}`);
     console.log(`[whatsapp] Sending to ${resolved}`);
 
-    const payload: any = { text };
-    if (quoted) payload.quoted = quoted;
+    // quoted must go in options (3rd arg), NOT inside the content object
+    const opts = quoted ? { quoted } : undefined;
 
     let result: unknown;
     try {
-      result = await s.sock.sendMessage(resolved, payload);
+      result = await s.sock.sendMessage(resolved, { text }, opts);
     } catch (sendErr) {
       // Socket may have dropped mid-send (e.g. 440 reconnect) — wait for next connection and retry once
       if (!s.connected) {
         console.log("[whatsapp] Socket closed during send — waiting for reconnect before retry…");
-        await waitForConnection(35_000, s);
+        await waitForConnection(5_000, s);
         if (!s.sock) throw new Error("WhatsApp socket unavailable after reconnect");
-        result = await s.sock.sendMessage(resolved, payload);
+        result = await s.sock.sendMessage(resolved, { text }, opts);
       } else {
         throw sendErr;
       }

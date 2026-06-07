@@ -72,7 +72,7 @@ const tgStates: Map<string, {
   passwordResolver?: (password: string) => void;
 }> = new Map();
 
-const ENV_API_ID = process.env.TELEGRAM_API_ID ? Number(process.env.TELEGRAM_API_ID) : null;
+const ENV_API_ID = process.env.TELEGRAM_API_ID ? parseInt(process.env.TELEGRAM_API_ID, 10) : null;
 const ENV_API_HASH = process.env.TELEGRAM_API_HASH || null;
 
 async function getTelegramLib() {
