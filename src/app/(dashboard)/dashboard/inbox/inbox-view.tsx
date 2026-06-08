@@ -950,17 +950,16 @@ export function InboxView() {
                       onClick={async () => {
                         if (loadingMore || !selected.contactId) return;
                         setLoadingMore(true);
-                        isLoadingMoreRef.current = true;
                         try {
                           const oldest = thread[0];
                           if (!oldest) return;
                           const more = await inboxApi.getThreadMore(selected.contactId, selected.platform, oldest.receivedAt);
                           if (more.length === 0) {
                             setNoMoreMessages(true);
-                            isLoadingMoreRef.current = false; // no re-render coming, clear manually
                           } else {
-                            // Save scroll height before prepend — useLayoutEffect restores position
+                            // Set flag RIGHT before setThread so SSE updates during the API call don't clear it early
                             loadMoreRestoreRef.current = scrollContainerRef.current?.scrollHeight ?? null;
+                            isLoadingMoreRef.current = true;
                             setThread((prev) => {
                               const ids = new Set(prev.map((m) => m.id));
                               return [...more.filter((m) => !ids.has(m.id)), ...prev];
