@@ -81,13 +81,13 @@ async function startSocket() {
         const displayName = slackUser?.real_name || slackUser?.name || slackUserId;
         const email = slackUser?.profile?.email;
 
-        // Find CRM contact
+        // Find CRM contact — match by Slack user ID or email only; no name fallback
+        // (name matching caused cross-platform contamination, e.g. "wee waai" → "weenay")
         const plat = await (prisma as any).platform.findFirst({
           where: {
             OR: [
               { type: "slack", platformId: slackUserId },
               ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
-              { contact: { name: { contains: displayName.split(" ")[0], mode: "insensitive" } } },
             ],
           },
           include: { contact: true },
@@ -209,13 +209,12 @@ export const slackService = {
           const email = slackUser?.profile?.email;
           const fromMe = msg.user === mySlackId;
 
-          // Find CRM contact matching Slack user ID, email, or name
+          // Find CRM contact — match by Slack user ID or email only; no name fallback
           const plat = await (prisma as any).platform.findFirst({
             where: {
               OR: [
                 { type: "slack", platformId: otherUserId },
                 ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
-                { contact: { name: { contains: displayName.split(" ")[0], mode: "insensitive" } } },
               ],
             },
             include: { contact: true },

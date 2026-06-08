@@ -452,6 +452,39 @@ app.listen(PORT, async () => {
     }
   })();
 
+  // ── Backfill: unlink Slack/Discord messages wrongly attributed via name matching ──
+  // The name-contains fallback in contact resolution caused messages from one person
+  // to be attributed to a different CRM contact with a similar first name.
+  // Fix: unlink any message where the contact has no platform of that type.
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      for (const platform of ["slack", "discord"] as const) {
+        const msgs = await (prisma as any).inboxMessage.findMany({
+          where: { platform, contactId: { not: null } },
+          select: { id: true, contactId: true },
+        });
+        if (msgs.length === 0) continue;
+        const contactIds = [...new Set(msgs.map((m: any) => m.contactId as string))];
+        const platRecords = await prisma.platform.findMany({
+          where: { type: platform, contactId: { in: contactIds } },
+          select: { contactId: true },
+        });
+        const validContactIds = new Set(platRecords.map((p) => p.contactId));
+        const badIds = msgs.filter((m: any) => !validContactIds.has(m.contactId)).map((m: any) => m.id);
+        if (badIds.length > 0) {
+          await (prisma as any).inboxMessage.updateMany({
+            where: { id: { in: badIds } },
+            data: { contactId: null },
+          });
+          console.log(`[startup] Unlinked ${badIds.length} ${platform} message(s) wrongly attributed via name match`);
+        }
+      }
+    } catch (e: any) {
+      console.error("[startup] Platform mismatch fix error:", e.message);
+    }
+  })();
+
   // X (Twitter) uses scheduled BullMQ sync — no persistent socket to reconnect
 
   const { telegramPersonalService } = await import("./services/telegram-personal.service");

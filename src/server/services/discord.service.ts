@@ -44,13 +44,13 @@ async function findContactForDiscord(author: { id: string; username: string; glo
   const username = author.username;
   const globalName = author.globalName;
 
+  // Match by Discord user ID or username only — no name fallback to avoid cross-contact contamination
   const plat = await (prisma as any).platform.findFirst({
     where: {
       OR: [
         { type: "discord", platformId: discordUserId },
         { type: "discord", platformId: { equals: username, mode: "insensitive" } },
         ...(globalName ? [{ type: "discord", platformId: { equals: globalName, mode: "insensitive" } }] : []),
-        { contact: { name: { contains: username.split(" ")[0], mode: "insensitive" } } },
       ],
     },
     include: { contact: true },
@@ -72,8 +72,13 @@ function startBot() {
       partials: [Partials.Channel, Partials.Message],
     });
 
-    client.once(Events.ClientReady, (c) => {
+    client.once(Events.ClientReady, async (c) => {
       console.log(`[discord] Bot ready: ${c.user.tag}`);
+      const rec = await (prisma as any).discordToken.findFirst().catch(() => null);
+      if (rec) {
+        void triggerImport(rec.userId).catch(() => {});
+        void syncDMHistory(BOT_TOKEN, rec.userId).catch(() => {});
+      }
     });
 
     client.on(Events.MessageCreate, async (message) => {
@@ -113,6 +118,59 @@ function startBot() {
       .then(() => { g.__discordClient = client; })
       .catch((err) => { console.error("[discord] Bot login failed:", err.message); });
   }).catch((err) => console.error("[discord] Failed to load discord.js:", err));
+}
+
+async function syncDMHistory(botToken: string, userId: string) {
+  try {
+    const headers = { Authorization: `Bot ${botToken}`, "Content-Type": "application/json" };
+    const dmRes = await fetch("https://discord.com/api/v10/users/@me/channels", { headers });
+    if (!dmRes.ok) return;
+    const dms = await dmRes.json() as Array<{
+      id: string; type: number;
+      recipients?: Array<{ id: string; username: string; global_name?: string | null; bot?: boolean }>;
+    }>;
+
+    let synced = 0;
+    for (const dm of dms.filter((d) => d.type === 1)) {
+      const recipient = dm.recipients?.[0];
+      if (!recipient || recipient.bot) continue;
+      const contact = await findContactForDiscord({
+        id: recipient.id,
+        username: recipient.username,
+        globalName: recipient.global_name,
+      });
+      const displayName = recipient.global_name ?? recipient.username;
+
+      const msgRes = await fetch(`https://discord.com/api/v10/channels/${dm.id}/messages?limit=50`, { headers });
+      if (!msgRes.ok) continue;
+      const messages = await msgRes.json() as Array<{
+        id: string; content: string; timestamp: string;
+        author: { id: string; bot?: boolean };
+      }>;
+
+      for (const msg of messages) {
+        if (!msg.content?.trim()) continue;
+        const fromMe = msg.author.id !== recipient.id;
+        await inboxService.upsert({
+          platform: "discord",
+          externalId: msg.id,
+          userId,
+          contactId: contact?.id ?? null,
+          contactName: contact?.name ?? displayName,
+          senderId: dm.id,
+          preview: msg.content.slice(0, 120),
+          body: msg.content,
+          receivedAt: new Date(msg.timestamp),
+          needsReply: !fromMe,
+          fromMe,
+        });
+        synced++;
+      }
+    }
+    if (synced > 0) console.log(`[discord] Synced ${synced} DM messages`);
+  } catch (err: any) {
+    console.error("[discord] DM history sync failed:", err.message);
+  }
 }
 
 async function triggerImport(userId: string) {
