@@ -307,9 +307,6 @@ export const discordService = {
         if (contact) {
           const updates: Record<string, any> = {};
           if (contact.userId === "default") updates.userId = userId;
-          if (dUser.lastActive && (!contact.lastContactDate || dUser.lastActive > contact.lastContactDate)) {
-            updates.lastContactDate = dUser.lastActive;
-          }
           if (Object.keys(updates).length) {
             await prisma.contact.update({ where: { id: contact.id }, data: updates });
           }
@@ -321,8 +318,8 @@ export const discordService = {
           data: {
             userId,
             name: globalName,
-            lastContactDate: dUser.lastActive ?? null,
-            firstContactDate: dUser.lastActive ?? null,
+            lastContactDate: null,
+            firstContactDate: null,
             type: "other",
             domain: "other",
             relationshipStrength: "cold",

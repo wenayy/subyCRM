@@ -313,8 +313,8 @@ export const slackService = {
             relationshipStrength: "cold",
             platforms: {
               create: [
-                { type: "slack", platformId: slackId, displayName },
-                ...(email ? [{ type: "email", platformId: email, displayName }] : []),
+                { type: "slack" as const, platformId: slackId, displayName },
+                ...(email ? [{ type: "email" as const, platformId: email, displayName }] : []),
               ],
             },
           },
