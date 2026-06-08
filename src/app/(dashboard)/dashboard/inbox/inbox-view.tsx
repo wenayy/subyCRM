@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { inboxApi, meApi, gmailApi, slackApi, contactsApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -135,6 +135,10 @@ export function InboxView() {
   const [localReactions, setLocalReactions] = useState<Record<string, string>>({});
   const [typingContactIds, setTypingContactIds] = useState<Set<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState(false);
+  const [noMoreMessages, setNoMoreMessages] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const loadMoreRestoreRef = useRef<number | null>(null); // scrollHeight before prepend
+  const isLoadingMoreRef = useRef(false);
   const [addToContactsFor, setAddToContactsFor] = useState<InboxConversationApi | null>(null);
   const [addToContactsName, setAddToContactsName] = useState("");
   const [addToContactsSaving, setAddToContactsSaving] = useState(false);
@@ -388,9 +392,23 @@ export function InboxView() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Restore scroll position after prepending older messages.
+  // Does NOT clear isLoadingMoreRef — useEffect below does that after guarding.
+  useLayoutEffect(() => {
+    if (loadMoreRestoreRef.current !== null && scrollContainerRef.current) {
+      const newScrollHeight = scrollContainerRef.current.scrollHeight;
+      scrollContainerRef.current.scrollTop = newScrollHeight - loadMoreRestoreRef.current;
+      loadMoreRestoreRef.current = null;
+    }
+  }, [thread]);
+
   // Scroll to bottom when new messages arrive
   useEffect(() => {
     if (!selected) return;
+    if (isLoadingMoreRef.current) {
+      isLoadingMoreRef.current = false; // clear here, after guarding, so useLayoutEffect above runs first
+      return;
+    }
 
     const isNewConversation = lastScrolledKeyRef.current !== selected.key;
     const loading = threadLoadingRef.current;
@@ -434,6 +452,8 @@ export function InboxView() {
     setSendError("");
     setReplyingTo(null);
     setPendingAttachment(null);
+    setNoMoreMessages(false);
+    isLoadingMoreRef.current = false;
 
     // Show cached thread instantly if it's fresh enough
     const cached = threadCacheRef.current.get(conv.key);
@@ -921,26 +941,33 @@ export function InboxView() {
               </div>
 
               {/* Messages thread */}
-              <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex",
+              <div ref={scrollContainerRef} style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex",
                 flexDirection: "column", gap: 12 }}>
                 {/* Load older messages */}
-                {selected.contactId && thread.length >= 50 && (
+                {selected.contactId && thread.length >= 50 && !noMoreMessages && (
                   <div style={{ textAlign: "center" }}>
                     <button
                       onClick={async () => {
                         if (loadingMore || !selected.contactId) return;
                         setLoadingMore(true);
+                        isLoadingMoreRef.current = true;
                         try {
                           const oldest = thread[0];
                           if (!oldest) return;
                           const more = await inboxApi.getThreadMore(selected.contactId, selected.platform, oldest.receivedAt);
-                          if (more.length > 0) {
+                          if (more.length === 0) {
+                            setNoMoreMessages(true);
+                            isLoadingMoreRef.current = false; // no re-render coming, clear manually
+                          } else {
+                            // Save scroll height before prepend — useLayoutEffect restores position
+                            loadMoreRestoreRef.current = scrollContainerRef.current?.scrollHeight ?? null;
                             setThread((prev) => {
                               const ids = new Set(prev.map((m) => m.id));
                               return [...more.filter((m) => !ids.has(m.id)), ...prev];
                             });
+                            if (more.length < 50) setNoMoreMessages(true);
                           }
-                        } catch {}
+                        } catch { isLoadingMoreRef.current = false; /* no re-render, clear manually */ }
                         finally { setLoadingMore(false); }
                       }}
                       disabled={loadingMore}
