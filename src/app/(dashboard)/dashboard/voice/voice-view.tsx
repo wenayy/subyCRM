@@ -2,10 +2,8 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { voiceApi, type VoiceCaptureApi } from "@/lib/api";
+import { voiceApi, telegramBotApi, type VoiceCaptureApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-
-const BOT_USERNAME = "subyassistant_bot";
 
 const SIMULATE_PROMPTS = [
   "Had a great call with Patrick, he's super engaged and wants to move forward.",
@@ -64,6 +62,11 @@ export function VoiceView() {
   const [simText, setSimText] = useState("");
   const [simulating, setSimulating] = useState(false);
   const [simError, setSimError] = useState<string | null>(null);
+  const [botUsername, setBotUsername] = useState("subyassistant_bot");
+
+  useEffect(() => {
+    telegramBotApi.username().then((v) => setBotUsername(v.username)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     Promise.all([voiceApi.captures(), voiceApi.stats()])
@@ -106,12 +109,12 @@ export function VoiceView() {
         <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>
           Send voice notes to{" "}
           <a
-            href={`https://t.me/${BOT_USERNAME}`}
+            href={`https://t.me/${botUsername}`}
             target="_blank"
             rel="noopener noreferrer"
             style={{ color: "var(--bc)", textDecoration: "none", fontWeight: 500 }}
           >
-            @{BOT_USERNAME}
+            @{botUsername}
           </a>
           . Whisper transcribes, GPT extracts notes / reminders / new contacts.
         </p>
@@ -183,7 +186,7 @@ export function VoiceView() {
           <div style={{ padding: 40, textAlign: "center", color: "var(--t3)", fontSize: 13 }}>Loading…</div>
         ) : captures.length === 0 ? (
           <div className="rounded-xl border border-border bg-card shadow-sm" style={{ padding: 40, textAlign: "center", color: "var(--t3)", fontSize: 13 }}>
-            No captures yet — send a voice note to @{BOT_USERNAME} or try the simulator above.
+            No captures yet — send a voice note to @{botUsername} or try the simulator above.
           </div>
         ) : (
           <div className="rounded-xl border border-border bg-card shadow-sm" style={{ overflow: "hidden" }}>

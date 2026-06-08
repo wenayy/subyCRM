@@ -414,15 +414,23 @@ function extractQuoteContext(msg: any): { quotedId: string | null; quotedBody: s
 
 // ── Text extraction ────────────────────────────────────────────────────────────
 function extractText(msg: any): string {
-  const m = msg.message;
+  let m = msg.message;
   if (!m) return "";
+  // Unwrap ephemeral (disappearing messages) and view-once wrappers
+  if (m.ephemeralMessage?.message) m = m.ephemeralMessage.message;
+  else if (m.viewOnceMessage?.message) m = m.viewOnceMessage.message;
+  else if (m.viewOnceMessageV2?.message?.viewOnceMessage?.message) m = m.viewOnceMessageV2.message.viewOnceMessage.message;
   if (m.conversation) return m.conversation;
   if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
-  if (m.stickerMessage) return "[Sticker]";
-  if (m.audioMessage) return "[Voice Note]";
-  if (m.videoMessage) return m.videoMessage.caption || "[Video]";
-  if (m.documentMessage) return m.documentMessage.caption || m.documentMessage.fileName || "[Document]";
   if (m.imageMessage) return m.imageMessage.caption || "[Image]";
+  if (m.videoMessage) return m.videoMessage.caption || "[Video]";
+  if (m.audioMessage) return "[Voice Note]";
+  if (m.documentMessage) return m.documentMessage.caption || m.documentMessage.fileName || "[Document]";
+  if (m.stickerMessage) return "[Sticker]";
+  if (m.reactionMessage) return ""; // reactions are not messages, skip silently
+  if (m.pollCreationMessage) return `[Poll: ${m.pollCreationMessage.name || ""}]`;
+  if (m.locationMessage) return "[Location]";
+  if (m.contactMessage) return `[Contact: ${m.contactMessage.displayName || ""}]`;
   return "";
 }
 
@@ -479,10 +487,19 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
     remoteJid.endsWith("@broadcast") ||
     remoteJid === "status@broadcast"
   ) return;
-  if (!msg.message) return;
+  if (!msg.message) {
+    if (!isHistorical) console.log(`[whatsapp] drop: no message object from ${remoteJid}`);
+    return;
+  }
 
   let text = extractText(msg);
-  if (!text) return;
+  if (!text) {
+    if (!isHistorical) {
+      const types = Object.keys(msg.message ?? {}).join(",");
+      console.log(`[whatsapp] drop: no text from ${remoteJid}, types=${types}`);
+    }
+    return;
+  }
 
   const fromMe = !!msg.key.fromMe;
   if (fromMe && !isHistorical) {
@@ -518,67 +535,82 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
       if (!isHistorical) s.pendingLidMessages.push({ msg, isHistorical });
       return;
     }
-    if (isHistorical) {
-      // Allow up to 10 historical messages per unknown sender for context
-      const existing = await (prisma as any).inboxMessage.count({
-        where: { platform: "whatsapp", senderId: remoteJid, contactId: null },
-      });
-      if (existing >= 10) return;
-    }
 
-    // Save unknown messages (live or up to 10 historical) so they appear in inbox.
-    // For outgoing (fromMe=true), pushName is our OWN WhatsApp name — use the recipient's
-    // name from the contacts cache or the phone number instead.
-    const displayName = fromMe
-      ? (s.contactsCache.get(remoteJid) as any)?.name || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "")
-      : msg.pushName || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "");
-    await inboxService.upsert({
-      platform: "whatsapp",
-      externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
-      userId: s.userId,
-      contactId: null,
-      contactName: displayName,
-      senderId: remoteJid,
-      preview: text.slice(0, 120),
-      body: text,
-      receivedAt: new Date((msg.messageTimestamp as number) * 1000),
-      needsReply: !fromMe,
-      fromMe,
-      waStatus,
-      quotedId,
-      quotedBody,
-      quotedFromMe,
-    });
-    return;
-  }
+    // Skip messages to/from the user's own number (Saved Messages / note-to-self chat)
+    const ownJid = s.phoneNumber ? `${s.phoneNumber}@s.whatsapp.net` : null;
+    if (ownJid && remoteJid === ownJid) return;
 
-  // Download media for live messages and for recent historical messages (CDN URLs valid ~7 days)
-  const msgAgeMs = Date.now() - (msg.messageTimestamp as number) * 1000;
-  const isRecentEnoughForMedia = msgAgeMs < 7 * 24 * 60 * 60 * 1000;
-  if (!isHistorical || isRecentEnoughForMedia) {
-    const m = msg.message;
-    const hasMedia = m?.imageMessage || m?.videoMessage || m?.audioMessage || m?.documentMessage || m?.stickerMessage;
-    if (hasMedia) {
-      const mediaUrl = await downloadAndSaveMedia(msg, s);
-      if (mediaUrl) {
-        const caption = m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || "";
-        const docName = m.documentMessage?.fileName || "file";
-        if (m.imageMessage || m.stickerMessage) {
-          text = caption ? `![${caption}](${mediaUrl})` : `![Image](${mediaUrl})`;
-        } else if (m.videoMessage) {
-          text = caption ? `![${caption}](${mediaUrl})` : `![Video](${mediaUrl})`;
-        } else if (m.audioMessage) {
-          text = `[Voice Note](${mediaUrl})`;
-        } else {
-          text = `[${docName}](${mediaUrl})`;
+    // If this JID is in the phone's address book with a real name, auto-create the CRM contact
+    // so the message lands in a named conversation rather than "NOT IN CONTACTS".
+    const cached = s.contactsCache.get(remoteJid) as any;
+    const phoneName: string | undefined = cached?.name || cached?.verifiedName;
+    if (phoneName && !phoneName.match(/^[+\d]/)) {
+      const phoneDigits = jidDigits(remoteJid, s);
+      if (phoneDigits.length >= 8) {
+        try {
+          const created = await prisma.contact.create({
+            data: {
+              name: phoneName, userId: s.userId,
+              type: "other", domain: "other", relationshipStrength: "cold",
+              platforms: { create: [{ type: "whatsapp", platformId: phoneDigits, displayName: phoneName }] },
+            },
+          });
+          contact = { contactId: created.id, contactName: phoneName };
+          invalidatePlatformCache(s.userId);
+          // Retroactively link any earlier messages from this JID
+          void inboxService.linkMessagesToContact(created.id, "whatsapp", phoneDigits).catch(() => {});
+          void inboxService.linkMessagesToContact(created.id, "whatsapp", remoteJid).catch(() => {});
+        } catch {
+          // Race condition — contact was created by another path; look it up
+          const plat = await prisma.platform.findFirst({
+            where: { type: "whatsapp", platformId: phoneDigits, contact: { userId: s.userId } },
+            include: { contact: { select: { id: true, name: true } } },
+          });
+          if (plat?.contact) contact = { contactId: plat.contact.id, contactName: plat.contact.name };
         }
       }
     }
+
+    if (!contact) {
+      if (isHistorical) {
+        // Allow up to 10 historical messages per unknown sender for context
+        const existing = await (prisma as any).inboxMessage.count({
+          where: { platform: "whatsapp", senderId: remoteJid, contactId: null },
+        });
+        if (existing >= 10) return;
+      }
+
+      // Save unknown messages (live or up to 10 historical) so they appear in inbox.
+      const displayName = fromMe
+        ? (s.contactsCache.get(remoteJid) as any)?.name || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "")
+        : msg.pushName || jidDigits(remoteJid, s) || remoteJid.replace(/@.+$/, "");
+      await inboxService.upsert({
+        platform: "whatsapp",
+        externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
+        userId: s.userId,
+        contactId: null,
+        contactName: displayName,
+        senderId: remoteJid,
+        preview: text.slice(0, 120),
+        body: text,
+        receivedAt: new Date((msg.messageTimestamp as number) * 1000),
+        needsReply: !fromMe,
+        fromMe,
+        waStatus,
+        quotedId,
+        quotedBody,
+        quotedFromMe,
+      });
+      return;
+    }
   }
 
+  const msgExternalId = msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`;
+
+  // Save the message immediately so it appears in the inbox right away
   await inboxService.upsert({
     platform: "whatsapp",
-    externalId: msg.key.id ?? `wa-${remoteJid}-${msg.messageTimestamp}`,
+    externalId: msgExternalId,
     userId: s.userId,
     contactId: contact.contactId,
     contactName: contact.contactName,
@@ -593,6 +625,54 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
     quotedBody,
     quotedFromMe,
   });
+
+  // Download media in background — never blocks message receipt
+  const msgAgeMs = Date.now() - (msg.messageTimestamp as number) * 1000;
+  const isRecentEnoughForMedia = msgAgeMs < 7 * 24 * 60 * 60 * 1000;
+  if (!isHistorical || isRecentEnoughForMedia) {
+    const m = msg.message;
+    const hasMedia = m?.imageMessage || m?.videoMessage || m?.audioMessage || m?.documentMessage || m?.stickerMessage;
+    if (hasMedia) {
+      void (async () => {
+        try {
+          const mediaUrl = await downloadAndSaveMedia(msg, s);
+          if (!mediaUrl) return;
+          const caption = m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || "";
+          const docName = m.documentMessage?.fileName || "file";
+          let mediaText: string;
+          if (m.imageMessage || m.stickerMessage) {
+            mediaText = caption ? `![${caption}](${mediaUrl})` : `![Image](${mediaUrl})`;
+          } else if (m.videoMessage) {
+            mediaText = caption ? `![${caption}](${mediaUrl})` : `![Video](${mediaUrl})`;
+          } else if (m.audioMessage) {
+            mediaText = `[Voice Note](${mediaUrl})`;
+          } else {
+            mediaText = `[${docName}](${mediaUrl})`;
+          }
+          // Re-upsert with media URL — SSE fires again, inbox updates in place
+          await inboxService.upsert({
+            platform: "whatsapp",
+            externalId: msgExternalId,
+            userId: s.userId,
+            contactId: contact.contactId,
+            contactName: contact.contactName,
+            senderId: remoteJid,
+            preview: mediaText.slice(0, 120),
+            body: mediaText,
+            receivedAt: new Date((msg.messageTimestamp as number) * 1000),
+            needsReply: !fromMe,
+            fromMe,
+            waStatus,
+            quotedId,
+            quotedBody,
+            quotedFromMe,
+          });
+        } catch (e) {
+          console.error("[whatsapp] Background media download error:", e);
+        }
+      })();
+    }
+  }
 }
 
 // ── Baileys lazy import ────────────────────────────────────────────────────────
@@ -825,8 +905,6 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         persistAllFilesToDb(authDir, userId).catch(e =>
           console.error("[whatsapp] Failed to snapshot auth files on connect:", e)
         );
-        // Stable connection — reset 440 counter so a future 440 starts fresh backoff
-        s.consecutive440s = 0;
         settle({ connected: true });
       }
 
@@ -845,11 +923,15 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
           settle({ connected: false });
           if (code === DisconnectReason.connectionReplaced || code === 440) {
             // 440 = another client replaced this session (e.g. user opens WhatsApp on phone).
-            // Graduated backoff: short on first hit (brief phone use), longer only if it keeps happening.
+            // Graduated backoff: escalates if 440s keep happening in quick succession.
+            // Reset the counter only if this connection was stable for 5+ minutes — this
+            // ensures rapid-fire 440s escalate to longer delays instead of always waiting 30s.
+            const connectedDuration = Date.now() - s.lastConnectedAt;
+            if (connectedDuration >= 5 * 60_000) s.consecutive440s = 0;
             s.consecutive440s++;
             const delays = [30_000, 90_000, 5 * 60_000]; // 30s → 90s → 5 min
             s.reconnectDelay = delays[Math.min(s.consecutive440s - 1, delays.length - 1)];
-            console.log(`[whatsapp] Connection replaced (440) — count=${s.consecutive440s}, reconnecting in ${s.reconnectDelay / 1000}s`);
+            console.log(`[whatsapp] Connection replaced (440) — count=${s.consecutive440s}, stable_for=${Math.round(connectedDuration / 1000)}s, reconnecting in ${s.reconnectDelay / 1000}s`);
           } else {
             s.consecutive440s = 0;
             s.reconnectDelay = 0;
@@ -927,9 +1009,12 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     });
 
     // ── Live messages ─────────────────────────────────────────
-    sock.ev.on("messages.upsert", async ({ messages: msgs }: any) => {
+    sock.ev.on("messages.upsert", async ({ messages: msgs, type }: any) => {
       if (s.generation !== myGen) return;
-      for (const msg of msgs) {
+      console.log(`[whatsapp] messages.upsert: ${msgs?.length ?? 0} msgs, type=${type}`);
+      // Process all messages in the batch concurrently — prevents one slow media
+      // download from delaying unrelated messages in the same upsert batch
+      await Promise.all(msgs.map(async (msg: any) => {
         try {
           // "Delete for everyone" arrives as a protocol message type=0 with a target key.
           // Only skip processMessage when both conditions are confirmed — otherwise fall
@@ -945,13 +1030,13 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
               console.log(`[whatsapp] Reflected deletion of ${revokedId}`);
               broadcastInboxEvent("message_deleted", { externalId: revokedId });
             }
-            continue; // confirmed revoke — no need to run processMessage
+            return;
           }
           await processMessage(msg, false, s);
         } catch (e) {
           console.error("[whatsapp] Message error:", e);
         }
-      }
+      }));
     });
 
     // ── Status updates, revocations, deletions ───────────────
@@ -1094,7 +1179,10 @@ export const whatsappService = {
       if (!saved?.credsJson && !fs.existsSync(getAuthDir(userId))) {
         throw new Error("WhatsApp is not connected. Go to Settings → WhatsApp to connect.");
       }
-      if (!s.reconnecting && !s.sock) {
+      // Only start an immediate reconnect if there's no scheduled reconnect timer.
+      // If s.reconnectTimer is set (e.g. 30s 440 backoff), let it fire — calling
+      // connectSocket here would bypass the backoff and create a rapid-fire loop.
+      if (!s.reconnecting && !s.sock && !s.reconnectTimer) {
         console.log("[whatsapp] Starting reconnect for pending send…");
         connectSocket(userId).catch(console.error);
       }

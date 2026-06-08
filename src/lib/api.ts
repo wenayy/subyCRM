@@ -414,6 +414,7 @@ export const whatsappApi = {
 // ─── Telegram Personal API ─────────────────────────────────
 export const telegramBotApi = {
   status: () => apiFetch<{ linked: boolean; chatId: string | null; linkedAt: string | null }>("/api/telegram-bot/status"),
+  username: () => apiFetch<{ username: string }>("/api/telegram-bot/username"),
   generateToken: () => apiFetch<{ token: string }>("/api/telegram-bot/generate-token", { method: "POST" }),
   unlink: () => apiFetch<{ ok: boolean }>("/api/telegram-bot/unlink", { method: "POST" }),
 };

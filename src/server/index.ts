@@ -412,6 +412,46 @@ app.listen(PORT, async () => {
     }
   })();
 
+  // ── Backfill: fix contactName = phone number for already-linked messages ──
+  // Messages linked before this fix still store the raw phone number as contactName.
+  // Find any linked message whose contactName is all digits (≥8 chars) and overwrite it.
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      // Fetch contacts that have inbox messages with numeric contactName
+      const badMessages = await (prisma as any).inboxMessage.findMany({
+        where: {
+          contactId: { not: null },
+          contactName: { not: null },
+        },
+        select: { id: true, contactId: true, contactName: true },
+      });
+      const toFix = badMessages.filter((m: any) => /^\d{8,}$/.test((m.contactName ?? "").trim()));
+      if (toFix.length === 0) return;
+
+      // Group by contactId to batch updates
+      const byContact = new Map<string, string[]>();
+      for (const m of toFix) {
+        if (!byContact.has(m.contactId)) byContact.set(m.contactId, []);
+        byContact.get(m.contactId)!.push(m.id);
+      }
+
+      let fixed = 0;
+      for (const [contactId, ids] of byContact.entries()) {
+        const contact = await prisma.contact.findUnique({ where: { id: contactId }, select: { name: true } });
+        if (!contact) continue;
+        await (prisma as any).inboxMessage.updateMany({
+          where: { id: { in: ids } },
+          data: { contactName: contact.name },
+        });
+        fixed += ids.length;
+      }
+      if (fixed > 0) console.log(`[startup] Fixed contactName for ${fixed} message(s) that were showing phone numbers`);
+    } catch (e: any) {
+      console.error("[startup] contactName fix error:", e.message);
+    }
+  })();
+
   // X (Twitter) uses scheduled BullMQ sync — no persistent socket to reconnect
 
   const { telegramPersonalService } = await import("./services/telegram-personal.service");

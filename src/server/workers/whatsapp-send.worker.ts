@@ -17,8 +17,21 @@ export function startWhatsAppSendWorker() {
     QUEUE_NAMES.WHATSAPP_SEND,
     async (job) => {
       const { userId, jid, text, tempId } = job.data;
-      const { sendMessageQueued } = await import("../services/whatsapp.service");
-      const { keyId } = await sendMessageQueued(userId, jid, text);
+      const { parseMediaMarkdown } = await import("../services/inbox.service");
+      const { whatsappService, sendMessageQueued } = await import("../services/whatsapp.service");
+
+      const media = parseMediaMarkdown(text);
+      let keyId: string | undefined;
+
+      if (media) {
+        // Retry as media send — same path as the original attempt
+        const result = await whatsappService.sendMediaMessage(jid, media.filePath, media.caption, userId);
+        keyId = (result as any)?.key?.id;
+      } else {
+        const result = await sendMessageQueued(userId, jid, text);
+        keyId = result.keyId;
+      }
+
       if (keyId) {
         await (prisma as any).inboxMessage.updateMany({
           where: { platform: "whatsapp", externalId: tempId },

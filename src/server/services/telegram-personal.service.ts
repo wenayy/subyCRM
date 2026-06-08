@@ -581,6 +581,8 @@ export const telegramPersonalService = {
 
   _attachListener(userId: string, client: unknown) {
     const typedClient = client as any;
+    // Warm entity cache in background so first sends don't cold-start
+    warmEntityCache(userId, typedClient).catch(() => {});
     try {
       import("telegram/events").then(({ NewMessage, Raw }) => {
         // ── Incoming / outgoing messages ──────────────────────────────────────────
@@ -590,11 +592,16 @@ export const telegramPersonalService = {
             if (!msg?.text && !msg?.media) return;
 
             const chat = await msg.getChat();
+            // Skip bots, self (Saved Messages), and non-user entities (groups, channels)
+            if (!chat || chat.bot || chat.self || chat.className !== "User") return;
+
             let contact = await findContactForTelegram(chat, userId);
             let chatEntity = chat;
 
             if (!contact) {
               const sender = await msg.getSender();
+              // Skip if sender is also a bot or the current account
+              if (!sender || sender.bot || sender.self) return;
               contact = await findContactForTelegram(sender, userId);
               if (contact) {
                 chatEntity = sender;
@@ -828,16 +835,25 @@ export const telegramPersonalService = {
         await clearSession(userId);
         throw new Error("Telegram session expired — go to Settings → Telegram to reconnect.");
       }
+      const errMsg = err?.message ?? String(err);
+      // FLOOD_WAIT — Telegram rate limit; wait and retry once
+      const floodMatch = errMsg.match(/FLOOD_WAIT_(\d+)/);
+      if (floodMatch) {
+        const waitSecs = Math.min(parseInt(floodMatch[1], 10), 30); // cap at 30s
+        console.warn(`[telegram-personal] FLOOD_WAIT_${floodMatch[1]} — waiting ${waitSecs}s before retry`);
+        await new Promise((r) => setTimeout(r, waitSecs * 1000));
+        return await client.sendMessage(targetPeer, { message: text, replyTo });
+      }
       // TIMEOUT or connection drop — reconnect and retry once
-      const msg = err?.message ?? String(err);
-      if (msg === "TIMEOUT" || msg.includes("CONNECTION") || msg.includes("disconnect")) {
-        console.warn(`[telegram-personal] sendOnly hit ${msg} — reconnecting and retrying once`);
+      if (errMsg === "TIMEOUT" || errMsg.includes("CONNECTION") || errMsg.includes("disconnect")) {
+        console.warn(`[telegram-personal] sendOnly hit ${errMsg} — reconnecting and retrying once`);
         clients.delete(userId);
         try { await client.disconnect(); } catch {}
         const { TelegramClient: TC, StringSession: SS } = await getTelegramLib();
         const freshClient = new TC(new SS(rec.sessionStr), rec.apiId!, rec.apiHash!, { connectionRetries: 5 });
         await freshClient.connect();
         clients.set(userId, freshClient);
+        telegramPersonalService._attachListener(userId, freshClient);
         return await freshClient.sendMessage(
           /^-?\d+$/.test(peer) ? await resolveNumericPeer(userId, peer, freshClient) : peer.replace(/^@/, ""),
           { message: text, replyTo }

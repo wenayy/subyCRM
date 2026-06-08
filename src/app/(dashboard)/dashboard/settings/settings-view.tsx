@@ -22,7 +22,7 @@ interface IntegrationDef {
 const INTEGRATIONS: IntegrationDef[] = [
   {
     key: "subyassist_bot",
-    name: "@subyassistant_bot",
+    name: "@subyassistant_bot", // display name; actual username loaded dynamically
     description: "Telegram voice bot. Send voice notes → Whisper transcribes → GPT creates notes/reminders/strength bumps on matching contacts.",
     color: "#229ED9", bg: "#229ED915",
     iconPath: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.2-.08-.06-.19-.04-.27-.02-.12.03-1.99 1.27-5.62 3.72-.53.36-1.01.54-1.44.53-.47-.01-1.38-.27-2.06-.49-.83-.27-1.49-.42-1.43-.88.03-.24.37-.49 1.02-.74 3.99-1.74 6.65-2.89 7.99-3.44 3.8-1.58 4.59-1.86 5.1-1.87.11 0 .37.03.54.17.14.12.18.28.2.45-.01.06.01.24 0 .38z",
@@ -550,21 +550,27 @@ function WhatsAppModal({ onClose }: { onClose: () => void }) {
       .then((res) => {
         if (res.connected) { setConnected(true); }
         else if (res.qr) { setQr(res.qr); }
-        else { setError("No QR code returned. Try again."); }
+        // If no QR yet, Baileys is still starting — polling below will pick it up
       })
       .catch((e) => setError(e.message ?? "Failed to start WhatsApp session"))
       .finally(() => setLoading(false));
   }, []);
 
-  // Poll for connection after QR shown
+  // Poll for QR and connection — runs until connected, regardless of whether we have a QR yet
   useEffect(() => {
-    if (!qr || connected) return;
+    if (connected) return;
     const iv = setInterval(async () => {
       const s = await whatsappApi.status().catch(() => null);
-      if (s?.connected) { setConnected(true); setQr(null); clearInterval(iv); }
-    }, 3000);
+      if (!s) return;
+      if (s.connected) { setConnected(true); setQr(null); clearInterval(iv); return; }
+      // Fetch the actual QR string when one becomes available
+      if (s.qrAvailable && !qr) {
+        const qrRes = await whatsappApi.getQR().catch(() => null);
+        if (qrRes?.qr) { setError(""); setQr(qrRes.qr); }
+      }
+    }, 2000);
     return () => clearInterval(iv);
-  }, [qr, connected]);
+  }, [connected, qr]);
 
   return (
     <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -572,8 +578,8 @@ function WhatsAppModal({ onClose }: { onClose: () => void }) {
         <DialogHeader>
           <DialogTitle>Connect WhatsApp</DialogTitle>
         </DialogHeader>
-        {loading && <p className="text-center text-muted-foreground text-xs py-4">Starting session…</p>}
-        {error && <p className="text-status-red text-xs py-2">{error}</p>}
+        {(loading || (!qr && !connected && !error)) && <p className="text-center text-muted-foreground text-xs py-4">Generating QR code…</p>}
+        {error && !qr && <p className="text-status-red text-xs py-2">{error}</p>}
         {connected && (
           <div className="text-center py-4 flex flex-col items-center gap-2">
             <div className="text-3xl mb-1">✅</div>
@@ -650,6 +656,7 @@ export function SettingsView() {
   const [botToken, setBotToken] = useState<string | null>(null);
   const [botTokenLoading, setBotTokenLoading] = useState(false);
   const [botPolling, setBotPolling] = useState(false);
+  const [botUsername, setBotUsername] = useState("subyassistant_bot");
 
   const reload = (uid: string | undefined) => {
     calendarApi.status()
@@ -679,6 +686,9 @@ export function SettingsView() {
     telegramBotApi.status()
       .then((v) => setBotLink(v))
       .catch(() => setBotLink((p) => p ?? { linked: false, chatId: null, linkedAt: null }));
+    telegramBotApi.username()
+      .then((v) => setBotUsername(v.username))
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -754,7 +764,7 @@ export function SettingsView() {
       if (linkedin?.lastSync) return `Last synced ${new Date(linkedin.lastSync).toLocaleString()}`;
       return undefined;
     }
-    if (key === "subyassist_bot") return botLink?.linked ? "@subyassistant_bot · linked" : undefined;
+    if (key === "subyassist_bot") return botLink?.linked ? `@${botUsername} · linked` : undefined;
     return undefined;
   };
 
@@ -959,7 +969,7 @@ export function SettingsView() {
                       {botToken && !botLink?.linked && (
                         <div style={{ marginTop: 4, padding: "10px 12px", borderRadius: "var(--r)", background: "var(--al)", border: "1px solid var(--bd)", minWidth: 260 }}>
                           <a
-                            href={`https://t.me/subyassistant_bot?start=${botToken}`}
+                            href={`https://t.me/${botUsername}?start=${botToken}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             style={{

@@ -380,6 +380,19 @@ export function startBot() {
 
 export function stopBot() { bot?.stopPolling(); bot = null; g.__telegramBot = null; }
 
+let _cachedUsername: string | null = null;
+export async function getBotUsername(): Promise<string> {
+  if (_cachedUsername) return _cachedUsername;
+  if (bot) {
+    try {
+      const me = await bot.getMe();
+      _cachedUsername = me.username ?? "subyassistant_bot";
+      return _cachedUsername;
+    } catch {}
+  }
+  return "subyassistant_bot";
+}
+
 export async function sendBotReply(chatId: string, text: string): Promise<void> {
   if (!bot) throw new Error("Telegram bot not running");
 

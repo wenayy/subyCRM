@@ -10,7 +10,12 @@ import { Button } from "@/components/ui/button";
 import { getCached, setCached } from "@/lib/page-cache";
 
 // Sent messages only in local state (not persisted)
-interface SentMessage { id: string; body: string; sentAt: string; fromMe: true; status?: "sending" | "sent" | "failed" }
+interface SentMessage {
+  id: string; body: string; sentAt: string; fromMe: true;
+  status?: "sending" | "sent" | "failed";
+  quotedBody?: string | null;
+  quotedFromMe?: boolean | null;
+}
 
 type Filter = "all" | "unread" | "needs_reply" | "starred" | "unknown";
 
@@ -104,6 +109,9 @@ export function InboxView() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const lastScrolledKeyRef = useRef<string | null>(null);
   const threadLoadingRef = useRef(false);
+  // In-memory thread cache — keyed by conv.key, survives within the session
+  const threadCacheRef = useRef<Map<string, { msgs: InboxMessageApi[]; at: number }>>(new Map());
+  const THREAD_TTL = 60_000; // re-fetch after 60s of not being viewed
 
   const cached = getCached<InboxConversationApi[]>("inbox:conversations");
   const [conversations, setConversations] = useState<InboxConversationApi[]>(cached ?? []);
@@ -113,6 +121,7 @@ export function InboxView() {
   const [loading, setLoading] = useState(!cached);
   const [threadLoading, setThreadLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  const [platformFilter, setPlatformFilter] = useState<string>("all");
   // Uncontrolled textarea — no React state on keystrokes, eliminates typing lag
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState("");
@@ -123,6 +132,7 @@ export function InboxView() {
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<InboxMessageApi | null>(null);
   const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
+  const [localReactions, setLocalReactions] = useState<Record<string, string>>({});
   const [typingContactIds, setTypingContactIds] = useState<Set<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState(false);
   const [addToContactsFor, setAddToContactsFor] = useState<InboxConversationApi | null>(null);
@@ -135,7 +145,18 @@ export function InboxView() {
 
   const REACTIONS = ["👍", "❤️", "😂", "🙏", "😮", "😢"];
 
+  // Formats browsers can actually render inline — everything else becomes a download link
+  const RENDERABLE_IMAGE = new Set([
+    "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/svg+xml", "image/avif",
+  ]);
+
+  const BLOCKED_TYPES = new Set(["image/heic", "image/heif", "image/tiff", "image/bmp"]);
+
   const uploadFile = async (file: File) => {
+    if (BLOCKED_TYPES.has(file.type) || /\.(heic|heif|tiff?|bmp)$/i.test(file.name)) {
+      setSendError("HEIC/TIFF/BMP files can't be sent — convert to JPG or PNG first.");
+      return;
+    }
     setUploading(true);
     setSendError("");
     return new Promise<void>((resolve) => {
@@ -145,7 +166,7 @@ export function InboxView() {
         if (!fileData) { setSendError("Failed to read file"); setUploading(false); resolve(); return; }
         try {
           const res = await inboxApi.upload(file.name, fileData);
-          const isImage = file.type.startsWith("image/") || file.type.startsWith("video/");
+          const isImage = RENDERABLE_IMAGE.has(file.type) || file.type.startsWith("video/");
           const markdownTag = isImage ? `![${file.name}](${res.url})` : `[${file.name}](${res.url})`;
           // Show preview using the returned URL (relative path, works via Vercel proxy)
           setPendingAttachment({ previewUrl: res.url, markdownTag, name: file.name, isImage });
@@ -170,7 +191,7 @@ export function InboxView() {
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = Array.from(e.clipboardData.items);
-    const imageItem = items.find((item) => item.type.startsWith("image/"));
+    const imageItem = items.find((item) => RENDERABLE_IMAGE.has(item.type));
     if (!imageItem || !selected) return;
     e.preventDefault();
     const file = imageItem.getAsFile();
@@ -242,7 +263,29 @@ export function InboxView() {
           const isKnownMatch = data.contactId && data.contactId === sel.contactId && data.platform === sel.platform;
           const isUnknownMatch = !data.contactId && !sel.contactId && data.platform === sel.platform && msg.senderId === sel.senderId;
           if (isKnownMatch || isUnknownMatch) {
-            setThread((prev) => prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]);
+            setThread((prev) => {
+              const idx = prev.findIndex((m) => m.id === msg.id);
+              let next: typeof prev;
+              if (idx >= 0) {
+                // Update in-place (e.g., media loaded after initial text save)
+                if (prev[idx].body === msg.body) return prev;
+                next = [...prev];
+                next[idx] = msg;
+              } else {
+                next = [...prev, msg];
+              }
+              // Keep cache current so next conversation switch is instant
+              threadCacheRef.current.set(sel.key, { msgs: next, at: Date.now() });
+              return next;
+            });
+            // Immediately evict matching optimistic sent message — prevents double-show flash
+            if (msg.fromMe) {
+              setSentMessages((prev) => {
+                const list = prev[sel.key] ?? [];
+                const next = list.filter((m) => m.body !== msg.body || m.id === msg.id);
+                return next.length === list.length ? prev : { ...prev, [sel.key]: next };
+              });
+            }
           } else {
             const fetchFn = sel.contactId
               ? inboxApi.getThread(sel.contactId, sel.platform)
@@ -362,9 +405,10 @@ export function InboxView() {
     }
   }, [thread.length, thread[thread.length - 1]?.id, selected]);
 
-  // Safety-net polling: catches any messages missed during SSE gaps
+  // Safety-net polling: catches any messages missed during SSE gaps + keeps cache warm
   useEffect(() => {
     if (!selected) return;
+    const key = selected.key;
     const iv = setInterval(() => {
       const fetchFn = selected.contactId
         ? inboxApi.getThread(selected.contactId, selected.platform)
@@ -372,29 +416,17 @@ export function InboxView() {
           ? inboxApi.getUnknownThread(selected.senderId, selected.platform)
           : null;
       fetchFn
-        ?.then((msgs) => setThread((prev) => msgs.length >= prev.length ? msgs : prev))
+        ?.then((msgs) => {
+          // Guard: discard if user has already switched away
+          if (selectedRef.current?.key !== key) return;
+          setThread((prev) => msgs.length >= prev.length ? msgs : prev);
+          threadCacheRef.current.set(key, { msgs, at: Date.now() });
+        })
         .catch(() => {});
-    }, 3_000);
+    }, 5_000);
     return () => clearInterval(iv);
   }, [selected]);
 
-  // Clean up optimistic messages when they are fetched from backend and appear in the thread
-  useEffect(() => {
-    if (!selected) return;
-    const local = sentMessages[selected.key];
-    if (!local || local.length === 0) return;
-
-    const filtered = local.filter((m) => 
-      !thread.some((dbMsg) => dbMsg.fromMe && dbMsg.body === m.body)
-    );
-
-    if (filtered.length !== local.length) {
-      setSentMessages((prev) => ({
-        ...prev,
-        [selected.key]: filtered,
-      }));
-    }
-  }, [thread, selected, sentMessages]);
 
   const selectConversation = (conv: InboxConversationApi) => {
     setSelected(conv);
@@ -403,10 +435,18 @@ export function InboxView() {
     setReplyingTo(null);
     setPendingAttachment(null);
 
-    // Clear & pre-populate thread with the latest message instantly
-    setThread([conv.latestMessage]);
-    threadLoadingRef.current = true;
-    setThreadLoading(true);
+    // Show cached thread instantly if it's fresh enough
+    const cached = threadCacheRef.current.get(conv.key);
+    const isFresh = cached && Date.now() - cached.at < THREAD_TTL;
+    if (isFresh) {
+      setThread(cached.msgs);
+      threadLoadingRef.current = false;
+      setThreadLoading(false);
+    } else {
+      setThread([conv.latestMessage]);
+      threadLoadingRef.current = true;
+      setThreadLoading(true);
+    }
 
     const threadPromise = conv.contactId
       ? inboxApi.getThread(conv.contactId, conv.platform)
@@ -416,8 +456,10 @@ export function InboxView() {
 
     threadPromise
       .then((res) => {
+        const fresh = res.length > 0 ? res : [conv.latestMessage];
+        threadCacheRef.current.set(conv.key, { msgs: fresh, at: Date.now() });
         if (selectedRef.current?.key === conv.key) {
-          setThread(res.length > 0 ? res : [conv.latestMessage]);
+          setThread(fresh);
         }
       })
       .catch(() => {
@@ -445,12 +487,21 @@ export function InboxView() {
   };
 
   const filtered = conversations.filter((c) => {
+    if (platformFilter !== "all" && c.platform !== platformFilter) return false;
     if (filter === "unread") return c.unreadCount > 0;
     if (filter === "needs_reply") return c.needsReply;
     if (filter === "starred") return c.starred;
     if (filter === "unknown") return !c.contactId;
     return true;
   });
+
+  // Platforms that actually have conversations — drive the filter chips
+  const activePlatforms = Array.from(
+    conversations.reduce((map, c) => {
+      map.set(c.platform, (map.get(c.platform) ?? 0) + 1);
+      return map;
+    }, new Map<string, number>()),
+  ).sort((a, b) => b[1] - a[1]);
 
   const totalUnread = conversations.reduce((s, c) => s + c.unreadCount, 0);
   const totalNeedsReply = conversations.filter((c) => c.needsReply).length;
@@ -476,7 +527,11 @@ export function InboxView() {
     setSendError("");
 
     // Show as sent immediately — no spinner
-    const outgoing: SentMessage = { id: tempId, body, sentAt: new Date().toISOString(), fromMe: true, status: "sent" };
+    const outgoing: SentMessage = {
+      id: tempId, body, sentAt: new Date().toISOString(), fromMe: true, status: "sent",
+      quotedBody: replyingTo?.body ?? replyingTo?.preview ?? null,
+      quotedFromMe: replyingTo ? !!replyingTo.fromMe : null,
+    };
     setSentMessages((prev) => ({ ...prev, [selected.key]: [...(prev[selected.key] ?? []), outgoing] }));
     setConversations((prev) => prev.map((c) => c.key === selected.key ? { ...c, needsReply: false } : c));
 
@@ -610,34 +665,67 @@ export function InboxView() {
         </div>
       )}
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h1 className="text-xl font-bold tracking-tight">Inbox</h1>
-          <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>
-            {loading ? "Loading…" : `${totalUnread} unread · ${totalNeedsReply} need reply`}
-          </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">Inbox</h1>
+            <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>
+              {loading ? "Loading…" : `${totalUnread} unread · ${totalNeedsReply} need reply`}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 4, background: "var(--muted)", borderRadius: 8, padding: 3, flexWrap: "wrap" }}>
+            {(["all", "unread", "needs_reply", "starred", "unknown"] as Filter[]).map((f) => {
+              const label =
+                f === "all" ? `All ${conversations.length}` :
+                f === "unread" ? `Unread ${totalUnread}` :
+                f === "needs_reply" ? `Needs reply ${totalNeedsReply}` :
+                f === "starred" ? `Starred ${totalStarred}` :
+                `Unknown ${totalUnknown}`;
+              const isUnknownTab = f === "unknown";
+              return (
+                <button key={f} onClick={() => setFilter(f)}
+                  style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap",
+                    background: filter === f ? (isUnknownTab ? "#f59e0b" : "var(--card)") : "transparent",
+                    boxShadow: filter === f ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    color: filter === f ? (isUnknownTab ? "#fff" : "var(--t1)") : isUnknownTab && totalUnknown > 0 ? "#f59e0b" : "var(--t3)",
+                    fontWeight: filter === f ? 600 : 400 }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 4, background: "var(--muted)", borderRadius: 8, padding: 3, flexWrap: "wrap" }}>
-          {(["all", "unread", "needs_reply", "starred", "unknown"] as Filter[]).map((f) => {
-            const label =
-              f === "all" ? `All ${conversations.length}` :
-              f === "unread" ? `Unread ${totalUnread}` :
-              f === "needs_reply" ? `Needs reply ${totalNeedsReply}` :
-              f === "starred" ? `Starred ${totalStarred}` :
-              `Unknown ${totalUnknown}`;
-            const isUnknownTab = f === "unknown";
-            return (
-              <button key={f} onClick={() => setFilter(f)}
-                style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap",
-                  background: filter === f ? (isUnknownTab ? "#f59e0b" : "var(--card)") : "transparent",
-                  boxShadow: filter === f ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-                  color: filter === f ? (isUnknownTab ? "#fff" : "var(--t1)") : isUnknownTab && totalUnknown > 0 ? "#f59e0b" : "var(--t3)",
-                  fontWeight: filter === f ? 600 : 400 }}>
-                {label}
-              </button>
-            );
-          })}
-        </div>
+        {/* Platform filter chips — only shown when 2+ platforms have messages */}
+        {activePlatforms.length > 1 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "var(--t3)", fontWeight: 500 }}>Channel:</span>
+            <button
+              onClick={() => setPlatformFilter("all")}
+              style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 20,
+                border: `1px solid ${platformFilter === "all" ? "var(--ac)" : "var(--bd)"}`,
+                background: platformFilter === "all" ? "var(--ac)" : "transparent",
+                color: platformFilter === "all" ? "#fff" : "var(--t2)",
+                fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              All
+            </button>
+            {activePlatforms.map(([platform, count]) => {
+              const active = platformFilter === platform;
+              return (
+                <button key={platform}
+                  onClick={() => setPlatformFilter(active ? "all" : platform)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 20,
+                    border: `1px solid ${active ? "var(--ac)" : "var(--bd)"}`,
+                    background: active ? "var(--ac)" : "transparent",
+                    color: active ? "#fff" : "var(--t2)",
+                    fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+                  <PlatformIcon type={platform as PlatformType} size={11} />
+                  {PLATFORM_LABEL[platform] ?? platform}
+                  <span style={{ opacity: 0.7 }}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Two-panel layout */}
@@ -867,9 +955,12 @@ export function InboxView() {
                   const contactInitials = initials(selected.contactName);
                   const myInitials = initials(me.name ?? me.email ?? "Me");
                   type AnyMsg = InboxMessageApi | SentMessage;
+                  // Dedup inline: skip local sent messages that already exist in DB thread
+                  const dbBodySet = new Set(thread.filter((m) => m.fromMe).map((m) => m.body ?? ""));
+                  const localOnly = (sentMessages[selected.key] ?? []).filter((m) => !dbBodySet.has(m.body));
                   const all: AnyMsg[] = [
                     ...thread,
-                    ...(sentMessages[selected.key] ?? []),
+                    ...localOnly,
                   ].sort((a, b) => {
                     const ta = "sentAt" in a ? a.sentAt : a.receivedAt;
                     const tb = "sentAt" in b ? b.sentAt : b.receivedAt;
@@ -911,24 +1002,41 @@ export function InboxView() {
                             padding: "8px 12px", fontSize: 13, lineHeight: 1.5, wordBreak: "break-word",
                             opacity: isSending ? 0.7 : 1,
                           }}>
-                            {/* Quoted message bubble */}
-                            {"quotedBody" in msg && (msg as InboxMessageApi).quotedBody && (
-                              <div style={{
-                                fontSize: 11, marginBottom: 6, padding: "4px 8px",
-                                borderLeft: `2px solid ${isMe ? "rgba(255,255,255,0.5)" : "#2563eb"}`,
-                                background: isMe ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.05)",
-                                borderRadius: "0 4px 4px 0",
-                                color: isMe ? "rgba(255,255,255,0.75)" : "var(--t2)",
-                                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                              }}>
-                                <span style={{ fontWeight: 600, marginRight: 4 }}>
-                                  {(msg as InboxMessageApi).quotedFromMe ? (me.name ?? "You") : (selected.contactName ?? "Contact")}:
-                                </span>
-                                {(msg as InboxMessageApi).quotedBody}
-                              </div>
-                            )}
+                            {/* Quoted message bubble — works for both DB messages and optimistic SentMessages */}
+                            {(() => {
+                              const qBody = (msg as any).quotedBody;
+                              const qFromMe = (msg as any).quotedFromMe;
+                              if (!qBody) return null;
+                              return (
+                                <div style={{
+                                  fontSize: 11, marginBottom: 6, padding: "4px 8px",
+                                  borderLeft: `2px solid ${isMe ? "rgba(255,255,255,0.5)" : "#2563eb"}`,
+                                  background: isMe ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.05)",
+                                  borderRadius: "0 4px 4px 0",
+                                  color: isMe ? "rgba(255,255,255,0.75)" : "var(--t2)",
+                                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                }}>
+                                  <span style={{ fontWeight: 600, marginRight: 4 }}>
+                                    {qFromMe ? (me.name ?? "You") : (selected.contactName ?? "Contact")}:
+                                  </span>
+                                  {qBody}
+                                </div>
+                              );
+                            })()}
                             {renderMessageBody(text, setLightboxUrl)}
                           </div>
+                          {/* Reaction badge */}
+                          {localReactions[msg.id] && (
+                            <div style={{
+                              marginTop: 3, alignSelf: isMe ? "flex-end" : "flex-start",
+                              fontSize: 16, lineHeight: 1, background: "var(--card)",
+                              border: "1px solid var(--bd)", borderRadius: 12,
+                              padding: "2px 6px", display: "inline-block",
+                              boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
+                            }}>
+                              {localReactions[msg.id]}
+                            </div>
+                          )}
                           <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 3,
                             display: "flex", gap: 5, alignItems: "center" }}>
                             {fmtAgo(time)}
@@ -984,6 +1092,7 @@ export function InboxView() {
                                     <button key={emoji}
                                       onClick={() => {
                                         setReactionPickerId(null);
+                                        setLocalReactions((prev) => ({ ...prev, [msg.id]: emoji }));
                                         inboxApi.react(msg.id, emoji).catch(() => {});
                                       }}
                                       style={{ background: "transparent", border: "none", cursor: "pointer",
@@ -1080,9 +1189,11 @@ export function InboxView() {
                     )}
                   </button>
                   <textarea ref={textareaRef}
-                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSend(); }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+                    }}
                     onPaste={handlePaste}
-                    placeholder={`Message ${selected.contactName ?? ""}… (⌘↵ to send, paste image)`}
+                    placeholder={`Message ${selected.contactName ?? ""}… (Enter to send, Shift+Enter for newline)`}
                     rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px",
                       borderRadius: 10, border: "1px solid var(--bd)", background: "var(--card)",
                       color: "var(--t1)", outline: "none", lineHeight: 1.4 }} />

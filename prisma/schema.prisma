@@ -459,6 +459,8 @@ model InboxMessage {
   @@index([userId])
   @@index([receivedAt])
   @@index([contactId])
+  @@index([contactId, platform, receivedAt])
+  @@index([userId, contactId])
   @@map("inbox_messages")
   @@schema("contacts")
 }

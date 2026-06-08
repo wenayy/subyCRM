@@ -4,7 +4,8 @@ import type { PlatformType } from "@prisma/client";
 import { broadcastInboxEvent } from "./sse.service";
 
 export function parseMediaMarkdown(text: string): { filePath: string; caption: string } | null {
-  const match = text.match(/!?\[([^\]]*)\]\((\/media\/[^)]+)\)/);
+  // Only match image markdown `![...]()` — plain links `[...]()` are sent as text
+  const match = text.match(/!\[([^\]]*)\]\((\/media\/[^)]+)\)/);
   if (!match) return null;
 
   const [fullTag, name, url] = match;
@@ -66,10 +67,12 @@ export const inboxService = {
   },
 
   async getThread(contactId: string, platform: string, _userId: string = "default") {
-    return (prisma as any).inboxMessage.findMany({
+    const msgs = await (prisma as any).inboxMessage.findMany({
       where: { contactId, platform },
-      orderBy: { receivedAt: "asc" },
+      orderBy: { receivedAt: "desc" },
+      take: 50,
     });
+    return (msgs as any[]).reverse();
   },
 
   async getThreadBefore(contactId: string, platform: string, before: Date, limit: number = 50) {
@@ -423,9 +426,23 @@ export const inboxService = {
               };
             }
           }
-          const sentMsg = media
-            ? await whatsappService.sendMediaMessage(jid, media.filePath, media.caption, userId ?? "default")
-            : await whatsappService.sendMessage(jid, text, userId ?? "default", quotedMsg);
+          let sentMsg: unknown;
+          if (media) {
+            try {
+              sentMsg = await whatsappService.sendMediaMessage(jid, media.filePath, media.caption, userId ?? "default");
+            } catch (mediaErr: any) {
+              // If media send fails for a non-reconnect reason (bad format, file missing, etc.),
+              // send just the caption as text so WhatsApp doesn't receive raw markdown
+              const isReconnect = mediaErr?.message?.includes("reconnecting") || mediaErr?.message?.includes("not connected");
+              if (isReconnect) throw mediaErr; // rethrow so outer catch can queue BullMQ retry
+              const fallbackText = media.caption || "";
+              if (fallbackText) {
+                sentMsg = await whatsappService.sendMessage(jid, fallbackText, userId ?? "default", quotedMsg);
+              }
+            }
+          } else {
+            sentMsg = await whatsappService.sendMessage(jid, text, userId ?? "default", quotedMsg);
+          }
           // Update temp ID to real Baileys message ID so we don't get a duplicate from the echo
           const realId = (sentMsg as any)?.key?.id;
           if (realId) {
@@ -566,11 +583,14 @@ export const inboxService = {
     });
 
     if (matchingMessages.length > 0) {
+      // Also fetch the contact's real name so we can update contactName on linked messages.
+      // Messages saved before the contact existed store the phone number as contactName.
+      const contact = await prisma.contact.findUnique({ where: { id: contactId }, select: { name: true } });
       await (prisma as any).inboxMessage.updateMany({
         where: {
           id: { in: matchingMessages.map((m: any) => m.id) },
         },
-        data: { contactId },
+        data: { contactId, ...(contact ? { contactName: contact.name } : {}) },
       });
 
       await prisma.interaction.createMany({

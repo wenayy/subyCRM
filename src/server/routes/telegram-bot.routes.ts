@@ -4,6 +4,14 @@ import crypto from "crypto";
 
 const router = Router();
 
+// GET /api/telegram-bot/username — returns the configured bot's username
+router.get("/username", async (_req, res, next) => {
+  try {
+    const { getBotUsername } = await import("../services/telegram-bot.service");
+    res.json({ username: await getBotUsername() });
+  } catch (err) { next(err); }
+});
+
 // GET /api/telegram-bot/status
 router.get("/status", async (req, res, next) => {
   try {
