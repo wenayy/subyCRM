@@ -6,6 +6,18 @@ process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
 
+// Graceful shutdown: flush any pending WhatsApp session writes before exit
+async function gracefulShutdown(signal: string) {
+  console.log(`[server] ${signal} received — flushing sessions before exit`);
+  try {
+    const { flushWhatsAppSessions } = await import("./services/whatsapp.service");
+    await flushWhatsAppSessions();
+  } catch {}
+  process.exit(0);
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
+
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
@@ -86,15 +98,24 @@ app.use("/api/linkedin", linkedinCallbackRouter); // callback must bypass requir
 app.use("/api/discord", discordCallbackRouter);   // callback must bypass requireAuth
 app.use("/api/matrix", matrixRouter);             // Matrix appservice webhook — no user auth
 
-// ─── Static media files (uploaded attachments, WA/Telegram media) ────────────
+// ─── Auth-gated media files (WA/Telegram attachments) ────────────────────────
 import path from "path";
 import fs from "fs";
 const mediaDir = path.join(process.cwd(), "public", "media");
 fs.mkdirSync(mediaDir, { recursive: true });
-app.use("/media", express.static(path.join(process.cwd(), "public", "media"), {
-  maxAge: "7d",
-  setHeaders: (res) => { res.setHeader("Access-Control-Allow-Origin", "*"); },
-}));
+app.use("/media", async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  try {
+    const session = await auth.api.getSession({ headers: req.headers as any });
+    if (!session) { res.status(401).json({ error: "Unauthorized" }); return; }
+    // Prevent path traversal
+    const safePath = path.normalize(req.path).replace(/^(\.\.[/\\])+/, "");
+    const filePath = path.join(mediaDir, safePath);
+    if (!filePath.startsWith(mediaDir)) { res.status(403).end(); return; }
+    if (!fs.existsSync(filePath)) { res.status(404).end(); return; }
+    res.setHeader("Cache-Control", "private, max-age=604800");
+    res.sendFile(filePath);
+  } catch { next(); }
+});
 
 app.use(express.json({ limit: "20mb" }));
 
@@ -178,7 +199,7 @@ slackService.autoReconnect();
 
 // ─── Start server ────────────────────────────────────────────
 app.listen(PORT, async () => {
-  console.log(`Suby Contacts API running on port ${PORT}`);
+  console.log(`Suby Contacts API running on port ${PORT} | FRONTEND=${process.env.FRONTEND_URL} | ENC_KEY=${process.env.ENCRYPTION_KEY ? "loaded" : "MISSING"}`);
 
   // ── Schema migration: platform unique constraint per-contact ───
   // Drop any 2-column (type, platform_id) unique constraint (regardless of name),
@@ -372,6 +393,13 @@ app.listen(PORT, async () => {
       // Also claim default tags and companies
       await (prisma as any).tag.updateMany({ where: { userId: "default" }, data: { userId: firstUser.id } });
       await (prisma as any).company.updateMany({ where: { userId: "default" }, data: { userId: firstUser.id } });
+
+      // Seed default tags if they don't exist yet
+      const DEFAULT_TAGS = ["Investor", "Strategic", "EU", "US", "Crypto"];
+      for (const name of DEFAULT_TAGS) {
+        const exists = await prisma.tag.findFirst({ where: { userId: firstUser.id, name } });
+        if (!exists) await prisma.tag.create({ data: { userId: firstUser.id, name } });
+      }
     } catch (e: any) {
       console.error("[startup] Default data claim error:", e.message);
     }
@@ -576,6 +604,7 @@ app.listen(PORT, async () => {
     { repeat: { cron: "0 */12 * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
   console.log("[server] LinkedIn sync scheduled every 12 hours");
+
 });
 
 export default app;

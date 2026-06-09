@@ -110,35 +110,67 @@ Be proactive: choose the most specific matching category. Avoid using "other" un
     return result;
   },
 
-  async generateSummary(contact: ContactForAI): Promise<string> {
+  async generateSummary(
+    contact: ContactForAI,
+    inboxMessages: Array<{ platform: string; body: string | null; preview: string | null; fromMe: boolean; receivedAt: Date }> = [],
+  ): Promise<string> {
     const platforms = contact.platforms.map((p) => `${p.type}${p.displayName ? ` (${p.displayName})` : ""}`).join(", ");
-    const interactions = contact.interactions.slice(0, 20)
-      .map((i) => `[${i.occurredAt.toISOString().slice(0, 10)}] ${i.platform} ${i.direction}${i.contentSnippet ? `: ${i.contentSnippet.slice(0, 200)}` : ""}`)
-      .join("\n");
     const notes = (contact.notes || []).slice(0, 10).map((n) => `- ${n.content.slice(0, 300)}`).join("\n");
     const tags = (contact.contactTags || []).map((ct) => ct.tag.name).join(", ");
 
-    const systemPrompt = `You are an expert personal CRM assistant for a founder of a payments infrastructure startup called "Suby".
-Suby is a payments infra company targeting payment processors (like Stripe, Adyen), crypto custodians (Coinbase, Ledger), VCs (Sequoia, a16z), AI/infra players (Mistral, Vercel, HF), and fintechs (Qonto, Ramp).
+    // Use full inbox messages if available, fall back to interaction snippets
+    // Messages are already sorted newest-first — keep that order so the AI sees the latest first
+    let conversationContext: string;
+    if (inboxMessages.length > 0) {
+      conversationContext = inboxMessages
+        .map((m) => {
+          const date = m.receivedAt.toISOString().slice(0, 10);
+          const who = m.fromMe ? "Me" : contact.name;
+          const text = (m.body || m.preview || "").slice(0, 400);
+          return `[${date}] [${m.platform}] ${who}: ${text}`;
+        })
+        .join("\n");
+    } else {
+      conversationContext = contact.interactions.slice(0, 20)
+        .map((i) => `[${i.occurredAt.toISOString().slice(0, 10)}] ${i.platform} ${i.direction}${i.contentSnippet ? `: ${i.contentSnippet.slice(0, 200)}` : ""}`)
+        .join("\n");
+    }
 
-Your task is to write a concise, professional, yet casual and highly specific 2-4 sentence CRM summary for a contact.
-Avoid generic placeholder text. Analyze the contact's name, company, role, platforms, tags, notes, and the actual log of recent interactions (DMs, emails, chats).
+    const systemPrompt = `You are summarising a contact's conversation history for the founder of Suby (a payments infra startup). The founder is the person reading this — they are logged in.
 
-Mention:
-1. Who they are (name, company, role) and their value to Suby.
-2. The current state of the relationship based on the interactions (how recently we spoke, on what platforms, or if the relationship is cold/new).
-3. The main focus of recent discussions or notes (e.g. EU rails, stablecoin off-ramps, hardware wallet integration specs, roadmaps, etc.).
+IMPORTANT attribution rules — read carefully:
+- In the messages, "Me" = the founder (the person reading this summary). Lines starting with "Me:" are things the founder said.
+- The contact's name (e.g. "Gaspard:") = things the contact said.
+- Never confuse the two. If "Me:" said something, say "you said/asked". If the contact said something, say "[name] said/asked".
+- The contact's Role field (e.g. "Co-founder") is THEIR job title at THEIR company — it does not mean they work at Suby or are the founder's co-founder.
 
-Return only the clean summary text. Do not add any headings or labels.`;
+Write the summary in first-person-friendly language — as if telling the founder: "here's what you and [name] talked about." Base it on what's actually in the messages, newest first.
+
+Return a JSON object with this exact structure:
+{
+  "snapshot": "1 sentence: [name] is a [role] at [company] — short description of what your latest conversation was about.",
+  "highlights": [
+    "The main topic you and [name] discussed (what was actually said)",
+    "[name] said / asked / mentioned — something specific from their messages",
+    "What you said or asked, and whether they replied — open thread or next step"
+  ]
+}
+
+Rules:
+- snapshot ≤ 20 words. Use their actual role/company from the data. Never say "your co-founder" unless their tag explicitly says "team".
+- Each highlight ≤ 15 words, no full stops, conversational
+- Only reference things that actually appear in the messages — no guessing
+- Never say "strong relationship", "valuable contact", or anything generic`;
 
     const res = await getOpenAI().chat.completions.create({
       model: MODEL,
+      response_format: { type: "json_object" },
       temperature: 0.3,
       messages: [
         { role: "system", content: systemPrompt },
         {
           role: "user",
-          content: `Name: ${contact.name}\nCompany: ${contact.company || "Unknown"}\nRole: ${contact.role || "Unknown"}\nPlatforms: ${platforms || "None"}\nTags: ${tags || "None"}\n\nInteractions:\n${interactions || "None"}\n\nNotes:\n${notes || "None"}`,
+          content: `Name: ${contact.name}\nCompany: ${contact.company || "Unknown"}\nRole: ${contact.role || "Unknown"}\nPlatforms: ${platforms || "None"}\nTags: ${tags || "None"}\n\nConversation messages (newest first):\n${conversationContext || "None"}\n\nNotes:\n${notes || "None"}`,
         }
       ],
     });

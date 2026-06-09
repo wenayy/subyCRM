@@ -3,7 +3,6 @@
 import { useState, useEffect, use } from "react";
 import { useRouter } from "next/navigation";
 import { companiesApi } from "@/lib/api";
-import { MOCK_COMPANIES } from "@/lib/mock-companies";
 import type { Company, Contact } from "@/lib/types";
 import { PlatformIcon } from "@/components/platform-icon";
 import { Button } from "@/components/ui/button";
@@ -53,11 +52,7 @@ export function CompanyDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
 
     companiesApi.getById(id)
       .then(applyCompany)
-      .catch(() => {
-        // Fall back to mock only if API fails (e.g. offline dev)
-        const mock = MOCK_COMPANIES.find((m) => m.id === id);
-        if (mock) applyCompany(mock);
-      })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
 

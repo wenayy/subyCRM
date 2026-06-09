@@ -87,10 +87,10 @@ export const contactsApi = {
   deleteNote: (id: string, noteId: string) =>
     apiFetch<{ success: boolean }>(`/api/contacts/${id}/notes/${noteId}`, { method: "DELETE" }),
 
-  addTag: (id: string, tagId: string) =>
-    apiFetch<unknown>(`/api/contacts/${id}/tags`, {
+  addTag: (id: string, tagIdOrName: string, byName = false) =>
+    apiFetch<any>(`/api/contacts/${id}/tags`, {
       method: "POST",
-      body: JSON.stringify({ tagId }),
+      body: JSON.stringify(byName ? { name: tagIdOrName } : { tagId: tagIdOrName }),
     }),
 
   removeTag: (id: string, tagId: string) =>

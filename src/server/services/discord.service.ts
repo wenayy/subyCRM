@@ -1,12 +1,13 @@
 import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
+import { encrypt, decrypt } from "../lib/encryption";
 
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "";
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/discord/callback`;
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3005";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // Permissions: VIEW_CHANNEL + READ_MESSAGE_HISTORY + SEND_MESSAGES
 const BOT_PERMISSIONS = "68608";
@@ -68,7 +69,6 @@ function startBot() {
         GatewayIntentBits.DirectMessages,
         GatewayIntentBits.MessageContent,
       ],
-      // Required for bots to receive DM events in discord.js v14
       partials: [Partials.Channel, Partials.Message],
     });
 
@@ -84,21 +84,20 @@ function startBot() {
     client.on(Events.MessageCreate, async (message) => {
       try {
         if (message.author.bot) return;
-        // Only process DMs to the bot — ignore all server/guild channel messages
         if (message.channel.type !== ChannelType.DM) return;
         const text = message.content?.trim();
         if (!text) return;
+
         const displayName = message.author.globalName ?? message.author.username;
-        
         const contact = await findContactForDiscord({
           id: message.author.id,
           username: message.author.username,
           globalName: message.author.globalName,
         });
 
-        // Look up userId from the discord token record
         const discordTokenRec = await (prisma as any).discordToken.findFirst();
         const botUserId = discordTokenRec?.userId ?? "default";
+
         await inboxService.upsert({
           platform: "discord",
           externalId: message.id,
@@ -110,6 +109,7 @@ function startBot() {
           body: text,
           receivedAt: message.createdAt,
           needsReply: true,
+          fromMe: false,
         });
       } catch { /* ignore */ }
     });
@@ -170,6 +170,63 @@ async function syncDMHistory(botToken: string, userId: string) {
     if (synced > 0) console.log(`[discord] Synced ${synced} DM messages`);
   } catch (err: any) {
     console.error("[discord] DM history sync failed:", err.message);
+  }
+}
+
+async function syncGuildHistory(botToken: string, userId: string) {
+  try {
+    const headers = { Authorization: `Bot ${botToken}`, "Content-Type": "application/json" };
+
+    const guildsRes = await fetch("https://discord.com/api/v10/users/@me/guilds", { headers });
+    if (!guildsRes.ok) return;
+    const guilds = await guildsRes.json() as Array<{ id: string; name: string }>;
+
+    let synced = 0;
+    for (const guild of guilds) {
+      const chRes = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/channels`, { headers });
+      if (!chRes.ok) continue;
+      const channels = await chRes.json() as Array<{ id: string; type: number }>;
+
+      // Only text channels (type 0)
+      for (const ch of channels.filter((c) => c.type === 0)) {
+        const msgRes = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages?limit=50`, { headers });
+        if (!msgRes.ok) continue;
+        const messages = await msgRes.json() as Array<{
+          id: string; content: string; timestamp: string;
+          author: { id: string; username: string; global_name?: string | null; bot?: boolean };
+        }>;
+
+        for (const msg of messages) {
+          if (msg.author.bot) continue;
+          if (!msg.content?.trim()) continue;
+
+          const contact = await findContactForDiscord({
+            id: msg.author.id,
+            username: msg.author.username,
+            globalName: msg.author.global_name,
+          });
+          const displayName = msg.author.global_name ?? msg.author.username;
+
+          await inboxService.upsert({
+            platform: "discord",
+            externalId: msg.id,
+            userId,
+            contactId: contact?.id ?? null,
+            contactName: contact?.name ?? displayName,
+            senderId: msg.author.id,   // group by person, not by channel
+            preview: msg.content.slice(0, 120),
+            body: msg.content,
+            receivedAt: new Date(msg.timestamp),
+            needsReply: false,
+            fromMe: false,
+          });
+          synced++;
+        }
+      }
+    }
+    if (synced > 0) console.log(`[discord] Synced ${synced} guild messages`);
+  } catch (err: any) {
+    console.error("[discord] Guild history sync failed:", err.message);
   }
 }
 
@@ -234,6 +291,7 @@ export const discordService = {
 
     startBot();
     void triggerImport(userId);
+    void syncDMHistory(BOT_TOKEN, userId);
   },
 
   async getStatus(userId: string) {
@@ -267,8 +325,8 @@ export const discordService = {
     const me = await res.json() as { id: string; username: string };
     await (prisma as any).discordToken.upsert({
       where: { userId },
-      create: { userId, botToken, discordUserId: me.id, username: me.username },
-      update: { botToken, discordUserId: me.id, username: me.username },
+      create: { userId, botToken: encrypt(botToken), discordUserId: me.id, username: me.username },
+      update: { botToken: encrypt(botToken), discordUserId: me.id, username: me.username },
     });
     startBot();
     void triggerImport(userId);
@@ -279,15 +337,15 @@ export const discordService = {
   get callbackErrorRedirect() { return `${FRONTEND_URL}/dashboard/settings?discord=error`; },
 
   async sync(userId: string): Promise<{ synced: number }> {
-    // Discord doesn't expose bot DM history via API — messages arrive live via MessageCreate.
-    // Sync just marks the timestamp so the Settings page shows "Last synced".
+    await syncDMHistory(BOT_TOKEN, userId);
     await (prisma as any).discordToken.update({ where: { userId }, data: { lastSyncAt: new Date() } });
-    return { synced: 0 };
+    const count = await (prisma as any).inboxMessage.count({ where: { platform: "discord", userId } });
+    return { synced: count };
   },
 
   async sendMessage(userId: string, channelId: string, text: string): Promise<void> {
     const rec = await (prisma as any).discordToken.findUnique({ where: { userId } });
-    const botToken = rec?.botToken || process.env.DISCORD_BOT_TOKEN;
+    const botToken = rec?.botToken ? decrypt(rec.botToken) : process.env.DISCORD_BOT_TOKEN;
     if (!botToken) throw new Error("Discord not connected — no bot token");
     const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
       method: "POST",

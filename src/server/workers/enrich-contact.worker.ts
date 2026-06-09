@@ -1,6 +1,6 @@
 import { Worker, Job } from "bullmq";
-import { redis } from "../lib/redis";
-import { QUEUE_NAMES, DEFAULT_JOB_OPTIONS } from "../lib/queues";
+import { redisConnection } from "../lib/redis";
+import { QUEUE_NAMES } from "../lib/queues";
 import { enrichmentService } from "../services/enrichment.service";
 
 export interface EnrichContactJobData {
@@ -19,9 +19,8 @@ export function startEnrichContactWorker() {
       return result;
     },
     {
-      connection: redis,
+      connection: redisConnection.connection,
       concurrency: 2,
-      defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },
   );
 

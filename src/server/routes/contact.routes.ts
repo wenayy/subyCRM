@@ -247,8 +247,27 @@ router.post("/:id/platforms", async (req, res, next) => {
 router.put("/:id/platforms/:pid", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
-    const { displayName, profileUrl } = req.body;
-    const platformId = req.body.platformId ? normalizePlatformId(req.body.type ?? "", req.body.platformId) : undefined;
+    const { displayName } = req.body;
+    const existing = await prisma.platform.findFirst({ where: { id: req.params.pid } });
+    const platformType = req.body.type ?? existing?.type ?? "";
+
+    let rawId: string | undefined = req.body.platformId;
+    // Strip full URLs to slug/handle — e.g. linkedin.com/in/slug → slug, x.com/handle → handle
+    if (rawId) {
+      const liMatch = rawId.match(/linkedin\.com\/in\/([^/?#]+)/i);
+      const xMatch  = rawId.match(/(?:x|twitter)\.com\/([^/?#]+)/i);
+      if (liMatch) rawId = liMatch[1];
+      else if (xMatch) rawId = xMatch[1];
+    }
+    const platformId = rawId ? normalizePlatformId(platformType, rawId) : undefined;
+
+    // Auto-derive profileUrl from platformId for known types
+    let profileUrl = req.body.profileUrl;
+    if (platformId && !profileUrl) {
+      if (platformType === "linkedin") profileUrl = `https://www.linkedin.com/in/${platformId}`;
+      else if (platformType === "x")   profileUrl = `https://x.com/${platformId}`;
+    }
+
     const platform = await contactService.updatePlatform(userId, req.params.id, req.params.pid, { platformId, displayName, profileUrl });
     await clearCache();
     res.json(platform);

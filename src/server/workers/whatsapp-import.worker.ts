@@ -7,6 +7,43 @@ import { inboxService } from "../services/inbox.service";
 
 const BATCH = 20;
 
+// Build import contacts list from the in-memory WhatsApp contacts cache.
+// Falls back to extracting senders from existing inbox messages if cache is empty
+// (happens after server restart when contacts.upsert hasn't re-fired yet).
+async function resolveContacts(userId: string): Promise<Array<{ jid: string; name: string; phoneDigits: string }>> {
+  // Primary: in-memory cache populated by contacts.upsert event
+  let contacts = whatsappService.getContactsForImport(userId);
+  if (contacts.length) return contacts;
+
+  // Wait up to 60s for WhatsApp to finish reconnecting and fire contacts.upsert
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    contacts = whatsappService.getContactsForImport(userId);
+    if (contacts.length) return contacts;
+  }
+
+  // Fallback: extract unique senders from WhatsApp inbox messages.
+  // This covers the server-restart case where contacts.upsert never re-fires.
+  console.log("[whatsapp-import] Cache empty after 60s — falling back to inbox message senders");
+  const messages = await (prisma as any).inboxMessage.findMany({
+    where: { userId, platform: "whatsapp", senderId: { not: null } },
+    select: { senderId: true, contactName: true },
+    distinct: ["senderId"],
+  });
+
+  return messages
+    .filter((m: any) => m.senderId && m.senderId.endsWith("@s.whatsapp.net"))
+    .map((m: any) => {
+      const phoneDigits = m.senderId.split("@")[0].replace(/\D/g, "");
+      return {
+        jid: m.senderId,
+        name: m.contactName || phoneDigits,
+        phoneDigits,
+      };
+    })
+    .filter((c: any) => c.phoneDigits.length >= 5);
+}
+
 export function startWhatsAppImportWorker() {
   const worker = new Worker(
     QUEUE_NAMES.WHATSAPP_IMPORT,
@@ -16,12 +53,16 @@ export function startWhatsAppImportWorker() {
         importJobId: string;
       };
 
-      // Fetch contacts from the live in-memory cache at job-run time (same process as service)
-      const contacts = whatsappService.getContactsForImport(userId);
+      const contacts = await resolveContacts(userId);
+
       if (!contacts.length) {
         await prisma.importJob.update({
           where: { id: importJobId },
-          data: { status: "failed", errorLog: { error: "No WhatsApp contacts in cache — WhatsApp may still be syncing. Wait a moment and try again." }, completedAt: new Date() },
+          data: {
+            status: "failed",
+            errorLog: { error: "No WhatsApp contacts found — make sure WhatsApp is connected and has messages." },
+            completedAt: new Date(),
+          },
         });
         return { imported: 0, updated: 0, skipped: 0 };
       }
@@ -33,13 +74,11 @@ export function startWhatsAppImportWorker() {
         where: { type: "whatsapp", contact: { userId } },
         include: { contact: { select: { name: true } } },
       });
-      // Map: phoneDigits/jid → { contactId, currentName }
       const existingMap = new Map(existingPlatforms.map((p) => [
         p.platformId,
         { contactId: p.contactId, currentName: (p as any).contact?.name ?? "" },
       ]));
 
-      // Split into batches and process in parallel
       for (let i = 0; i < contacts.length; i += BATCH) {
         const batch = contacts.slice(i, i + BATCH);
 
@@ -48,13 +87,10 @@ export function startWhatsAppImportWorker() {
             try {
               const hit = existingMap.get(phoneDigits) ?? existingMap.get(jid);
               if (hit) {
-                // If the incoming name is a real phone-book name (info.name, not notify/pushName),
-                // update the CRM contact name to stay in sync with the user's phone contacts.
-                // We detect "better" names by checking if it lacks the telltale notify-format markers.
                 const looksLikePushName = (n: string) => /_\d{4,}/.test(n) || (n.includes("_") && /\d/.test(n) && n.split("_").length > 2);
-              const isBetterName = name && name !== hit.currentName && !name.match(/^[+\d]/) && name.length > 1
-                && !(looksLikePushName(name) && !looksLikePushName(hit.currentName));
-              if (isBetterName) {
+                const isBetterName = name && name !== hit.currentName && !name.match(/^[+\d]/) && name.length > 1
+                  && !(looksLikePushName(name) && !looksLikePushName(hit.currentName));
+                if (isBetterName) {
                   await prisma.contact.update({
                     where: { id: hit.contactId },
                     data: { name },
@@ -64,9 +100,6 @@ export function startWhatsAppImportWorker() {
                 return;
               }
 
-              // Before creating, check if this user already has a contact with this phone
-              // (manually-added contacts without a WA platform yet). Scope to userId so we
-              // don't skip creation for User B just because User A has the same phone.
               const contactByPhone = await prisma.platform.findFirst({
                 where: { type: "whatsapp", platformId: phoneDigits, contact: { userId } },
                 select: { contactId: true },
@@ -91,7 +124,6 @@ export function startWhatsAppImportWorker() {
               });
               existingMap.set(phoneDigits, { contactId: "", currentName: name });
 
-              // Retroactively link any inbox messages saved before this contact existed
               const newContact = await prisma.platform.findFirst({
                 where: { type: "whatsapp", platformId: phoneDigits },
                 select: { contactId: true },
@@ -108,14 +140,12 @@ export function startWhatsAppImportWorker() {
           })
         );
 
-        // Update progress after each batch
         await prisma.importJob.update({
           where: { id: importJobId },
           data: { imported, deduplicated: updated, errors: skipped },
         }).catch(() => {});
       }
 
-      // Flush the platform cache so new contacts are matched immediately on next message
       invalidatePlatformCache(userId);
 
       await prisma.importJob.update({

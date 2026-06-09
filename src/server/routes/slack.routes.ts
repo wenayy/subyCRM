@@ -37,15 +37,16 @@ router.delete("/disconnect", async (req, res, next) => {
 slackCallbackRouter.get("/callback", async (req, res) => {
   const { code, state, error } = req.query as Record<string, string>;
   if (error || !code) {
-    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3005"}/dashboard/settings?slack=error`);
+    console.error("[slack callback] Slack returned error or no code:", { error, hasCode: !!code, query: req.query });
+    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3000"}/dashboard/settings?slack=error`);
     return;
   }
   try {
     await slackService.handleCallback(code, state);
-    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3005"}/dashboard/settings?slack=connected`);
+    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3000"}/dashboard/settings?slack=connected`);
   } catch (err) {
     console.error("[slack callback]", err);
-    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3005"}/dashboard/settings?slack=error`);
+    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3000"}/dashboard/settings?slack=error`);
   }
 });
 

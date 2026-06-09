@@ -1,5 +1,15 @@
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
+import { encrypt, decrypt } from "../lib/encryption";
+
+function decryptSession(rec: any) {
+  if (!rec) return rec;
+  return {
+    ...rec,
+    sessionStr: rec.sessionStr ? decrypt(rec.sessionStr) : rec.sessionStr,
+    apiHash: rec.apiHash ? decrypt(rec.apiHash) : rec.apiHash,
+  };
+}
 
 // In-memory client registry (one per user session)
 const clients: Map<string, unknown> = new Map();
@@ -236,7 +246,7 @@ export const telegramPersonalService = {
     const { TelegramClient, StringSession } = await getTelegramLib();
 
     // Check existing session
-    const existing = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const existing = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     const sessionStr = existing?.sessionStr ?? "";
 
     const client = new TelegramClient(new StringSession(sessionStr), resolvedApiId, resolvedApiHash, {
@@ -290,8 +300,8 @@ export const telegramPersonalService = {
         const savedSession = (client.session as InstanceType<typeof StringSession>).save() as unknown as string;
         await (prisma as any).telegramPersonalSession.upsert({
           where: { userId },
-          create: { userId, phoneNumber: me.phone ?? "", apiId: resolvedApiId, apiHash: resolvedApiHash, sessionStr: savedSession, connected: true },
-          update: { phoneNumber: me.phone ?? "", apiId: resolvedApiId, apiHash: resolvedApiHash, sessionStr: savedSession, connected: true },
+          create: { userId, phoneNumber: me.phone ?? "", apiId: resolvedApiId, apiHash: encrypt(resolvedApiHash), sessionStr: encrypt(savedSession), connected: true },
+          update: { phoneNumber: me.phone ?? "", apiId: resolvedApiId, apiHash: encrypt(resolvedApiHash), sessionStr: encrypt(savedSession), connected: true },
         });
 
         // Register message listener, warm entity cache, and sync history
@@ -308,7 +318,7 @@ export const telegramPersonalService = {
   },
 
   async getStatus(userId: string) {
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     const hasEnvCreds = !!(ENV_API_ID && ENV_API_HASH);
     if (!rec) return { connected: false, lastSync: null, hasEnvCreds };
     return { connected: rec.connected, lastSync: rec.lastSyncAt?.toISOString() ?? null, phone: rec.phoneNumber, hasEnvCreds };
@@ -321,7 +331,7 @@ export const telegramPersonalService = {
 
     const { TelegramClient, StringSession } = await getTelegramLib();
 
-    const existing = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const existing = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     const sessionStr = existing?.sessionStr ?? "";
 
     const client = new TelegramClient(new StringSession(sessionStr), resolvedApiId, resolvedApiHash, {
@@ -335,8 +345,8 @@ export const telegramPersonalService = {
 
     await (prisma as any).telegramPersonalSession.upsert({
       where: { userId },
-      create: { userId, phoneNumber, apiId: resolvedApiId, apiHash: resolvedApiHash, connected: false },
-      update: { phoneNumber, apiId: resolvedApiId, apiHash: resolvedApiHash },
+      create: { userId, phoneNumber, apiId: resolvedApiId, apiHash: encrypt(resolvedApiHash), connected: false },
+      update: { phoneNumber, apiId: resolvedApiId, apiHash: encrypt(resolvedApiHash) },
     });
 
     return { sent: true };
@@ -348,7 +358,7 @@ export const telegramPersonalService = {
     const pending = pendingCodes.get(userId);
     if (!pending) throw new Error("No pending code — call sendCode first");
 
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     if (!rec) throw new Error("Session not found");
 
     let client = clients.get(userId) as InstanceType<typeof TelegramClient> | undefined;
@@ -374,7 +384,7 @@ export const telegramPersonalService = {
 
     await (prisma as any).telegramPersonalSession.update({
       where: { userId },
-      data: { sessionStr, connected: true },
+      data: { sessionStr: encrypt(sessionStr), connected: true },
     });
 
     // Register live message listener, warm entity cache, and sync history
@@ -387,7 +397,7 @@ export const telegramPersonalService = {
 
   async importContacts(userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
     const { TelegramClient, StringSession } = await getTelegramLib();
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     if (!rec?.sessionStr) throw new Error("Telegram personal not authenticated");
 
     let client = clients.get(userId) as InstanceType<typeof TelegramClient> | undefined;
@@ -491,7 +501,7 @@ export const telegramPersonalService = {
 
   async sync(userId: string, opts?: { deep?: boolean }): Promise<{ synced: number }> {
     const { TelegramClient, StringSession } = await getTelegramLib();
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     if (!rec?.sessionStr) throw new Error("Not authenticated");
 
     let client = clients.get(userId) as InstanceType<typeof TelegramClient> | undefined;
@@ -679,7 +689,7 @@ export const telegramPersonalService = {
 
   async sendPersonalMessage(userId: string, peer: string, text: string, replyTo?: number, contactId?: string | null): Promise<void> {
     const { TelegramClient, StringSession } = await getTelegramLib();
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     if (!rec?.sessionStr) throw new Error("Telegram not connected — go to Settings → Telegram to reconnect.");
 
     let client = clients.get(userId) as any;
@@ -778,7 +788,7 @@ export const telegramPersonalService = {
 
   async sendOnly(userId: string, peer: string, text: string, replyTo?: number): Promise<any> {
     const { TelegramClient, StringSession } = await getTelegramLib();
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     if (!rec?.sessionStr) throw new Error("Telegram not connected — go to Settings → Telegram to reconnect.");
 
     let client = clients.get(userId) as any;
@@ -868,7 +878,7 @@ export const telegramPersonalService = {
     let client = clients.get(userId) as any;
     if (!client) {
       const { TelegramClient, StringSession } = await getTelegramLib();
-      const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+      const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
       if (!rec?.sessionStr) throw new Error("Telegram not connected");
       client = new TelegramClient(new StringSession(rec.sessionStr), rec.apiId, rec.apiHash, { connectionRetries: 5 });
       await client.connect();
@@ -902,7 +912,7 @@ export const telegramPersonalService = {
     if (existing) return existing;
 
     const { TelegramClient, StringSession } = await getTelegramLib();
-    const rec = await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } });
+    const rec = decryptSession(await (prisma as any).telegramPersonalSession.findUnique({ where: { userId } }));
     if (!rec?.sessionStr) throw new Error("Telegram not connected");
 
     try {
@@ -926,7 +936,7 @@ export const telegramPersonalService = {
   },
 
   async autoReconnect() {
-    const sessions = await (prisma as any).telegramPersonalSession.findMany();
+    const sessions = ((await (prisma as any).telegramPersonalSession.findMany()) as any[]).map(decryptSession);
     for (const session of sessions) {
       if (!session.sessionStr) continue;
       try {

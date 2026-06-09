@@ -5,6 +5,7 @@ import AsyncLock from "async-lock";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
 import { broadcastInboxEvent } from "./sse.service";
+import { encrypt, decrypt } from "../lib/encryption";
 
 // Memory cache of WhatsApp message IDs sent from this CRM instance to avoid duplicates
 export const sentCrmMessageIds = new Set<string>();
@@ -34,8 +35,8 @@ async function persistAllFilesToDb(authDir: string, userId: string): Promise<voi
     const credsContent = authFiles["creds.json"] ?? null;
     await (prisma as any).whatsAppSession.upsert({
       where: { userId },
-      create: { userId, authFilesJson: blob, credsJson: credsContent },
-      update: { authFilesJson: blob, ...(credsContent ? { credsJson: credsContent } : {}) },
+      create: { userId, authFilesJson: encrypt(blob), credsJson: credsContent ? encrypt(credsContent) : null },
+      update: { authFilesJson: encrypt(blob), ...(credsContent ? { credsJson: encrypt(credsContent) } : {}) },
     });
     console.log(`[whatsapp] Persisted ${Object.keys(authFiles).length} auth files to DB for ${userId}`);
   } catch (e) {
@@ -51,6 +52,19 @@ function schedulePersist(authDir: string, userId: string): void {
     persistAllFilesToDb(authDir, userId);
   }, 4_000); // debounce: write to DB 4s after last key change
   dbPersistTimers.set(userId, t);
+}
+
+// Called on graceful shutdown so pending debounced writes aren't lost.
+export async function flushWhatsAppSessions(): Promise<void> {
+  const pending = Array.from(dbPersistTimers.entries());
+  if (pending.length === 0) return;
+  console.log(`[whatsapp] Flushing ${pending.length} pending session write(s) before exit…`);
+  for (const [userId, timer] of pending) {
+    clearTimeout(timer);
+    dbPersistTimers.delete(userId);
+    const authDir = getAuthDir(userId);
+    await persistAllFilesToDb(authDir, userId);
+  }
 }
 
 async function useRobustMultiFileAuthState(folder: string, userId: string) {
@@ -784,7 +798,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
         select: { authFilesJson: true, credsJson: true },
       });
       if (saved?.authFilesJson) {
-        const authFiles: Record<string, string> = JSON.parse(saved.authFilesJson);
+        const authFiles: Record<string, string> = JSON.parse(decrypt(saved.authFilesJson));
         fs.mkdirSync(authDir, { recursive: true });
         for (const [fname, content] of Object.entries(authFiles)) {
           fs.writeFileSync(path.join(authDir, fname), content, "utf-8");
@@ -793,7 +807,7 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
       } else if (saved?.credsJson) {
         // Legacy fallback: only creds.json was stored (will reconnect but may need re-link)
         fs.mkdirSync(authDir, { recursive: true });
-        fs.writeFileSync(credsFile, saved.credsJson, "utf-8");
+        fs.writeFileSync(credsFile, decrypt(saved.credsJson), "utf-8");
         console.log(`[whatsapp] Restored creds.json (legacy) from DB for ${userId}`);
       }
     } catch (e) {

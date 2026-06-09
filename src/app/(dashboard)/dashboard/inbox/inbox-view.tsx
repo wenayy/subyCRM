@@ -602,6 +602,11 @@ export function InboxView() {
     discord: "Discord", slack: "Slack", whatsapp: "WhatsApp",
   };
 
+  const PLATFORM_COLOR: Record<string, string> = {
+    whatsapp: "#25D366", telegram: "#229ED9", slack: "#E01E5A",
+    discord: "#5865F2", linkedin: "#0A66C2", email: "#6b7280", x: "#888",
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "calc(100vh - 80px)" }}>
       {/* Lightbox */}
@@ -620,30 +625,36 @@ export function InboxView() {
       {/* Add to Contacts modal */}
       {addToContactsFor && (
         <div onClick={() => setAddToContactsFor(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.5)",
+          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.4)",
             display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div onClick={(e) => e.stopPropagation()}
-            style={{ background: "var(--card)", borderRadius: 14, padding: 24, width: 340,
-              boxShadow: "0 8px 40px rgba(0,0,0,0.2)", display: "flex", flexDirection: "column", gap: 16 }}>
+            style={{ background: "var(--sf)", border: "1px solid var(--bd)", borderRadius: 16, padding: "24px",
+              width: 360, boxShadow: "0 12px 48px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.08)",
+              display: "flex", flexDirection: "column", gap: 20 }}>
+            {/* Header */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <h3 style={{ fontSize: 16, fontWeight: 700, color: "var(--t1)", margin: 0 }}>Add to Contacts</h3>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--t1)", margin: 0 }}>Add to Contacts</h3>
               <button onClick={() => setAddToContactsFor(null)}
-                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)", fontSize: 20, lineHeight: 1 }}>×</button>
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)",
+                  fontSize: 20, lineHeight: 1, padding: "2px 6px", borderRadius: 6 }}>×</button>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
-              background: "var(--muted)", borderRadius: 8 }}>
-              <PlatformIcon type={addToContactsFor.platform as PlatformType} size={14} />
-              <div>
-                <div style={{ fontSize: 11, color: "var(--t3)", textTransform: "capitalize" }}>
+            {/* Platform identity row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+              background: "var(--bg)", border: "1px solid var(--bd)", borderRadius: 10 }}>
+              <PlatformIcon type={addToContactsFor.platform as PlatformType} size={20} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: "var(--t2)", textTransform: "capitalize",
+                  fontWeight: 600, letterSpacing: "0.03em" }}>
                   {addToContactsFor.platform}
                 </div>
-                <div style={{ fontSize: 12, color: "var(--t1)", fontWeight: 500 }}>
+                <div style={{ fontSize: 13, color: "var(--t1)", fontWeight: 500, marginTop: 2 }}>
                   {formatSenderId(addToContactsFor.platform, addToContactsFor.senderId)}
                 </div>
               </div>
             </div>
+            {/* Name input */}
             <div>
-              <label style={{ fontSize: 12, color: "var(--t2)", fontWeight: 500, display: "block", marginBottom: 6 }}>
+              <label style={{ fontSize: 12, color: "var(--t2)", fontWeight: 600, display: "block", marginBottom: 6 }}>
                 Contact name
               </label>
               <input
@@ -652,14 +663,17 @@ export function InboxView() {
                 onKeyDown={(e) => { if (e.key === "Enter" && !addToContactsSaving) handleAddToContacts(); }}
                 placeholder="Enter a name…"
                 autoFocus
-                style={{ width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8,
-                  border: "1px solid var(--bd)", background: "var(--card)", color: "var(--t1)", outline: "none",
-                  boxSizing: "border-box" }}
+                style={{ width: "100%", padding: "9px 12px", fontSize: 14, borderRadius: 8,
+                  border: "1.5px solid var(--bd2)", background: "var(--sf)", color: "var(--t1)",
+                  outline: "none", boxSizing: "border-box" }}
+                onFocus={(e) => { (e.currentTarget as HTMLInputElement).style.borderColor = "var(--t1)"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLInputElement).style.borderColor = "var(--bd2)"; }}
               />
             </div>
             {addToContactsError && (
               <p style={{ fontSize: 12, color: "var(--rc)", margin: 0 }}>{addToContactsError}</p>
             )}
+            {/* Actions */}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <Button variant="outline" size="sm" onClick={() => setAddToContactsFor(null)}>Cancel</Button>
               <Button size="sm" disabled={!addToContactsName.trim() || addToContactsSaving}
@@ -690,7 +704,7 @@ export function InboxView() {
           <div>
             <h1 className="text-xl font-bold tracking-tight">Inbox</h1>
             <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>
-              {loading ? "Loading…" : `${totalUnread} unread · ${totalNeedsReply} need reply`}
+              {loading ? <span className="inline-block h-3 w-32 bg-muted/60 animate-pulse rounded align-middle" /> : `${totalUnread} unread · ${totalNeedsReply} need reply`}
             </p>
           </div>
           <div style={{ display: "flex", gap: 4, background: "var(--muted)", borderRadius: 8, padding: 3, flexWrap: "wrap" }}>
@@ -722,21 +736,22 @@ export function InboxView() {
             <button
               onClick={() => setPlatformFilter("all")}
               style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 20,
-                border: `1px solid ${platformFilter === "all" ? "var(--ac)" : "var(--bd)"}`,
-                background: platformFilter === "all" ? "var(--ac)" : "transparent",
-                color: platformFilter === "all" ? "#fff" : "var(--t2)",
+                border: `1px solid ${platformFilter === "all" ? "var(--t1)" : "var(--bd)"}`,
+                background: platformFilter === "all" ? "var(--t1)" : "transparent",
+                color: platformFilter === "all" ? "var(--bg)" : "var(--t2)",
                 fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
               All
             </button>
             {activePlatforms.map(([platform, count]) => {
               const active = platformFilter === platform;
+              const brandColor = PLATFORM_COLOR[platform] ?? "var(--t2)";
               return (
                 <button key={platform}
                   onClick={() => setPlatformFilter(active ? "all" : platform)}
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 20,
-                    border: `1px solid ${active ? "var(--ac)" : "var(--bd)"}`,
-                    background: active ? "var(--ac)" : "transparent",
-                    color: active ? "#fff" : "var(--t2)",
+                    border: `1px solid ${active ? brandColor : "var(--bd)"}`,
+                    background: active ? `${brandColor}22` : "transparent",
+                    color: active ? brandColor : "var(--t2)",
                     fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
                   <PlatformIcon type={platform as PlatformType} size={11} />
                   {PLATFORM_LABEL[platform] ?? platform}
@@ -754,7 +769,20 @@ export function InboxView() {
         {/* Left: Conversation list — hidden on mobile when thread is open */}
         <div className={`rounded-xl border border-border bg-card shadow-sm flex flex-col overflow-y-auto ${selected ? "hidden md:flex" : "flex"}`}>
           {loading && conversations.length === 0 ? (
-            <div style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--t3)" }}>Loading…</div>
+            <div className="flex flex-col gap-0 p-2">
+              {Array.from({ length: 7 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3 px-3 py-3 rounded-lg">
+                  <div className="size-9 rounded-full bg-muted/60 animate-pulse shrink-0" />
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <div className="flex justify-between gap-2">
+                      <div className="h-3 bg-muted/60 animate-pulse rounded w-28" />
+                      <div className="h-2.5 bg-muted/60 animate-pulse rounded w-8" />
+                    </div>
+                    <div className="h-2.5 bg-muted/60 animate-pulse rounded w-44" />
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : filtered.length === 0 ? (
             <div style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--t3)" }}>
               {conversations.length === 0
@@ -864,9 +892,23 @@ export function InboxView() {
         {/* Right: Thread view — hidden on mobile when no thread selected */}
         <div className={`rounded-xl border border-border bg-card shadow-sm flex flex-col overflow-hidden ${!selected ? "hidden md:flex" : "flex"}`}>
           {!selected ? (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 13, color: "var(--t3)" }}>
-              {conversations.length === 0
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "var(--t3)" }}>
+              {loading ? (
+                <div className="flex flex-col gap-4 w-64 animate-pulse">
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded-full bg-muted/60 shrink-0" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3 bg-muted/60 rounded w-28" />
+                      <div className="h-2.5 bg-muted/60 rounded w-20" />
+                    </div>
+                  </div>
+                  <div className="space-y-2 pl-1">
+                    <div className="h-2.5 bg-muted/60 rounded w-full" />
+                    <div className="h-2.5 bg-muted/60 rounded w-5/6" />
+                    <div className="h-2.5 bg-muted/60 rounded w-4/6" />
+                  </div>
+                </div>
+              ) : conversations.length === 0
                 ? <span style={{ textAlign: "center" }}>No messages yet.<br /><br />Connect integrations in <strong>Settings</strong>.</span>
                 : "Select a conversation"}
             </div>
@@ -899,10 +941,11 @@ export function InboxView() {
                       <span style={{ color: "#25d366", fontWeight: 600, fontStyle: "italic", marginLeft: 4 }}>typing…</span>
                     )}
                     {threadLoading && (
-                      <span
-                        className="inline-block rounded-full border border-current border-t-transparent animate-spin ml-1.5"
-                        style={{ width: 10, height: 10, borderWidth: "1.5px", color: "var(--t3)" }}
-                      />
+                      <span className="inline-flex items-center gap-1 ml-2 opacity-50">
+                        <span className="size-1 rounded-full bg-current animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <span className="size-1 rounded-full bg-current animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <span className="size-1 rounded-full bg-current animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </span>
                     )}
                   </div>
                 </div>

@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, useEffect, use } from "react";
+import { ContactDetailSkeleton } from "@/components/ui/skeleton";
 import { useRouter } from "next/navigation";
 import { contactsApi, aiApi, tagsApi, remindersApi } from "@/lib/api";
-import { MOCK_CONTACTS, MOCK_TAGS } from "@/lib/mock-contacts";
-import { MOCK_REMINDERS } from "@/lib/mock-reminders";
 import { MOCK_EVENTS, type CalendarEvent } from "@/lib/mock-events";
 import type {
   Contact, Tag, ContactType, ContactDomain, RelationshipStrength,
@@ -163,6 +162,7 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
   const { id } = use(paramsPromise);
   const router = useRouter();
   const [contact, setContact] = useState<Contact | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [noteText, setNoteText] = useState("");
   const [addingNote, setAddingNote] = useState(false);
@@ -189,36 +189,27 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
   const [newPlatformId, setNewPlatformId] = useState("");
   const [editingPlatformId, setEditingPlatformId] = useState<string | null>(null);
   const [editPlatformValue, setEditPlatformValue] = useState("");
+  const [editingField, setEditingField] = useState<"name" | "role" | "company" | null>(null);
+  const [editFieldValue, setEditFieldValue] = useState("");
 
   useEffect(() => {
-    const mock = MOCK_CONTACTS.find((c) => c.id === id);
-    if (mock) {
-      setContact(mock);
-      setLoading(false);
-    } else {
-      contactsApi.getById(id)
-        .then(setContact)
-        .catch(() => {})
-        .finally(() => setLoading(false));
-    }
+    contactsApi.getById(id)
+      .then(setContact)
+      .catch((err: Error) => setLoadError(err?.message ?? "Failed to load contact"))
+      .finally(() => setLoading(false));
     tagsApi.getAll()
-      .then((t) => setAllTags(t.length ? t : MOCK_TAGS))
-      .catch(() => setAllTags(MOCK_TAGS));
+      .then((t) => setAllTags(t))
+      .catch(() => {});
     loadReminders();
   }, [id]);
 
   const loadReminders = () => {
     remindersApi.getAll()
-      .then((all) => {
-        const list = all.length ? all : MOCK_REMINDERS;
-        setReminders(list.filter((r) => r.contactId === id));
-      })
-      .catch(() => setReminders(MOCK_REMINDERS.filter((r) => r.contactId === id)));
+      .then((all) => setReminders(all.filter((r) => r.contactId === id)))
+      .catch(() => {});
   };
 
   const reload = () => {
-    const mock = MOCK_CONTACTS.find((c) => c.id === id);
-    if (mock) { setContact(mock); return Promise.resolve(); }
     return contactsApi.getById(id).then(setContact).catch(() => {});
   };
 
@@ -342,9 +333,24 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
   };
 
   const handleEditPlatform = (pid: string) => {
-    const handle = editPlatformValue.trim();
-    if (!handle) return;
-    setContact((prev) => prev ? { ...prev, platforms: (prev.platforms || []).map((p) => p.id === pid ? { ...p, platformId: handle } : p) } : prev);
+    const raw = editPlatformValue.trim();
+    if (!raw) return;
+    // Strip full URLs to slug locally too
+    const liMatch = raw.match(/linkedin\.com\/in\/([^/?#]+)/i);
+    const xMatch  = raw.match(/(?:x|twitter)\.com\/([^/?#]+)/i);
+    const handle  = liMatch?.[1] ?? xMatch?.[1] ?? raw;
+
+    const platform = contact?.platforms?.find((p) => p.id === pid);
+    const newProfileUrl = platform?.type === "linkedin"
+      ? `https://www.linkedin.com/in/${handle}`
+      : platform?.type === "x" ? `https://x.com/${handle}` : undefined;
+
+    setContact((prev) => prev ? {
+      ...prev,
+      platforms: (prev.platforms || []).map((p) =>
+        p.id === pid ? { ...p, platformId: handle, ...(newProfileUrl ? { profileUrl: newProfileUrl } : {}) } : p
+      ),
+    } : prev);
     setEditingPlatformId(null);
     setEditPlatformValue("");
     contactsApi.updatePlatform(id, pid, { platformId: handle }).catch((err) => {
@@ -394,19 +400,23 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     catch (err: any) { alert(`Failed to update contact: ${err?.message ?? "Unknown error"}`); }
   };
 
-  const handleAddTag = () => {
-    if (!selectedTag) return;
-    const tag = allTags.find((t) => t.id === selectedTag);
-    if (!tag) return;
-    const optimisticCt = { id: `opt-ct-${Date.now()}`, contactId: id, tagId: tag.id, tag, createdAt: new Date().toISOString() };
+  const DEFAULT_TAGS = ["Investor", "Strategic", "EU", "US", "Crypto"];
+
+  const handleAddTag = (tagName: string) => {
+    if (!tagName) return;
+    const optimisticCt = {
+      id: `opt-ct-${Date.now()}`, contactId: id,
+      tagId: `opt-${tagName}`, tag: { id: `opt-${tagName}`, name: tagName, color: null, createdAt: new Date().toISOString() },
+      createdAt: new Date().toISOString(),
+    };
     setContact((prev) => prev ? { ...prev, contactTags: [...(prev.contactTags || []), optimisticCt] } : prev);
     setSelectedTag("");
-    contactsApi.addTag(id, tag.id)
+    contactsApi.addTag(id, tagName, true)
       .then((realCt: any) => {
         setContact((prev) => prev ? {
           ...prev,
           contactTags: (prev.contactTags || []).map((ct) =>
-            ct.id === optimisticCt.id ? { ...optimisticCt, ...realCt, tag: realCt.tag ?? tag } : ct
+            ct.id === optimisticCt.id ? { ...optimisticCt, ...realCt, tag: realCt.tag ?? optimisticCt.tag } : ct
           ),
         } : prev);
       })
@@ -424,16 +434,14 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     });
   };
 
-  if (loading) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 80 }}>
-        <span className="inline-block size-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" style={{ width: 20, height: 20, color: "var(--t3)" }} />
-      </div>
-    );
-  }
+  if (loading) return <ContactDetailSkeleton />;
 
   if (!contact) {
-    return <div className="py-12 px-6 text-center text-muted-foreground text-sm">Contact not found</div>;
+    return (
+      <div className="py-12 px-6 text-center text-muted-foreground text-sm">
+        {loadError ? `Error: ${loadError}` : "Contact not found"}
+      </div>
+    );
   }
 
   const existingTagIds = new Set(contact.contactTags?.map((ct) => ct.tagId) || []);
@@ -449,12 +457,59 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight">{contact.name}</h1>
-          {(contact.company || contact.role) && (
-            <div className="text-sm text-muted-foreground mt-1">
-              {[contact.role, contact.company].filter(Boolean).join(" @ ")}
-            </div>
+          {editingField === "name" ? (
+            <input
+              autoFocus
+              value={editFieldValue}
+              onChange={(e) => setEditFieldValue(e.target.value)}
+              onBlur={() => { handleFieldChange("name", editFieldValue); setEditingField(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { handleFieldChange("name", editFieldValue); setEditingField(null); } if (e.key === "Escape") setEditingField(null); }}
+              className="text-xl font-bold tracking-tight bg-transparent border-b border-border outline-none w-full"
+            />
+          ) : (
+            <h1
+              className="text-xl font-bold tracking-tight cursor-pointer hover:opacity-70 transition-opacity"
+              title="Click to edit"
+              onClick={() => { setEditingField("name"); setEditFieldValue(contact.name); }}
+            >{contact.name}</h1>
           )}
+          <div className="flex gap-2 mt-1 text-sm text-muted-foreground flex-wrap">
+            {editingField === "role" ? (
+              <input
+                autoFocus
+                value={editFieldValue}
+                placeholder="Role"
+                onChange={(e) => setEditFieldValue(e.target.value)}
+                onBlur={() => { handleFieldChange("role", editFieldValue); setEditingField(null); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { handleFieldChange("role", editFieldValue); setEditingField(null); } if (e.key === "Escape") setEditingField(null); }}
+                className="bg-transparent border-b border-border outline-none text-sm"
+              />
+            ) : (
+              <span
+                className="cursor-pointer hover:opacity-70 transition-opacity"
+                title="Click to edit role"
+                onClick={() => { setEditingField("role"); setEditFieldValue(contact.role ?? ""); }}
+              >{contact.role || <span className="opacity-40 italic">Role</span>}</span>
+            )}
+            {(contact.role || contact.company) && editingField !== "role" && editingField !== "company" && <span className="opacity-40">@</span>}
+            {editingField === "company" ? (
+              <input
+                autoFocus
+                value={editFieldValue}
+                placeholder="Company"
+                onChange={(e) => setEditFieldValue(e.target.value)}
+                onBlur={() => { handleFieldChange("company", editFieldValue); setEditingField(null); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { handleFieldChange("company", editFieldValue); setEditingField(null); } if (e.key === "Escape") setEditingField(null); }}
+                className="bg-transparent border-b border-border outline-none text-sm"
+              />
+            ) : (
+              <span
+                className="cursor-pointer hover:opacity-70 transition-opacity"
+                title="Click to edit company"
+                onClick={() => { setEditingField("company"); setEditFieldValue(contact.company ?? ""); }}
+              >{contact.company || <span className="opacity-40 italic">Company</span>}</span>
+            )}
+          </div>
           <div className="flex gap-1.5 mt-2 flex-wrap items-center">
             <InlineSelect value={contact.type} options={TYPES} colorMap={TYPE_COLORS} onChange={(v) => handleFieldChange("type", v)} />
             <InlineSelect value={contact.domain} options={DOMAINS} colorMap={DOMAIN_COLORS} onChange={(v) => handleFieldChange("domain", v)} />
@@ -666,10 +721,30 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
           {/* AI Summary */}
           <div className="rounded-xl border border-border bg-card shadow-sm p-5">
             <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground mb-3">AI Summary</div>
-            {contact.aiSummary ? (
-              <div className="text-[13px] text-muted-foreground leading-relaxed whitespace-pre-wrap">{contact.aiSummary}</div>
-            ) : (
-              <div className="text-muted-foreground text-[13px]">No AI summary yet. Click "Summary (AI)" to create one.</div>
+            {contact.aiSummary ? (() => {
+              try {
+                const parsed = JSON.parse(contact.aiSummary) as { snapshot?: string; highlights?: string[] };
+                if (parsed.snapshot) {
+                  return (
+                    <div className="flex flex-col gap-2.5">
+                      <p className="text-[13px] font-medium text-foreground leading-snug">{parsed.snapshot}</p>
+                      {parsed.highlights && parsed.highlights.length > 0 && (
+                        <ul className="flex flex-col gap-1.5">
+                          {parsed.highlights.map((h, i) => (
+                            <li key={i} className="flex items-start gap-2 text-[12px] text-muted-foreground leading-snug">
+                              <span className="mt-[3px] shrink-0 w-1.5 h-1.5 rounded-full bg-primary/60" />
+                              {h}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                }
+              } catch {}
+              return <div className="text-[13px] text-muted-foreground leading-relaxed whitespace-pre-wrap">{contact.aiSummary}</div>;
+            })() : (
+              <div className="text-muted-foreground text-[13px]">No summary yet. Click "Summary (AI)" to generate one.</div>
             )}
           </div>
 
@@ -693,15 +768,19 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
                 <span className="text-muted-foreground text-[13px]">No tags</span>
               )}
             </div>
-            {availableTags.length > 0 && (
-              <div className="flex gap-2">
-                <select value={selectedTag} onChange={(e) => setSelectedTag(e.target.value)} className="flex-1 h-9 bg-card border border-border text-foreground text-[13px] rounded-lg px-2">
-                  <option value="">Select a tag...</option>
-                  {availableTags.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-                <Button size="sm" variant="outline" onClick={handleAddTag}>Add</Button>
-              </div>
-            )}
+            {(() => {
+              const appliedNames = new Set((contact.contactTags || []).map((ct) => ct.tag?.name?.toLowerCase()));
+              const remaining = DEFAULT_TAGS.filter((t) => !appliedNames.has(t.toLowerCase()));
+              return remaining.length > 0 ? (
+                <div className="flex gap-2">
+                  <select value={selectedTag} onChange={(e) => setSelectedTag(e.target.value)} className="flex-1 h-9 bg-card border border-border text-foreground text-[13px] rounded-lg px-2">
+                    <option value="">Select a tag...</option>
+                    {remaining.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <Button size="sm" variant="outline" onClick={() => handleAddTag(selectedTag)}>Add</Button>
+                </div>
+              ) : null;
+            })()}
           </div>
         </div>
 

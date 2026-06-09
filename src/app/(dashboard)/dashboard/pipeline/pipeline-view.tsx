@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
+import { PipelineSkeleton } from "@/components/ui/skeleton";
 import { useRouter } from "next/navigation";
 import { STAGE_META, STAGES_ORDERED, type Deal, type DealStage } from "@/lib/mock-pipeline";
 import { pipelineApi } from "@/lib/api";
@@ -77,9 +78,7 @@ export function PipelineView() {
     pipelineApi.remove(id).catch(console.error);
   };
 
-  if (loading) {
-    return <div style={{ color: "var(--t3)", fontSize: 13, padding: 32 }}>Loading pipeline…</div>;
-  }
+  if (loading) return <PipelineSkeleton />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>

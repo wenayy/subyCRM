@@ -7,6 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { calendarApi, gmailApi, discordApi, slackApi, xApi, whatsappApi, telegramPersonalApi, linkedinApi, telegramBotApi } from "@/lib/api";
 import { authClient } from "@/lib/auth-client";
+import { ImportView } from "../import/import-view";
 
 type Status = "connected" | "disconnected" | "error";
 
@@ -639,6 +640,7 @@ export function SettingsView() {
   const { data: session } = authClient.useSession();
   const userId = session?.user?.id;
 
+  const [activeTab, setActiveTab] = useState<"settings" | "import">("settings");
   const [pending, setPending] = useState<string | null>(null);
   const [modal, setModal] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
@@ -706,6 +708,7 @@ export function SettingsView() {
     // Then fetch real state in background
     reload(userId);
     const params = new URLSearchParams(window.location.search);
+    if (params.get("tab") === "import") setActiveTab("import");
     if (params.get("slack") || params.get("calendar") || params.get("gmail") || params.get("x") || params.get("linkedin") || params.get("discord")) {
       window.history.replaceState({}, "", window.location.pathname);
       setTimeout(() => reload(userId), 2000);
@@ -880,7 +883,33 @@ export function SettingsView() {
         <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>{connectedCount} integrations connected</p>
       </div>
 
-      {GROUPS.map((group) => (
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 2, padding: 4, background: "var(--al)", borderRadius: 10, border: "1px solid var(--bd)", width: "fit-content" }}>
+        {(["settings", "import"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            style={{
+              padding: "5px 16px",
+              borderRadius: 7,
+              fontSize: 13,
+              fontWeight: 600,
+              border: "none",
+              cursor: "pointer",
+              background: activeTab === tab ? "var(--sf)" : "transparent",
+              color: activeTab === tab ? "var(--t1)" : "var(--t3)",
+              boxShadow: activeTab === tab ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+              transition: "all 0.12s",
+            }}
+          >
+            {tab === "settings" ? "Integrations" : "Import"}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "import" && <ImportView />}
+
+      {activeTab === "settings" && <>{GROUPS.map((group) => (
         <section key={group.label}>
           <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground" style={{ marginBottom: 12 }}>{group.label}</div>
           <div className="rounded-xl border border-border bg-card shadow-sm" style={{ overflow: "hidden" }}>
@@ -997,25 +1026,8 @@ export function SettingsView() {
         </section>
       ))}
 
-      {/* Data import */}
-      <section>
-        <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground" style={{ marginBottom: 12 }}>Data import</div>
-        <Link href="/dashboard/import" className="rounded-xl border border-border bg-card shadow-sm block hover:shadow transition-shadow"
-          style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", textDecoration: "none", color: "inherit" }}>
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--bb)", color: "var(--bc)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)" }}>Import &amp; sync history</div>
-            <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 2 }}>View Beeper / Telegram / WhatsApp import jobs and trigger a new sync.</div>
-          </div>
-          <span style={{ fontSize: 13, color: "var(--t3)" }}>→</span>
-        </Link>
-      </section>
-
       <p style={{ fontSize: 11, color: "var(--t3)", textAlign: "center" }}>Need another integration? Drop a note in <span className="font-mono text-xs tabular-nums">#suby-feedback</span>.</p>
+      </> }
 
       {/* Modals */}
       {modal === "discord" && (

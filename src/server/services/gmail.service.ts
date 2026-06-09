@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import { createHmac } from "crypto";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
+import { encrypt, decrypt } from "../lib/encryption";
 
 // gmail.modify covers read + send + label changes. gmail.readonly is a subset of this
 // so existing tokens are still valid for reading; users only need to re-authorize once
@@ -61,13 +62,13 @@ export async function saveTokens(
     where: { userId },
     create: {
       userId,
-      accessToken: tokens.access_token!,
-      refreshToken: tokens.refresh_token ?? null,
+      accessToken: encrypt(tokens.access_token!),
+      refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
       expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
     },
     update: {
-      accessToken: tokens.access_token!,
-      ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
+      accessToken: encrypt(tokens.access_token!),
+      ...(tokens.refresh_token ? { refreshToken: encrypt(tokens.refresh_token) } : {}),
       expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
     },
   });
@@ -84,8 +85,8 @@ async function authedClient(userId: string) {
 
   const client = oauthClient();
   client.setCredentials({
-    access_token: (token as any).accessToken,
-    refresh_token: (token as any).refreshToken,
+    access_token: decrypt((token as any).accessToken),
+    refresh_token: (token as any).refreshToken ? decrypt((token as any).refreshToken) : null,
     expiry_date: (token as any).expiresAt?.getTime(),
   });
 

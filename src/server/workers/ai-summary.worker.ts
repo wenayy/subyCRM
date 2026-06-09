@@ -33,7 +33,42 @@ export function startAiSummaryWorker() {
         return null;
       }
 
-      const summary = await aiService.generateSummary(contact);
+      // Pull full messages by contactId (linked) + by senderId for any unlinked messages
+      // that belong to this contact's platform IDs (handles phone format mismatches,
+      // messages saved before the contact existed, etc.)
+      const platformIds = contact.platforms.map((p: any) => p.platformId).filter(Boolean);
+
+      const [linkedMessages, unlinkedMessages] = await Promise.all([
+        (prisma as any).inboxMessage.findMany({
+          where: { contactId },
+          orderBy: { receivedAt: "desc" },
+          take: 60,
+          select: { id: true, platform: true, body: true, preview: true, fromMe: true, receivedAt: true },
+        }),
+        platformIds.length > 0
+          ? (prisma as any).inboxMessage.findMany({
+              where: {
+                contactId: null,
+                OR: platformIds.flatMap((pid: string) => [
+                  { senderId: { contains: pid } },
+                  { externalId: { contains: pid } },
+                ]),
+              },
+              orderBy: { receivedAt: "desc" },
+              take: 60,
+              select: { id: true, platform: true, body: true, preview: true, fromMe: true, receivedAt: true },
+            })
+          : Promise.resolve([]),
+      ]);
+
+      // Deduplicate by id, merge and sort by receivedAt desc, take 60 most recent
+      const seen = new Set<string>();
+      const inboxMessages = [...linkedMessages, ...unlinkedMessages]
+        .filter((m: any) => { if (seen.has(m.id)) return false; seen.add(m.id); return true; })
+        .sort((a: any, b: any) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime())
+        .slice(0, 60);
+
+      const summary = await aiService.generateSummary(contact, inboxMessages);
 
       // Persist to DB
       await prisma.contact.update({

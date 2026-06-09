@@ -230,15 +230,89 @@ input, select, textarea { transition: border-color 0.15s, box-shadow 0.15s; }
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bd); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--bd2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--t3); }
+
+/* ── Keyframes ── */
+@keyframes spin        { to { transform: rotate(360deg); } }
+@keyframes fade-up     { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+@keyframes fade-in     { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slide-in-right { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; } }
+@keyframes scale-in    { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; } }
+@keyframes shimmer     { from { background-position: -400px 0; } to { background-position: 400px 0; } }
+@keyframes pulse-dot   { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ── Animation utilities ── */
+.animate-fade-up   { animation: fade-up   0.22s cubic-bezier(0.16,1,0.3,1) both; }
+.animate-fade-in   { animation: fade-in   0.18s ease both; }
+.animate-scale-in  { animation: scale-in  0.18s cubic-bezier(0.16,1,0.3,1) both; }
+.animate-slide-right { animation: slide-in-right 0.2s cubic-bezier(0.16,1,0.3,1) both; }
+
+/* Stagger helpers — add .stagger to parent, children get auto delays */
+.stagger > *:nth-child(1)  { animation-delay: 0ms; }
+.stagger > *:nth-child(2)  { animation-delay: 40ms; }
+.stagger > *:nth-child(3)  { animation-delay: 80ms; }
+.stagger > *:nth-child(4)  { animation-delay: 120ms; }
+.stagger > *:nth-child(5)  { animation-delay: 160ms; }
+.stagger > *:nth-child(6)  { animation-delay: 200ms; }
+.stagger > *:nth-child(n+7){ animation-delay: 240ms; }
+
+/* ── Skeleton loader ── */
+.skeleton {
+  border-radius: var(--r);
+  background: linear-gradient(90deg, var(--al) 25%, var(--bd) 50%, var(--al) 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.dark .skeleton {
+  background: linear-gradient(90deg, var(--al) 25%, var(--bd2) 50%, var(--al) 75%);
+  background-size: 400px 100%;
+}
 
 /* ── Spinner ── */
-.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.65s linear infinite; }
 
 /* ── Modals ── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal-content { background: var(--sf); border-radius: var(--r2); box-shadow: 0 8px 30px rgba(0,0,0,0.12); padding: 24px; max-width: 480px; width: 90%; max-height: 80vh; overflow-y: auto; }
+
+/* ── Radix Dialog animations ── */
+[data-radix-dialog-overlay] {
+  animation: fade-in 0.18s ease both;
+}
+[data-radix-dialog-overlay][data-state="closed"] {
+  animation: fade-in 0.14s ease reverse both;
+}
+[data-radix-dialog-content] {
+  animation: scale-in 0.2s cubic-bezier(0.16,1,0.3,1) both;
+}
+[data-radix-dialog-content][data-state="closed"] {
+  animation: scale-in 0.15s ease reverse both;
+}
+
+/* ── Radix Popover / DropdownMenu animations ── */
+[data-radix-popper-content-wrapper] > [data-state="open"] {
+  animation: fade-up 0.16s cubic-bezier(0.16,1,0.3,1) both;
+}
+[data-radix-popper-content-wrapper] > [data-state="closed"] {
+  animation: fade-in 0.1s ease reverse both;
+}
+
+/* ── Sidebar nav items ── */
+.sidebar-nav-item {
+  transition: background 0.12s ease, color 0.12s ease, transform 0.1s ease;
+}
+.sidebar-nav-item:hover  { transform: translateX(2px); }
+.sidebar-nav-item:active { transform: translateX(0) scale(0.98); }
+
+/* ── Clickable list rows ── */
+.list-row {
+  transition: background 0.1s ease;
+}
+.list-row:hover { background: var(--al); }
+
+/* ── Status dot pulse for live connections ── */
+.dot-live { animation: pulse-dot 2s ease-in-out infinite; }
 
 @media (max-width: 768px) {
   .hide-mobile { display: none !important; }

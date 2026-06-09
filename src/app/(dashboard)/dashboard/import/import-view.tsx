@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { importApi, aiApi } from "@/lib/api";
-import { MOCK_IMPORT_JOBS } from "@/lib/mock-contacts";
 import type { ImportJob } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -94,8 +93,8 @@ export function ImportView() {
 
   const loadJobs = () => {
     importApi.getJobs()
-      .then((j) => setJobs(j?.length ? j : MOCK_IMPORT_JOBS))
-      .catch(() => setJobs(MOCK_IMPORT_JOBS));
+      .then((j) => setJobs(j ?? []))
+      .catch(() => {});
   };
 
   useEffect(() => { loadJobs(); }, []);

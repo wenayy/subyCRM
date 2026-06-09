@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { contactsApi, aiApi, tagsApi } from "@/lib/api";
-import { MOCK_CONTACTS, MOCK_STATS, MOCK_TAGS } from "@/lib/mock-contacts";
 import type { Contact, ContactType, ContactDomain, Tag } from "@/lib/types";
 import { getCached, setCached } from "@/lib/page-cache";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -13,41 +13,9 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Star, StarOff } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
-function filterMock(params: Record<string, string>) {
-  const page = parseInt(params.page || "1");
-  const limit = parseInt(params.limit || "25");
-  let data = MOCK_CONTACTS;
-  if (params.type) data = data.filter((c) => c.type === params.type);
-  if (params.domain) data = data.filter((c) => c.domain === params.domain);
-  if (params.search) {
-    const terms = params.search.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    if (terms.length > 0) {
-      data = data.filter((c) => {
-        return terms.every((term) => {
-          const matchesBase = [c.name, c.company, c.role]
-            .some((val) => val && val.toLowerCase().includes(term));
-          const matchesPlatform = c.platforms?.some((p) =>
-            [p.platformId, p.displayName].some((field) => field && field.toLowerCase().includes(term))
-          );
-          return matchesBase || matchesPlatform;
-        });
-      });
-    }
-  }
-  if (params.strength) data = data.filter((c) => c.relationshipStrength === params.strength);
-  if (params.stale_days) {
-    const days = parseInt(params.stale_days);
-    const cutoff = Date.now() - days * 86400000;
-    data = data.filter((c) => !c.lastContactDate || new Date(c.lastContactDate).getTime() < cutoff);
-  }
-  const total = data.length;
-  data = data.slice((page - 1) * limit, page * limit);
-  return { data, total, page, limit };
-}
 
 const TABS: { label: string; value: string }[] = [
   { label: "All", value: "" },
@@ -56,6 +24,9 @@ const TABS: { label: string; value: string }[] = [
   { label: "Partner", value: "partner" },
   { label: "Friend", value: "friend" },
   { label: "Prospect", value: "prospect" },
+  { label: "Team", value: "team" },
+  { label: "Advisor", value: "advisor" },
+  { label: "Media", value: "media" },
   { label: "Other", value: "other" },
 ];
 
@@ -106,8 +77,8 @@ export function ContactsView() {
   const [contacts, setContacts] = useState<Contact[]>(contactsCache?.data ?? []);
   const [total, setTotal] = useState(contactsCache?.total ?? 0);
   const [loading, setLoading] = useState(!contactsCache);
-  const [starredContacts, setStarredContacts] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState("");
+  const [tagFilter, setTagFilter] = useState<{ id: string; name: string } | null>(null);
   const [domain, setDomain] = useState("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -117,6 +88,9 @@ export function ContactsView() {
   const [classifyResult, setClassifyResult] = useState<string | null>(null);
   const limit = 25;
 
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   // Bulk selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -124,26 +98,23 @@ export function ContactsView() {
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
   const [bulkWorking, setBulkWorking] = useState(false);
 
-  // Track if backend database contains real data to prevent incorrect mock fallback
-  const [hasRealData, setHasRealData] = useState<boolean | null>(null);
-  // Track if the API responded successfully at least once (even with 0 results)
-  const [apiResponded, setApiResponded] = useState(false);
 
   // Filter contacts client-side instantly for 0ms UX latency as the user types
   const displayContacts = useMemo(() => {
-    if (!search.trim()) return contacts;
-    const terms = search.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return contacts;
-    return contacts.filter((c) => {
-      return terms.every((term) => {
-        const matchesBase = [c.name, c.company, c.role]
-          .some((val) => val && val.toLowerCase().includes(term));
-        const matchesPlatform = c.platforms?.some((p) =>
-          [p.platformId, p.displayName].some((field) => field && field.toLowerCase().includes(term))
-        );
-        return matchesBase || matchesPlatform;
-      });
-    });
+    let list = contacts;
+    if (search.trim()) {
+      const terms = search.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      list = list.filter((c) =>
+        terms.every((term) => {
+          const matchesBase = [c.name, c.company, c.role].some((val) => val && val.toLowerCase().includes(term));
+          const matchesPlatform = c.platforms?.some((p) =>
+            [p.platformId, p.displayName].some((field) => field && field.toLowerCase().includes(term))
+          );
+          return matchesBase || matchesPlatform;
+        })
+      );
+    }
+    return list;
   }, [contacts, search]);
 
   // Debounce search input to prevent network spam and race conditions
@@ -230,7 +201,6 @@ export function ContactsView() {
       setEmailAddr("");
 
       setIsAddOpen(false);
-      setHasRealData(true);
       fetchContacts();
 
       // Refresh Stats
@@ -245,11 +215,12 @@ export function ContactsView() {
   };
 
   const fetchContacts = useCallback(() => {
-    const isDefaultView = !tab && !domain && !debouncedSearch && page === 1;
+    const isDefaultView = !tab && !tagFilter && !domain && !debouncedSearch && page === 1;
     // Only show loading spinner if we have no data to display yet
     if (!getCached("contacts:list") || !isDefaultView) setLoading(true);
     const params: Record<string, string> = { page: String(page), limit: String(limit) };
     if (tab) params.type = tab;
+    if (tagFilter) params.tag = tagFilter.name;
     if (domain) params.domain = domain;
     if (debouncedSearch) params.search = debouncedSearch;
 
@@ -258,33 +229,12 @@ export function ContactsView() {
     contactsApi.getAll(params)
       .then((res) => {
         if (!active) return;
-        const hasData = !!(res.data && res.data.length > 0);
-        setApiResponded(true);
-
-        if (hasData) {
-          setHasRealData(true);
-        }
-
-        if (hasRealData || apiResponded || hasData) {
-          // API responded — show real data (may be empty for a new user)
-          setContacts(res.data || []);
-          setTotal(res.total || 0);
-          if (isDefaultView) setCached("contacts:list", { data: res.data || [], total: res.total || 0 });
-        } else {
-          const mock = filterMock(params);
-          setContacts(mock.data);
-          setTotal(mock.total);
-        }
+        setContacts(res.data || []);
+        setTotal(res.total || 0);
+        if (isDefaultView) setCached("contacts:list", { data: res.data || [], total: res.total || 0 });
       })
       .catch(() => {
         if (!active) return;
-        if (apiResponded) {
-          // Already know the API works — don't fall back to mock on transient errors
-          return;
-        }
-        const mock = filterMock(params);
-        setContacts(mock.data);
-        setTotal(mock.total);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -293,21 +243,17 @@ export function ContactsView() {
     return () => {
       active = false;
     };
-  }, [tab, domain, debouncedSearch, page, hasRealData]);
+  }, [tab, tagFilter?.name, domain, debouncedSearch, page]);
 
   useEffect(() => {
     contactsApi.getStats()
       .then((s) => {
         setCounts({ "": s.total, ...s.byType });
-        setHasRealData(s.total > 0);
       })
-      .catch(() => {
-        setCounts({ "": MOCK_STATS.total, ...MOCK_STATS.byType });
-        setHasRealData(false);
-      });
+      .catch(() => {});
     tagsApi.getAll()
-      .then((t) => setAllTags(t.length ? t : MOCK_TAGS))
-      .catch(() => setAllTags(MOCK_TAGS));
+      .then((t) => setAllTags(t))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -424,7 +370,7 @@ export function ContactsView() {
         </div>
       )}
 
-      {apiResponded && contacts.length === 0 && !tab && !domain && !debouncedSearch && !loading && (
+      {!loading && contacts.length === 0 && !tab && !domain && !debouncedSearch && (
         <div className="p-4 px-5 rounded-xl border border-yellow-300 bg-yellow-50 text-yellow-900 text-[13px] flex items-start gap-3">
           <span className="text-lg leading-none mt-0.5">★</span>
           <div>
@@ -449,6 +395,30 @@ export function ContactsView() {
         </TabsList>
       </Tabs>
 
+      {/* Tag filter chips */}
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 items-center">
+          <span className="text-[11px] font-medium text-muted-foreground">Tags:</span>
+          {allTags.map((tag) => {
+            const active = tagFilter?.id === tag.id;
+            return (
+              <button
+                key={tag.id}
+                onClick={() => { setTagFilter(active ? null : tag); setPage(1); }}
+                className={cn(
+                  "px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition-colors",
+                  active
+                    ? "bg-foreground text-background border-foreground"
+                    : "bg-transparent text-muted-foreground border-border hover:border-foreground hover:text-foreground"
+                )}
+              >
+                {tag.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Table */}
       <div className="rounded-xl border border-border bg-card shadow-sm overflow-auto w-full relative">
         {loading && (
@@ -469,7 +439,6 @@ export function ContactsView() {
                   title="Select all"
                 />
               </th>
-              <th>Star</th>
               <th>Name</th>
               <th className="max-md:hidden">Platforms</th>
               <th>Type</th>
@@ -482,8 +451,19 @@ export function ContactsView() {
           <tbody className={cn("transition-opacity duration-200", loading && "opacity-60")}>
             {displayContacts.length === 0 && loading ? (
               <tr>
-                <td colSpan={8} className="text-center p-10">
-                  <span className="inline-block size-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                <td colSpan={8} className="p-6">
+                  <div className="flex flex-col gap-2">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3 px-2">
+                        <div className="size-8 rounded-full bg-muted/60 animate-pulse shrink-0" />
+                        <div className="flex-1 space-y-1.5">
+                          <div className="h-3 bg-muted/60 animate-pulse rounded w-36" />
+                          <div className="h-2.5 bg-muted/60 animate-pulse rounded w-52" />
+                        </div>
+                        <div className="h-5 w-14 bg-muted/60 animate-pulse rounded-full" />
+                      </div>
+                    ))}
+                  </div>
                 </td>
               </tr>
             ) : displayContacts.length === 0 ? (
@@ -509,9 +489,6 @@ export function ContactsView() {
                         onChange={() => {}}
                         style={{ width: 14, height: 14, accentColor: "var(--ac)", cursor: "pointer", pointerEvents: "none" }}
                       />
-                    </td>
-                    <td style={{ width: 40, paddingLeft: 5, paddingRight: 5 }} onClick={(e) => { e.stopPropagation(); const newSet = new Set(starredContacts); if (newSet.has(c.id)) newSet.delete(c.id); else newSet.add(c.id); setStarredContacts(newSet); }}>
-                      {starredContacts.has(c.id) ? <Star fill="#fcd34d" size={16} /> : <StarOff size={16} />}
                     </td>
                     <td>
                       <div className="font-medium text-foreground">{c.name}</div>
@@ -552,14 +529,16 @@ export function ContactsView() {
         </table>
       </div>
 
-      {/* Bulk action bar — slides up when contacts are selected */}
-      <div
+      {/* Bulk action bar — rendered via portal to escape any CSS transform containing block */}
+      {mounted && createPortal(<div
         style={{
           position: "fixed",
           bottom: selected.size > 0 ? 28 : -80,
           left: "50%",
           transform: "translateX(-50%)",
-          transition: "bottom 0.22s cubic-bezier(0.34,1.56,0.64,1)",
+          transition: "bottom 0.22s cubic-bezier(0.34,1.56,0.64,1), opacity 0.15s ease",
+          opacity: selected.size > 0 ? 1 : 0,
+          pointerEvents: selected.size > 0 ? "auto" : "none",
           zIndex: 50,
           display: "flex",
           alignItems: "center",
@@ -637,7 +616,7 @@ export function ContactsView() {
         >
           ✕
         </button>
-      </div>
+      </div>, document.body)}
 
       {/* Bulk tag dialog */}
       <Dialog open={bulkTagOpen} onOpenChange={setBulkTagOpen}>

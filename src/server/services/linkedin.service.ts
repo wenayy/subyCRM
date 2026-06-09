@@ -1,11 +1,12 @@
 import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
+import { encrypt, decrypt } from "../lib/encryption";
 
 const CLIENT_ID = process.env.LINKEDIN_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET || "";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/linkedin/callback`;
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3005";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // Sign userId into state so hot-reloads don't wipe the pending Map
 function signState(userId: string): string {
@@ -94,8 +95,8 @@ export const linkedinService = {
 
     await (prisma as any).linkedInToken.upsert({
       where: { userId },
-      create: { userId, accessToken: tokenData.access_token, profileId, profileName: displayName },
-      update: { accessToken: tokenData.access_token, profileId, profileName: displayName },
+      create: { userId, accessToken: encrypt(tokenData.access_token), profileId, profileName: displayName },
+      update: { accessToken: encrypt(tokenData.access_token), profileId, profileName: displayName },
     });
   },
 
@@ -121,8 +122,8 @@ export const linkedinService = {
     const stored = JSON.stringify({ liAt: liAtCookie, csrf: jsessionId ?? null });
     await (prisma as any).linkedInToken.upsert({
       where: { userId },
-      create: { userId, accessToken: "", liAtCookie: stored, profileId: null, profileName: null },
-      update: { liAtCookie: stored },
+      create: { userId, accessToken: "", liAtCookie: encrypt(stored), profileId: null, profileName: null },
+      update: { liAtCookie: encrypt(stored) },
     });
     console.log(`[linkedin] Cookie saved for userId=${userId} (csrf=${!!jsessionId})`);
   },
@@ -147,7 +148,7 @@ export const linkedinService = {
       return { synced: 0 };
     }
 
-    const { liAt, csrf } = linkedinService._parseCookieField(rec.liAtCookie);
+    const { liAt, csrf } = linkedinService._parseCookieField(decrypt(rec.liAtCookie));
     const cookieHeader = csrf
       ? `li_at=${liAt}; JSESSIONID="${csrf}"`
       : `li_at=${liAt}`;

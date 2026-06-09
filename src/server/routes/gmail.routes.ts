@@ -75,7 +75,7 @@ export const gmailCallbackRouter = Router();
 // GET /api/gmail/callback
 gmailCallbackRouter.get("/callback", async (req, res) => {
   const { code, state, error } = req.query as Record<string, string>;
-  const frontendBase = process.env.FRONTEND_URL?.split(",")[0] || "http://localhost:3005";
+  const frontendBase = process.env.FRONTEND_URL?.split(",")[0] || "http://localhost:3000";
 
   console.log("[gmail callback] received", { hasCode: !!code, hasState: !!state, error });
 

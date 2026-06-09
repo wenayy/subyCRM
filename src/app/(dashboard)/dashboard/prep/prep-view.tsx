@@ -1,13 +1,12 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { MOCK_EVENTS, type CalendarEvent, type CallChannel } from "@/lib/mock-events";
-import { MOCK_CONTACTS, buildBriefing } from "@/lib/mock-contacts";
+import { type CalendarEvent, type CallChannel } from "@/lib/mock-events";
 import type { Contact } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { calendarApi } from "@/lib/api";
+import { calendarApi, aiApi, contactsApi } from "@/lib/api";
 
 const HOUR_HEIGHT = 48; // px per hour
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -41,9 +40,6 @@ function hashColor(str: string) {
   return HASH_PALETTE[h % HASH_PALETTE.length];
 }
 
-const CONTACT_LOOKUP: Record<string, Contact> = Object.fromEntries(
-  MOCK_CONTACTS.map((c) => [c.id, c]),
-);
 
 function startOfWeek(d: Date): Date {
   const x = new Date(d);
@@ -86,7 +82,7 @@ function eventTone(e: CalendarEvent): { bg: string; border: string; color: strin
 export function PrepView() {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selected, setSelected] = useState<CalendarEvent | null>(null);
-  const [events, setEvents] = useState<CalendarEvent[]>(MOCK_EVENTS);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calStatus, setCalStatus] = useState<{ connected: boolean; lastSync: string | null } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [calError, setCalError] = useState<string | null>(null);
@@ -384,22 +380,32 @@ export function PrepView() {
   );
 }
 
-function EventModalContent({
-  event,
-}: {
-  event: CalendarEvent;
-}) {
-  const contact = CONTACT_LOOKUP[event.contactId];
+function EventModalContent({ event }: { event: CalendarEvent }) {
   const start = new Date(event.start);
   const end = new Date(event.end);
-  const channelMeta = CHANNEL_META[event.channel];
+  const channelMeta = event.channel ? CHANNEL_META[event.channel as CallChannel] ?? null : null;
+  const fallbackTone = hashColor(event.id ?? event.title ?? "");
   const isLink = event.location && /^https?:\/\//.test(event.location);
 
-  const briefing = useMemo(
-    () => (contact ? buildBriefing(contact) : "Pre-qualification unavailable."),
-    [contact],
-  );
-  const sections = useMemo(() => parseBriefing(briefing), [briefing]);
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [briefing, setBriefing] = useState<string | null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false);
+
+  useEffect(() => {
+    if (!event.contactId) return;
+    contactsApi.getById(event.contactId).then(setContact).catch(() => {});
+    setBriefingLoading(true);
+    aiApi.prep(event.contactId)
+      .then((res) => setBriefing(res.briefing ?? null))
+      .catch(() => setBriefing("Could not generate briefing."))
+      .finally(() => setBriefingLoading(false));
+  }, [event.contactId]);
+
+  const sections = useMemo(() => (briefing ? parseBriefing(briefing) : []), [briefing]);
+
+  const bg = channelMeta?.bg ?? fallbackTone.bg;
+  const borderColor = channelMeta?.color ?? fallbackTone.border;
+  const iconColor = channelMeta?.color ?? fallbackTone.color;
 
   return (
     <>
@@ -410,7 +416,7 @@ function EventModalContent({
             {start.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })} · {fmtTime(start)}–{fmtTime(end)}
           </div>
           <div style={{ fontSize: 20, fontWeight: 700, color: "var(--t1)", letterSpacing: "-0.02em", marginTop: 2 }}>
-            {event.contactName}
+            {event.contactName || event.title}
           </div>
           {contact && [contact.role, contact.company].filter(Boolean).length > 0 && (
             <div style={{ fontSize: 12, color: "var(--t2)", marginTop: 2 }}>
@@ -431,41 +437,41 @@ function EventModalContent({
             style={{
               display: "flex", alignItems: "center", gap: 12,
               padding: "12px 14px",
-              background: channelMeta.bg, borderRadius: 10,
-              border: `1px solid ${channelMeta.color}30`,
+              background: bg, borderRadius: 10,
+              border: `1px solid ${borderColor}30`,
               textDecoration: "none",
               transition: "border-color 0.12s",
             }}
           >
-            <span style={{ fontSize: 22 }}>{channelMeta.icon}</span>
+            <span style={{ fontSize: 22 }}>{channelMeta?.icon ?? "📅"}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)" }}>
-                Join {channelMeta.label}
+                Join {channelMeta?.label ?? "Meeting"}
               </div>
               <div className="font-mono text-xs tabular-nums" style={{ fontSize: 11, color: "var(--t2)", marginTop: 2, wordBreak: "break-all" }}>
                 {event.location}
               </div>
             </div>
-            <span style={{ fontSize: 13, color: channelMeta.color, fontWeight: 600 }}>→</span>
+            <span style={{ fontSize: 13, color: iconColor, fontWeight: 600 }}>→</span>
           </a>
-        ) : (
+        ) : (event.location || channelMeta) ? (
           <div
             style={{
               display: "flex", alignItems: "center", gap: 12,
               padding: "12px 14px",
-              background: channelMeta.bg, borderRadius: 10,
-              border: `1px solid ${channelMeta.color}30`,
+              background: bg, borderRadius: 10,
+              border: `1px solid ${borderColor}30`,
             }}
           >
-            <span style={{ fontSize: 22 }}>{channelMeta.icon}</span>
+            <span style={{ fontSize: 22 }}>{channelMeta?.icon ?? "📅"}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)" }}>{channelMeta.label}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)" }}>{channelMeta?.label ?? "Meeting"}</div>
               {event.location && (
                 <div style={{ fontSize: 12, color: "var(--t2)", marginTop: 2 }}>{event.location}</div>
               )}
             </div>
           </div>
-        )}
+        ) : null}
 
         {/* Pre-qualification */}
         <div>
@@ -473,28 +479,43 @@ function EventModalContent({
             <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground">Pre-qualification</div>
             <Badge variant="purple" style={{ fontSize: 10 }}>AI</Badge>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {sections.filter((s) => s.content.trim()).map((s, i) => (
-              <div
-                key={i}
-                style={{
-                  padding: "10px 14px",
-                  background: "var(--sf2)",
-                  border: "1px solid var(--bd)",
-                  borderRadius: 8,
-                }}
-              >
-                {s.title && (
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>
-                    {s.title}
+
+          {!event.contactId ? (
+            <div style={{ fontSize: 12, color: "var(--t2)", padding: "10px 14px", background: "var(--sf2)", border: "1px solid var(--bd)", borderRadius: 8 }}>
+              No contact matched for this event. Save this person as a contact to get AI briefings.
+            </div>
+          ) : briefingLoading ? (
+            <div style={{ fontSize: 12, color: "var(--t2)", padding: "10px 14px", background: "var(--sf2)", border: "1px solid var(--bd)", borderRadius: 8 }}>
+              Generating briefing…
+            </div>
+          ) : sections.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {sections.filter((s) => s.content.trim()).map((s, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: "10px 14px",
+                    background: "var(--sf2)",
+                    border: "1px solid var(--bd)",
+                    borderRadius: 8,
+                  }}
+                >
+                  {s.title && (
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>
+                      {s.title}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 12, color: "var(--t2)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                    {s.content}
                   </div>
-                )}
-                <div style={{ fontSize: 12, color: "var(--t2)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                  {s.content}
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--t2)", padding: "10px 14px", background: "var(--sf2)", border: "1px solid var(--bd)", borderRadius: 8 }}>
+              No briefing available.
+            </div>
+          )}
         </div>
       </div>
     </>

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
+import { encrypt, decrypt } from "../lib/encryption";
 
 const CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
@@ -63,7 +64,7 @@ async function startSocket() {
         // Find which CRM user owns this Slack connection
         const tokenRec = await (prisma as any).slackToken.findFirst();
         if (!tokenRec) return;
-        const { userId, accessToken: token } = tokenRec;
+        const { userId, accessToken: token } = { ...tokenRec, accessToken: decrypt(tokenRec.accessToken) };
 
         // Resolve my own Slack ID (cached per token)
         if (!mySlackIdCache.has(token)) {
@@ -146,13 +147,13 @@ export const slackService = {
     const token = data.authed_user?.access_token ?? data.access_token ?? "";
     await (prisma as any).slackToken.upsert({
       where: { userId },
-      create: { userId, accessToken: token, teamId: data.team?.id, teamName: data.team?.name },
-      update: { accessToken: token, teamId: data.team?.id, teamName: data.team?.name },
+      create: { userId, accessToken: encrypt(token), teamId: data.team?.id, teamName: data.team?.name },
+      update: { accessToken: encrypt(token), teamId: data.team?.id, teamName: data.team?.name },
     });
     // Start real-time socket (no-op if already running)
     void startSocket();
-    // Auto-sync messages then queue contact import
-    await slackService.sync(userId);
+    // Auto-sync messages in background (non-fatal)
+    slackService.sync(userId).catch((err) => console.error("[slack] auto-sync failed:", err));
     try {
       const { queues } = await import("../lib/queues");
       const job = await prisma.importJob.create({
@@ -176,7 +177,7 @@ export const slackService = {
   async sync(userId: string): Promise<{ synced: number }> {
     const rec = await (prisma as any).slackToken.findUnique({ where: { userId } });
     if (!rec) throw new Error("Slack not connected");
-    const token = rec.accessToken;
+    const token = decrypt(rec.accessToken);
     let synced = 0;
 
     // Get the current user's Slack ID so we can mark outgoing messages correctly
@@ -247,7 +248,7 @@ export const slackService = {
     if (!rec) throw new Error("Slack not connected");
     await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
-      headers: { Authorization: `Bearer ${rec.accessToken}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${decrypt(rec.accessToken)}`, "Content-Type": "application/json" },
       body: JSON.stringify({ channel: channelId, text }),
     }).then(async (r) => {
       const data = await r.json() as { ok: boolean; error?: string };
@@ -258,7 +259,7 @@ export const slackService = {
   async importContacts(userId: string): Promise<{ imported: number; updated: number; skipped: number }> {
     const rec = await (prisma as any).slackToken.findUnique({ where: { userId } });
     if (!rec) throw new Error("Slack not connected");
-    const token = rec.accessToken;
+    const token = decrypt(rec.accessToken);
 
     const usersRes = await slackFetch<{
       members: Array<{ id: string; name: string; real_name?: string; is_bot: boolean; deleted: boolean; profile?: { email?: string; display_name?: string } }>;

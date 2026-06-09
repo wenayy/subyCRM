@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { CompaniesPageSkeleton } from "@/components/ui/skeleton";
 import { useRouter } from "next/navigation";
 import { companiesApi } from "@/lib/api";
-import { MOCK_COMPANIES } from "@/lib/mock-companies";
 import type { Company, Contact } from "@/lib/types";
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -60,8 +60,8 @@ export function CompaniesView() {
 
   useEffect(() => {
     companiesApi.getAll()
-      .then((data) => setCompanies(data?.length ? data : MOCK_COMPANIES))
-      .catch(() => setCompanies(MOCK_COMPANIES))
+      .then((data) => setCompanies(data ?? []))
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
@@ -71,10 +71,7 @@ export function CompaniesView() {
     setDetailLoading(true);
     companiesApi.getById(selectedId)
       .then(setSelectedFull)
-      .catch(() => {
-        const mock = MOCK_COMPANIES.find((m) => m.id === selectedId);
-        setSelectedFull(mock ?? null);
-      })
+      .catch(() => setSelectedFull(null))
       .finally(() => setDetailLoading(false));
   }, [selectedId]);
 
@@ -100,13 +97,7 @@ export function CompaniesView() {
 
   const selected = companies.find((c) => c.id === selectedId) || null; // list-level object (no contacts)
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-20">
-        <span className="inline-block size-5 border-2 border-current border-t-transparent rounded-full animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+  if (loading) return <CompaniesPageSkeleton />;
 
   return (
     <div className="flex flex-col gap-4 h-[calc(100vh-100px)] w-full">

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { RemindersSkeleton } from "@/components/ui/skeleton";
 import { remindersApi, contactsApi } from "@/lib/api";
-import { MOCK_REMINDERS } from "@/lib/mock-reminders";
 import { PlatformIcon } from "@/components/platform-icon";
 import type { Reminder, ReminderStatus, PlatformType, Contact } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -110,8 +110,8 @@ export function RemindersView() {
 
   const fetchReminders = () =>
     remindersApi.getAll()
-      .then((data) => setReminders(data?.length ? data : MOCK_REMINDERS))
-      .catch(() => setReminders(MOCK_REMINDERS));
+      .then((data) => setReminders(data ?? []))
+      .catch(() => {});
 
   useEffect(() => {
     fetchReminders().finally(() => setLoading(false));
@@ -171,13 +171,7 @@ export function RemindersView() {
   const totalPending = reminders.filter((r) => r.status === "pending").length;
   const overdueCount = grouped.overdue.length;
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <span className="inline-block size-5 rounded-full border-2 border-current border-t-transparent animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+  if (loading) return <RemindersSkeleton />;
 
   return (
     <div className="flex flex-col gap-4">

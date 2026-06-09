@@ -24,7 +24,6 @@ import {
 } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { remindersApi, inboxApi } from "@/lib/api";
-import { MOCK_REMINDERS } from "@/lib/mock-reminders";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -103,16 +102,10 @@ export default function Sidebar() {
   }, [pathname]);
 
   useEffect(() => {
-    const overdueFromMock = MOCK_REMINDERS.filter(
-      (reminder) =>
-        reminder.status === "pending" &&
-        new Date(reminder.dueDate).getTime() < Date.now(),
-    ).length;
-
     remindersApi
       .getDue()
-      .then((reminders) => setOverdueCount(reminders.length || overdueFromMock))
-      .catch(() => setOverdueCount(overdueFromMock));
+      .then((reminders) => setOverdueCount(reminders.length))
+      .catch(() => {});
 
     const refreshInbox = () => inboxApi.getStats().then((s) => setUnreadInbox(s.unread)).catch(() => {});
     refreshInbox();
@@ -185,7 +178,7 @@ export default function Sidebar() {
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "group relative flex h-9 items-center gap-3 rounded-lg px-3 text-sm transition-colors",
+                        "sidebar-nav-item group relative flex h-9 items-center gap-3 rounded-lg px-3 text-sm transition-colors",
                         active
                           ? "bg-accent font-medium text-foreground"
                           : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -199,7 +192,7 @@ export default function Sidebar() {
                       />
                       <span className="min-w-0 flex-1 truncate">{item.label}</span>
                       {badge > 0 && (
-                        <span className="grid min-w-5 place-items-center rounded-full bg-status-red-bg px-1.5 text-[10px] font-semibold leading-5 text-status-red">
+                        <span className="grid min-w-5 place-items-center rounded-full bg-status-red-bg px-1.5 text-[10px] font-semibold leading-5 text-status-red animate-fade-in">
                           {badge}
                         </span>
                       )}

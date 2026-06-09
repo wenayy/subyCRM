@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { createHmac } from "crypto";
 import { prisma } from "../lib/prisma";
+import { encrypt, decrypt } from "../lib/encryption";
 
 const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 const REDIRECT_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/calendar/callback`;
@@ -60,13 +61,13 @@ export async function saveTokens(
     where: { userId },
     create: {
       userId,
-      accessToken: tokens.access_token!,
-      refreshToken: tokens.refresh_token ?? null,
+      accessToken: encrypt(tokens.access_token!),
+      refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
       expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
     },
     update: {
-      accessToken: tokens.access_token!,
-      ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
+      accessToken: encrypt(tokens.access_token!),
+      ...(tokens.refresh_token ? { refreshToken: encrypt(tokens.refresh_token) } : {}),
       expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
     },
   });
@@ -83,8 +84,8 @@ async function authedClient(userId: string) {
 
   const client = oauthClient();
   client.setCredentials({
-    access_token: token.accessToken,
-    refresh_token: token.refreshToken,
+    access_token: decrypt(token.accessToken),
+    refresh_token: token.refreshToken ? decrypt(token.refreshToken) : null,
     expiry_date: token.expiresAt?.getTime(),
   });
 

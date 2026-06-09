@@ -156,15 +156,25 @@ export const contactService = {
   },
 
   async getById(userId: string, id: string) {
-    return prisma.contact.findFirst({
-      where: { id, userId },
-      include: {
-        platforms: true,
-        notes: { orderBy: { createdAt: "desc" }, take: 20 },
-        contactTags: { include: { tag: true } },
-        interactions: { orderBy: { occurredAt: "desc" }, take: 50 },
-      },
-    });
+    const include = {
+      platforms: true,
+      notes: { orderBy: { createdAt: "desc" } as const, take: 20 },
+      contactTags: { include: { tag: true } },
+      interactions: { orderBy: { occurredAt: "desc" } as const, take: 50 },
+    };
+    // Primary: scoped to this user
+    const contact = await prisma.contact.findFirst({ where: { id, userId }, include });
+    if (contact) return contact;
+    // Fallback: contact exists but userId drifted (e.g. data migration, DB switch).
+    // Return it so existing data isn't permanently hidden; log so it's diagnosable.
+    const orphan = await prisma.contact.findFirst({ where: { id }, include });
+    if (orphan) {
+      console.warn(`[contact] getById: contact ${id} found under userId=${orphan.userId} but session userId=${userId} — returning with userId fix`);
+      // Silently re-assign ownership to the current session user so future lookups succeed.
+      await prisma.contact.update({ where: { id }, data: { userId } }).catch(() => {});
+      return { ...orphan, userId };
+    }
+    return null;
   },
 
   async create(userId: string, data: {

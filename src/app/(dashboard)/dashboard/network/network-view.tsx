@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
+import { NetworkSkeleton } from "@/components/ui/skeleton";
 import { useRouter } from "next/navigation";
 import type { Contact } from "@/lib/types";
 import { contactsApi } from "@/lib/api";
-import { MOCK_CONTACTS } from "@/lib/mock-contacts";
 
 type Sector = "payment" | "blockchain" | "vc" | "infra" | "fintech" | "ai" | "other";
 type Filter = Sector | "all";
@@ -185,8 +185,8 @@ export function NetworkView() {
 
   useEffect(() => {
     contactsApi.getAll({ limit: "500" })
-      .then((res) => setContacts(res.data.length > 0 ? res.data : MOCK_CONTACTS as unknown as Contact[]))
-      .catch(() => setContacts(MOCK_CONTACTS as unknown as Contact[]))
+      .then((res) => setContacts(res.data))
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
@@ -218,9 +218,7 @@ export function NetworkView() {
     return byCompany;
   }, [filter, nodes]);
 
-  if (loading) {
-    return <div style={{ color: "var(--t3)", fontSize: 13, padding: 32 }}>Loading network…</div>;
-  }
+  if (loading) return <NetworkSkeleton />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>

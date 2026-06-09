@@ -26,7 +26,7 @@ async function twitterFetch(path: string, authToken: string, ct0: string) {
 const CONSUMER_KEY = process.env.X_CONSUMER_KEY || "";
 const CONSUMER_SECRET = process.env.X_CONSUMER_SECRET || "";
 const CALLBACK_URI = `${process.env.AUTH_BASE_URL || "http://localhost:4002"}/api/x/callback`;
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3005";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // In-memory: oauth_token → { userId, tokenSecret }
 const oauthPending = new Map<string, { userId: string; tokenSecret: string }>();
