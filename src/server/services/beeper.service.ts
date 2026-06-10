@@ -351,12 +351,28 @@ export const beeperService = {
 
       const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
       if (!otherParticipant) return { synced: 0 };
-      platformId = otherParticipant.username || otherParticipant.id || otherParticipant.userID || roomId;
+      // Prefer native platform ID extracted from Matrix user ID (e.g. @discord_123456:beeper.com → 123456)
+      // so it matches the ID stored by native integrations (Discord, X, etc.)
+      const nativeIdMatch = (otherParticipant.id || "").match(/^@[a-z]+_(.+):[^:]+$/);
+      platformId = (nativeIdMatch ? nativeIdMatch[1] : null) || otherParticipant.username || otherParticipant.id || otherParticipant.userID || roomId;
       const displayName: string = otherParticipant.fullName || otherParticipant.displayName || chat.title || platformId;
 
-      const platformRecord = await prisma.platform.findFirst({
+      let platformRecord = await prisma.platform.findFirst({
         where: { type: platform as PlatformType, platformId: platformId! },
       });
+      // Fallback: match by username or displayName (handles case where native integration
+      // stored username as platformId and Beeper now has the numeric ID, or vice versa)
+      if (!platformRecord && displayName) {
+        platformRecord = await (prisma as any).platform.findFirst({
+          where: {
+            type: platform as PlatformType,
+            OR: [
+              { displayName: { equals: displayName, mode: "insensitive" } },
+              { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
+            ],
+          },
+        }) ?? null;
+      }
       if (platformRecord) {
         contactId = platformRecord.contactId;
         const contact = await prisma.contact.findUnique({ where: { id: contactId } });
@@ -505,15 +521,27 @@ export const beeperService = {
       const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
       if (!otherParticipant) continue;
 
-      const platformId: string = otherParticipant.username || otherParticipant.id || otherParticipant.userID || chat.id;
+      const nativeIdMatchSync = (otherParticipant.id || "").match(/^@[a-z]+_(.+):[^:]+$/);
+      const platformId: string = (nativeIdMatchSync ? nativeIdMatchSync[1] : null) || otherParticipant.username || otherParticipant.id || otherParticipant.userID || chat.id;
       const displayName: string = otherParticipant.fullName || otherParticipant.displayName || chat.title || platformId;
 
       let contactId: string | null = null;
       let contactName: string = displayName;
 
-      const platformRecord = await prisma.platform.findFirst({
+      let platformRecord = await prisma.platform.findFirst({
         where: { type: platform as PlatformType, platformId },
       });
+      if (!platformRecord && displayName) {
+        platformRecord = await (prisma as any).platform.findFirst({
+          where: {
+            type: platform as PlatformType,
+            OR: [
+              { displayName: { equals: displayName, mode: "insensitive" } },
+              { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
+            ],
+          },
+        }) ?? null;
+      }
       if (platformRecord) {
         contactId = platformRecord.contactId;
         const contact = await prisma.contact.findUnique({ where: { id: contactId } });

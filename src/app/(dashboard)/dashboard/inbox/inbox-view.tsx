@@ -231,7 +231,13 @@ export function InboxView() {
       try {
         const convs = await inboxApi.getConversations();
         setCached("inbox:conversations", convs);
-        setConversations(convs);
+        // Always show the currently-open conversation as read — the mark-read DB write
+        // may not have finished yet, causing a stale unreadCount to flash back in.
+        const sel = selectedRef.current;
+        setConversations(sel
+          ? convs.map((c) => c.key === sel.key ? { ...c, unreadCount: 0 } : c)
+          : convs
+        );
         return convs;
       } catch (err: any) {
         const msg = err?.message ?? "";
@@ -256,6 +262,7 @@ export function InboxView() {
     const es = new EventSource(`${API_BASE}/api/inbox/events`, { withCredentials: true });
 
     es.addEventListener("new_message", (e) => {
+      // Background re-fetch for eventual consistency — don't await
       fetchConvsRef.current?.();
 
       try {
@@ -263,31 +270,61 @@ export function InboxView() {
         const msg = data.message;
         const sel = selectedRef.current;
 
-        if (msg && sel) {
-          const isKnownMatch = data.contactId && data.contactId === sel.contactId && data.platform === sel.platform;
-          const isUnknownMatch = !data.contactId && !sel.contactId && data.platform === sel.platform && msg.senderId === sel.senderId;
-          if (isKnownMatch || isUnknownMatch) {
-            // Message arrived in the currently open chat — clear its unread immediately
-            setConversations((prev) => prev.map((c) =>
-              c.key === sel.key ? { ...c, unreadCount: 0 } : c
-            ));
-            window.dispatchEvent(new Event("inbox-read"));
+        if (msg) {
+          const isKnownMatch = data.contactId && sel && data.contactId === sel.contactId && data.platform === sel.platform;
+          const isUnknownMatch = !data.contactId && sel && !sel.contactId && data.platform === sel.platform && msg.senderId === sel.senderId;
+          const isCurrentChat = isKnownMatch || isUnknownMatch;
+
+          // Build the conversation key for this message
+          const convKey = msg.contactId
+            ? `${msg.contactId}:${msg.platform}`
+            : msg.senderId ? `unknown:${msg.senderId}:${msg.platform}` : null;
+
+          // Instantly update the conversation list — no network round trip
+          if (convKey) {
+            setConversations((prev) => {
+              const idx = prev.findIndex((c) => c.key === convKey);
+              const isRead = isCurrentChat || !!msg.fromMe;
+              if (idx >= 0) {
+                const existing = prev[idx];
+                const updated = {
+                  ...existing,
+                  latestMessage: msg,
+                  contactName: msg.contactName ?? existing.contactName,
+                  unreadCount: isRead ? 0 : existing.unreadCount + 1,
+                };
+                const next = prev.filter((_, i) => i !== idx);
+                return [updated, ...next]; // move to top
+              } else if (!msg.fromMe) {
+                // Brand new conversation
+                const newConv: InboxConversationApi = {
+                  key: convKey, contactId: msg.contactId ?? null,
+                  contactName: msg.contactName ?? null, platform: msg.platform,
+                  senderId: msg.senderId ?? null, latestMessage: msg,
+                  unreadCount: isCurrentChat ? 0 : 1, archived: false,
+                  messageCount: 1, starred: false,
+                };
+                return [newConv, ...prev];
+              }
+              return prev;
+            });
+            if (isCurrentChat) window.dispatchEvent(new Event("inbox-read"));
+          }
+
+          if (isCurrentChat && sel) {
             setThread((prev) => {
               const idx = prev.findIndex((m) => m.id === msg.id);
               let next: typeof prev;
               if (idx >= 0) {
-                // Update in-place (e.g., media loaded after initial text save)
                 if (prev[idx].body === msg.body) return prev;
                 next = [...prev];
                 next[idx] = msg;
               } else {
                 next = [...prev, msg];
               }
-              // Keep cache current so next conversation switch is instant
               threadCacheRef.current.set(sel.key, { msgs: next, at: Date.now() });
               return next;
             });
-            // Immediately evict matching optimistic sent message — prevents double-show flash
             if (msg.fromMe) {
               setSentMessages((prev) => {
                 const list = prev[sel.key] ?? [];
@@ -295,7 +332,7 @@ export function InboxView() {
                 return next.length === list.length ? prev : { ...prev, [sel.key]: next };
               });
             }
-          } else {
+          } else if (sel) {
             const fetchFn = sel.contactId
               ? inboxApi.getThread(sel.contactId, sel.platform)
               : sel.senderId ? inboxApi.getUnknownThread(sel.senderId, sel.platform) : null;

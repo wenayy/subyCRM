@@ -179,6 +179,52 @@ export async function splitWronglyMergedContacts(): Promise<{ split: number }> {
   return { split };
 }
 
+// Fix contacts duplicated by Beeper using username-as-platformId while native integration
+// used numeric ID. Merges pairs that share the same displayName on the same platform.
+export async function mergeBeepDuplicates(): Promise<{ merged: number }> {
+  const platforms = await prisma.platform.findMany({ select: { id: true, type: true, platformId: true, displayName: true, contactId: true } });
+  const merged = new Set<string>();
+  let count = 0;
+
+  // Group by type+displayName; if two different contacts share the same displayName on the same
+  // platform, one is likely from native integration and one from Beeper — merge them.
+  const byTypeAndName = new Map<string, typeof platforms>();
+  for (const p of platforms) {
+    if (!p.displayName) continue;
+    const key = `${p.type}::${p.displayName.toLowerCase().trim()}`;
+    if (!byTypeAndName.has(key)) byTypeAndName.set(key, []);
+    byTypeAndName.get(key)!.push(p);
+  }
+
+  for (const [, entries] of byTypeAndName) {
+    const contactIds = [...new Set(entries.map((e) => e.contactId))];
+    if (contactIds.length < 2) continue;
+    // Keep the one with the most messages (most data); merge the rest into it
+    const counts = await Promise.all(
+      contactIds.map(async (id) => ({
+        id,
+        n: await (prisma as any).inboxMessage.count({ where: { contactId: id } }),
+      }))
+    );
+    counts.sort((a, b) => b.n - a.n);
+    const [keep, ...rest] = counts;
+    for (const victim of rest) {
+      if (merged.has(victim.id)) continue;
+      merged.add(victim.id);
+      try {
+        await mergeContacts(keep.id, victim.id);
+        count++;
+        console.log(`[dedup] merged duplicate ${entries[0].type} contact (displayName="${entries[0].displayName}")`);
+      } catch (e: any) {
+        console.error(`[dedup] failed to merge ${victim.id}:`, e.message);
+      }
+    }
+  }
+
+  console.log(`[dedup] mergeBeepDuplicates done — merged ${count} duplicate contact(s)`);
+  return { merged: count };
+}
+
 async function mergeContacts(keepId: string, mergeId: string) {
   await (prisma as any).inboxMessage.updateMany({ where: { contactId: mergeId }, data: { contactId: keepId } });
 

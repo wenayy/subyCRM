@@ -649,14 +649,16 @@ app.listen(PORT, async () => {
   );
   console.log("[server] LinkedIn sync scheduled every 12 hours");
 
-  // ── Contact dedup: split any contacts that were wrongly merged before the fix ──
+  // ── Contact dedup: split wrongly merged + merge Beeper/native duplicates ──
   void (async () => {
     try {
-      const { splitWronglyMergedContacts } = await import("./services/dedup.service");
+      const { splitWronglyMergedContacts, mergeBeepDuplicates } = await import("./services/dedup.service");
       const { split } = await splitWronglyMergedContacts();
       if (split > 0) console.log(`[startup] Split ${split} wrongly merged contact platform(s)`);
+      const { merged } = await mergeBeepDuplicates();
+      if (merged > 0) console.log(`[startup] Merged ${merged} Beeper/native duplicate contact(s)`);
     } catch (e: any) {
-      console.error("[startup] Contact split error:", e.message);
+      console.error("[startup] Contact dedup error:", e.message);
     }
   })();
 
