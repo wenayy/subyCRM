@@ -136,10 +136,11 @@ export const beeperService = {
     const controller = new AbortController();
     activeLongPolls.set(userId, controller);
 
-    (async () => {
+    const run = async () => {
       console.log(`[beeper-poll] Starting real-time long-poll for user=${userId}`);
       let backoffMs = 0;
 
+      try {
       while (!controller.signal.aborted) {
         if (backoffMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
@@ -206,15 +207,16 @@ export const beeperService = {
         const nextBatch: string | undefined = data.next_batch;
         const rooms: Record<string, any> = data.rooms?.join ?? {};
 
-        // Persist nextBatch immediately — if server restarts we resume without re-processing
-        if (nextBatch) {
-          await (prisma as any).beeperSession.update({
-            where: { userId },
-            data: { nextBatch, lastSyncAt: new Date() },
-          }).catch(() => {});
+        if (!localToken) {
+          // No local API — save nextBatch and move on
+          if (nextBatch) {
+            await (prisma as any).beeperSession.update({
+              where: { userId },
+              data: { nextBatch, lastSyncAt: new Date() },
+            }).catch(() => {});
+          }
+          continue;
         }
-
-        if (!localToken) continue; // No local API — can't decrypt
 
         const activeRooms = Object.entries(rooms).filter(([, roomData]) => {
           const timelineEvents: any[] = (roomData as any).timeline?.events ?? [];
@@ -223,12 +225,12 @@ export const beeperService = {
           );
         });
 
-        if (activeRooms.length === 0) continue;
-
         // Wait for Beeper's local bridge to finish processing the event before we fetch.
         // Without this delay the local API often returns stale results (race condition).
-        await new Promise((r) => setTimeout(r, 1500));
-        if (controller.signal.aborted) break;
+        if (activeRooms.length > 0) {
+          await new Promise((r) => setTimeout(r, 1500));
+          if (controller.signal.aborted) break;
+        }
 
         // Process rooms sequentially to avoid saturating the DB connection pool
         for (const [roomId] of activeRooms) {
@@ -239,18 +241,58 @@ export const beeperService = {
             return { synced: 0 };
           });
 
-          // Retry once if we got 0 new messages — the local API may still be catching up
+          // Retry with longer delays — local API may still be catching up
           if (synced === 0) {
-            await new Promise((r) => setTimeout(r, 2000));
+            await new Promise((r) => setTimeout(r, 3000));
             if (controller.signal.aborted) break;
-            await beeperService.syncSingleChat(userId, roomId, localToken).catch(() => {});
+            const { synced: synced2 } = await beeperService.syncSingleChat(userId, roomId, localToken).catch(() => ({ synced: 0 }));
+            if (synced2 === 0) {
+              await new Promise((r) => setTimeout(r, 6000));
+              if (controller.signal.aborted) break;
+              await beeperService.syncSingleChat(userId, roomId, localToken).catch(() => {});
+            }
           }
+        }
+
+        // Save nextBatch AFTER processing all rooms — ensures we never advance past an
+        // event we failed to process (missing messages would be unrecoverable otherwise)
+        if (nextBatch) {
+          await (prisma as any).beeperSession.update({
+            where: { userId },
+            data: { nextBatch, lastSyncAt: new Date() },
+          }).catch(() => {});
+        }
+      }
+
+      } catch (err: any) {
+        if (!controller.signal.aborted) {
+          console.error(`[beeper-poll] Unexpected crash for user=${userId}: ${err.message}`);
         }
       }
 
       activeLongPolls.delete(userId);
       console.log(`[beeper-poll] Long-poll ended for user=${userId}`);
-    })();
+
+      // Auto-restart unless explicitly stopped (aborted) or token expired
+      if (!controller.signal.aborted) {
+        try {
+          const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+          if (session?.connected) {
+            console.log(`[beeper-poll] Auto-restarting for user=${userId} in 15s`);
+            await new Promise((r) => setTimeout(r, 15000));
+            if (!controller.signal.aborted) beeperService.startLongPoll(userId);
+          }
+        } catch {}
+      }
+    };
+
+    run().catch((err) => {
+      console.error(`[beeper-poll] Fatal error for user=${userId}:`, err.message);
+      activeLongPolls.delete(userId);
+      if (!controller.signal.aborted) {
+        setTimeout(() => beeperService.startLongPoll(userId), 15000);
+      }
+    });
   },
 
   stopLongPoll(userId: string): void {
@@ -284,10 +326,24 @@ export const beeperService = {
     let platform: string | null = prevMsg?.platform ?? null;
     let platformId: string | null = prevMsg?.senderId ?? null;
 
+    // If prevMsg exists but senderId is null, recover platformId from the platform record
+    if (prevMsg && !platformId && contactId && platform) {
+      const platRecord = await prisma.platform.findFirst({
+        where: { type: platform as PlatformType, contactId },
+        select: { platformId: true },
+      });
+      platformId = platRecord?.platformId ?? null;
+    }
+
+    console.log(`[beeper-sync] room=${roomId.slice(0, 20)} prevMsg=${!!prevMsg} contactId=${contactId?.slice(0,8)} platform=${platform} platformId=${platformId?.slice(0,12)}`);
+
     // If room is unknown, ask local API for chat metadata
     if (!contactId || !platform) {
       const chatRes = await fetch(`${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}`, { headers });
-      if (!chatRes.ok) return { synced: 0 };
+      if (!chatRes.ok) {
+        console.log(`[beeper-sync] local API chat fetch failed: ${chatRes.status} for room=${roomId.slice(0, 20)}`);
+        return { synced: 0 };
+      }
       const chat = await chatRes.json() as any;
 
       if (!NETWORK_TO_PLATFORM[chat.network] || chat.type !== "single") return { synced: 0 };
@@ -295,8 +351,8 @@ export const beeperService = {
 
       const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
       if (!otherParticipant) return { synced: 0 };
-      platformId = otherParticipant.username || otherParticipant.id;
-      const displayName: string = otherParticipant.fullName || chat.title || platformId;
+      platformId = otherParticipant.username || otherParticipant.id || otherParticipant.userID || roomId;
+      const displayName: string = otherParticipant.fullName || otherParticipant.displayName || chat.title || platformId;
 
       const platformRecord = await prisma.platform.findFirst({
         where: { type: platform as PlatformType, platformId: platformId! },
@@ -450,8 +506,8 @@ export const beeperService = {
       const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
       if (!otherParticipant) continue;
 
-      const platformId: string = otherParticipant.username || otherParticipant.id;
-      const displayName: string = otherParticipant.fullName || chat.title || platformId;
+      const platformId: string = otherParticipant.username || otherParticipant.id || otherParticipant.userID || chat.id;
+      const displayName: string = otherParticipant.fullName || otherParticipant.displayName || chat.title || platformId;
 
       let contactId: string | null = null;
       let contactName: string = displayName;
@@ -572,10 +628,32 @@ export const beeperService = {
       deduplicateContacts().catch(console.error);
     }
 
-    await (prisma as any).beeperSession.update({
-      where: { userId },
-      data: { lastSyncAt: new Date() },
-    });
+    // Grab a fresh Matrix nextBatch pointing to "right now" so the long-poll that
+    // starts after this sync doesn't replay the entire Matrix history from scratch.
+    // syncViaLocalApi never calls Matrix, so nextBatch would be null/stale otherwise.
+    try {
+      const freshSession = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+      if (freshSession?.accessToken) {
+        const accessToken = decrypt(freshSession.accessToken);
+        const nowRes = await fetch(
+          `${HOMESERVER}/_matrix/client/v3/sync?timeout=0&filter=${encodeURIComponent(JSON.stringify({ room: { timeline: { limit: 1 }, state: { types: [] }, ephemeral: { not_types: ["*"] }, account_data: { not_types: ["*"] } }, account_data: { not_types: ["*"] }, presence: { not_types: ["*"] } }))}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (nowRes.ok) {
+          const nowData = await nowRes.json() as any;
+          if (nowData.next_batch) {
+            await (prisma as any).beeperSession.update({
+              where: { userId },
+              data: { nextBatch: nowData.next_batch, lastSyncAt: new Date() },
+            });
+            console.log(`[beeper-local] nextBatch anchored to now — long-poll will start from current position`);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[beeper-local] Could not anchor nextBatch: ${e.message}`);
+      await (prisma as any).beeperSession.update({ where: { userId }, data: { lastSyncAt: new Date() } });
+    }
 
     console.log(`[beeper-local] Done — synced=${synced} new messages, imported=${importedContacts} contacts`);
     return { synced, importedContacts };
