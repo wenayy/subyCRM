@@ -3,9 +3,15 @@ import { inboxService } from "./inbox.service";
 import { encrypt, decrypt } from "../lib/encryption";
 import { deduplicateContacts } from "./dedup.service";
 import type { PlatformType } from "@prisma/client";
+import fs from "fs/promises";
+import path from "path";
 
 const HOMESERVER = "https://matrix.beeper.com";
-const LOCAL_API = "http://localhost:23373";
+const DEFAULT_LOCAL_API = "http://localhost:23373";
+
+function getLocalApi(session: any): string {
+  return (session?.localEndpoint || "").trim().replace(/\/$/, "") || DEFAULT_LOCAL_API;
+}
 
 // Persistent long-poll connections per userId
 const activeLongPolls = new Map<string, AbortController>();
@@ -79,8 +85,85 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+function mimeToExt(mime: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+    "image/gif": ".gif", "image/webp": ".webp", "image/heic": ".heic",
+    "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm",
+    "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/mp4": ".m4a",
+    "application/pdf": ".pdf",
+  };
+  return map[mime] ?? ".bin";
+}
+
+// Save media from a Beeper attachment to /public/media/, return markdown tag.
+// Beeper local API attachment shape: { id: "mxc://...", srcURL: "file:///...", mimeType, fileName, ... }
+async function downloadBeeperMedia(
+  attachment: any,
+  _localToken: string,
+  msgId: string,
+  localEndpoint = DEFAULT_LOCAL_API,
+): Promise<string | null> {
+  const mime: string = attachment.mimeType ?? "application/octet-stream";
+  const rawName: string = attachment.fileName ?? attachment.filename ?? `media_${msgId}`;
+  const name = rawName.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const ext = path.extname(name) || mimeToExt(mime);
+  const safeName = name.endsWith(ext) ? name : `${name}${ext}`;
+  const uniqueName = `${Date.now()}_${safeName}`;
+  const mediaDir = path.join(process.cwd(), "public", "media");
+
+  let buffer: Buffer | null = null;
+
+  // Prefer srcURL — Beeper already downloaded and decrypted the file locally
+  const srcUrl: string | undefined = attachment.srcURL;
+  if (srcUrl) {
+    const localPath = decodeURIComponent(srcUrl.replace(/^file:\/\//, ""));
+    try {
+      buffer = await fs.readFile(localPath);
+      console.log(`[beeper-media-rx] read from srcURL ${localPath} (${buffer.length} bytes)`);
+    } catch (e: any) {
+      console.warn(`[beeper-media-rx] srcURL read failed: ${e?.message}`);
+    }
+  }
+
+  // Fallback: download the mxc:// URL via the local Beeper API proxy
+  if (!buffer) {
+    const mxcUrl: string | undefined = attachment.id ?? attachment.url;
+    if (!mxcUrl) {
+      console.warn(`[beeper-media-rx] no srcURL or mxc id on attachment, keys=${Object.keys(attachment).join(",")}`);
+      return null;
+    }
+    try {
+      // Beeper local API exposes a proxy at /v1/media/<mxc-media-id>
+      const mediaId = mxcUrl.replace(/^mxc:\/\/[^/]+\//, "");
+      const proxyUrl = `${localEndpoint}/v1/media/${mediaId}`;
+      console.log(`[beeper-media-rx] fetching via local proxy ${proxyUrl}`);
+      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) {
+        console.warn(`[beeper-media-rx] proxy fetch failed ${res.status}`);
+        return null;
+      }
+      buffer = Buffer.from(await res.arrayBuffer());
+      console.log(`[beeper-media-rx] downloaded ${buffer.length} bytes via proxy`);
+    } catch (e: any) {
+      console.error(`[beeper-media-rx] error for msgId=${msgId}:`, e?.message);
+      return null;
+    }
+  }
+
+  if (!buffer.length) return null;
+
+  await fs.mkdir(mediaDir, { recursive: true });
+  await fs.writeFile(path.join(mediaDir, uniqueName), buffer);
+  const url = `/media/${uniqueName}`;
+  const isImage = mime.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp)$/i.test(safeName);
+  const isVideo = mime.startsWith("video/") || /\.(mp4|mov|webm|avi)$/i.test(safeName);
+  console.log(`[beeper-media-rx] saved ${uniqueName} → ${url}`);
+  return (isImage || isVideo) ? `![${safeName}](${url})` : `[${safeName}](${url})`;
+}
+
 export const beeperService = {
-  async connect(userId: string, matrixId: string, accessToken: string, localToken?: string) {
+  async connect(userId: string, matrixId: string, accessToken: string, localToken?: string, localEndpoint?: string) {
     const whoamiUrl = `${HOMESERVER}/_matrix/client/v3/account/whoami`;
     const res = await fetch(whoamiUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -96,8 +179,8 @@ export const beeperService = {
 
     await (prisma as any).beeperSession.upsert({
       where: { userId },
-      create: { userId, matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, connected: true },
-      update: { matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, connected: true },
+      create: { userId, matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, localEndpoint: localEndpoint || null, connected: true },
+      update: { matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, localEndpoint: localEndpoint || null, connected: true },
     });
 
     // Initial sync to pull history, then start real-time long-poll
@@ -163,6 +246,7 @@ export const beeperService = {
 
         const accessToken = decrypt(session.accessToken);
         const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
+        const localEndpoint = getLocalApi(session);
         const since = session.nextBatch;
 
         let url = `${HOMESERVER}/_matrix/client/v3/sync?timeout=30000&filter=${encodeURIComponent(LONG_POLL_FILTER)}`;
@@ -236,7 +320,7 @@ export const beeperService = {
         for (const [roomId] of activeRooms) {
           if (controller.signal.aborted) break;
 
-          const { synced } = await beeperService.syncSingleChat(userId, roomId, localToken).catch((err) => {
+          const { synced } = await beeperService.syncSingleChat(userId, roomId, localToken, localEndpoint).catch((err) => {
             console.warn(`[beeper-poll] syncSingleChat failed room=${roomId}: ${err.message}`);
             return { synced: 0 };
           });
@@ -245,11 +329,11 @@ export const beeperService = {
           if (synced === 0) {
             await new Promise((r) => setTimeout(r, 3000));
             if (controller.signal.aborted) break;
-            const { synced: synced2 } = await beeperService.syncSingleChat(userId, roomId, localToken).catch(() => ({ synced: 0 }));
+            const { synced: synced2 } = await beeperService.syncSingleChat(userId, roomId, localToken, localEndpoint).catch(() => ({ synced: 0 }));
             if (synced2 === 0) {
               await new Promise((r) => setTimeout(r, 6000));
               if (controller.signal.aborted) break;
-              await beeperService.syncSingleChat(userId, roomId, localToken).catch(() => {});
+              await beeperService.syncSingleChat(userId, roomId, localToken, localEndpoint).catch(() => {});
             }
           }
         }
@@ -311,7 +395,7 @@ export const beeperService = {
   },
 
   // ─── Fetch & store messages for a single room from local API ──
-  async syncSingleChat(userId: string, roomId: string, localToken: string): Promise<{ synced: number }> {
+  async syncSingleChat(userId: string, roomId: string, localToken: string, localEndpoint = DEFAULT_LOCAL_API): Promise<{ synced: number }> {
     const headers = { Authorization: `Bearer ${localToken}` };
 
     // Try to resolve contact from existing messages for this room
@@ -339,7 +423,7 @@ export const beeperService = {
 
     // If room is unknown, ask local API for chat metadata
     if (!contactId || !platform) {
-      const chatRes = await fetch(`${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}`, { headers });
+      const chatRes = await fetch(`${localEndpoint}/v1/chats/${encodeURIComponent(roomId)}`, { headers });
       if (!chatRes.ok) {
         console.log(`[beeper-sync] local API chat fetch failed: ${chatRes.status} for room=${roomId.slice(0, 20)}`);
         return { synced: 0 };
@@ -399,7 +483,7 @@ export const beeperService = {
     if (!contactId || !platform || !platformId) return { synced: 0 };
 
     // Fetch the latest messages from local API
-    const msgsRes = await fetch(`${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}/messages?limit=50`, { headers });
+    const msgsRes = await fetch(`${localEndpoint}/v1/chats/${encodeURIComponent(roomId)}/messages?limit=50`, { headers });
     if (!msgsRes.ok) return { synced: 0 };
     const msgsData = await msgsRes.json() as any;
     const messages: any[] = msgsData.items ?? [];
@@ -408,9 +492,24 @@ export const beeperService = {
 
     for (const msg of messages) {
       const rawText = (msg.text || msg.body || "").trim();
-      if (!rawText) continue;
-      const cleanText = stripHtml(rawText);
-      if (!cleanText) continue;
+      const attachments: any[] = msg.attachments ?? [];
+
+      // Build message content: text + any media attachments
+      let cleanText = stripHtml(rawText);
+      if (attachments.length > 0) {
+        console.log(`[beeper-media-rx] msg id=${msg.id} has ${attachments.length} attachment(s): ${JSON.stringify(attachments.map((a: any) => ({ url: a.url, mimeType: a.mimeType, filename: a.filename })))}`);
+        const mediaTags = (await Promise.all(
+          attachments.map((a: any) => downloadBeeperMedia(a, localToken, String(msg.id), localEndpoint))
+        )).filter(Boolean) as string[];
+        if (mediaTags.length > 0) {
+          cleanText = cleanText ? `${cleanText}\n\n${mediaTags.join("\n")}` : mediaTags.join("\n");
+        }
+      }
+
+      if (!cleanText) {
+        console.log(`[beeper-sync] skipping msg id=${msg.id} — empty after processing (rawText="${rawText}", attachments=${attachments.length})`);
+        continue;
+      }
       if (SYSTEM_MESSAGE_RE.test(cleanText)) continue;
 
       const canonicalId = `bl-${msg.id}`;
@@ -488,7 +587,7 @@ export const beeperService = {
   },
 
   // ─── Full sync via local API (used for initial/manual sync) ──
-  async syncViaLocalApi(userId: string, localToken: string): Promise<{ synced: number; importedContacts: number }> {
+  async syncViaLocalApi(userId: string, localToken: string, localEndpoint = DEFAULT_LOCAL_API): Promise<{ synced: number; importedContacts: number }> {
     const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
     const cutoff = session?.lastSyncAt
       ? new Date(session.lastSyncAt)
@@ -496,7 +595,7 @@ export const beeperService = {
 
     const headers = { Authorization: `Bearer ${localToken}` };
 
-    const chatsRes = await fetch(`${LOCAL_API}/v1/chats`, { headers });
+    const chatsRes = await fetch(`${localEndpoint}/v1/chats`, { headers });
     if (!chatsRes.ok) throw new Error(`Local Beeper API failed: ${chatsRes.status}`);
     const chatsData = await chatsRes.json() as any;
     const chats: any[] = chatsData.items ?? [];
@@ -571,8 +670,8 @@ export const beeperService = {
 
       while (!reachedCutoff) {
         const url = cursor
-          ? `${LOCAL_API}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50&cursor=${cursor}`
-          : `${LOCAL_API}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50`;
+          ? `${localEndpoint}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50&cursor=${cursor}`
+          : `${localEndpoint}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50`;
         const msgsRes = await fetch(url, { headers });
         if (!msgsRes.ok) break;
         const msgsData = await msgsRes.json() as any;
@@ -580,9 +679,21 @@ export const beeperService = {
 
         for (const msg of messages) {
           const rawText = (msg.text || msg.body || "").trim();
-          if (!rawText) continue;
-          const cleanText = stripHtml(rawText);
-          if (!cleanText) continue;
+          const attachments: any[] = msg.attachments ?? [];
+          let cleanText = stripHtml(rawText);
+          if (attachments.length > 0) {
+            console.log(`[beeper-media-rx] msg id=${msg.id} has ${attachments.length} attachment(s): ${JSON.stringify(attachments.map((a: any) => ({ url: a.url, mimeType: a.mimeType, filename: a.filename })))}`);
+            const mediaTags = (await Promise.all(
+              attachments.map((a: any) => downloadBeeperMedia(a, localToken, String(msg.id), localEndpoint))
+            )).filter(Boolean) as string[];
+            if (mediaTags.length > 0) {
+              cleanText = cleanText ? `${cleanText}\n\n${mediaTags.join("\n")}` : mediaTags.join("\n");
+            }
+          }
+          if (!cleanText) {
+            console.log(`[beeper-sync] skipping msg id=${msg.id} — empty after processing`);
+            continue;
+          }
           if (SYSTEM_MESSAGE_RE.test(cleanText)) continue;
           const receivedAt = new Date(msg.timestamp);
           if (receivedAt <= cutoff) { reachedCutoff = true; break; }
@@ -694,7 +805,7 @@ export const beeperService = {
     // Use local Beeper desktop API when available — gives decrypted messages directly
     const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
     if (localToken) {
-      return beeperService.syncViaLocalApi(userId, localToken);
+      return beeperService.syncViaLocalApi(userId, localToken, getLocalApi(session));
     }
 
     const accessToken = decrypt(session.accessToken);
@@ -886,56 +997,129 @@ export const beeperService = {
 
   async sendMessage(userId: string, roomId: string, text: string, platform?: string): Promise<string> {
     const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
-    if (!session || !session.connected) {
-      throw new Error("Beeper not connected");
-    }
+    if (!session || !session.connected) throw new Error("Beeper not connected");
 
     const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
 
-    // Always prefer the local Beeper API — it handles encryption for all platforms
-    // (WhatsApp, Telegram, X, LinkedIn, iMessage, Signal, etc.) automatically.
+    // If the text contains a media attachment, send it as a proper media message
+    console.log(`[beeper-send] sendMessage roomId=${roomId} platform=${platform} textLen=${text.length} textPreview=${JSON.stringify(text.slice(0, 80))}`);
+    const mediaMatch = text.match(/!\[([^\]]*)\]\((\/media\/([^)]+))\)/);
+    if (mediaMatch) {
+      const caption = text.replace(mediaMatch[0], "").trim();
+      const relPath = mediaMatch[2]; // e.g. /media/filename.jpg
+      const filename = mediaMatch[3];
+      const filePath = path.join(process.cwd(), "public", relPath);
+      return beeperService.sendMediaFile(userId, roomId, filePath, filename, caption, localToken, session);
+    }
+
     if (localToken) {
-      console.log(`[beeper-send] Sending via local API platform=${platform} roomId=${roomId}`);
-      const url = `${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}/messages`;
-      const res = await fetch(url, {
+      const localApi = getLocalApi(session);
+      console.log(`[beeper-send] Sending via local API platform=${platform} roomId=${roomId} endpoint=${localApi}`);
+      const res = await fetch(`${localApi}/v1/chats/${encodeURIComponent(roomId)}/messages`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${localToken}`,
-          "Content-Type": "application/json",
-        },
+        headers: { Authorization: `Bearer ${localToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         throw new Error(`Local Beeper API send failed: ${res.statusText} ${errText}`);
       }
-
       const data = await res.json() as { pendingMessageID: string };
       return data.pendingMessageID;
     }
 
     const accessToken = decrypt(session.accessToken);
     const txnId = Math.random().toString(36).slice(2, 12);
-    const url = `${HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txnId}`;
-
-    const res = await fetch(url, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        msgtype: "m.text",
-        body: text,
-      }),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Matrix send failed: ${res.statusText}`);
-    }
-
+    const res = await fetch(
+      `${HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txnId}`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ msgtype: "m.text", body: text }),
+      }
+    );
+    if (!res.ok) throw new Error(`Matrix send failed: ${res.statusText}`);
     const data = await res.json() as { event_id: string };
     return data.event_id;
+  },
+
+  async sendMediaFile(
+    userId: string, roomId: string, filePath: string,
+    filename: string, caption: string,
+    _localToken: string | null, session?: any,
+  ): Promise<string> {
+    let buffer: Buffer;
+    try {
+      buffer = await fs.readFile(filePath);
+    } catch {
+      throw new Error(`Media file not found: ${filePath}`);
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    const mimeMap: Record<string, string> = {
+      ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+      ".gif": "image/gif", ".webp": "image/webp",
+      ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+      ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".m4a": "audio/mp4",
+      ".pdf": "application/pdf",
+    };
+    const mimeType = mimeMap[ext] ?? "application/octet-stream";
+    const isImage = mimeType.startsWith("image/");
+    const isVideo = mimeType.startsWith("video/");
+
+    // Step 1: Upload file bytes to Matrix media server (no encryption needed for media upload).
+    // Step 2: Send the event via the Beeper local API — it handles E2E encryption for the room.
+    const resolvedSession = session ?? await (prisma as any).beeperSession.findUnique({ where: { userId } });
+    if (!resolvedSession?.accessToken) throw new Error("No Beeper session for media upload");
+    const accessToken = decrypt(resolvedSession.accessToken);
+
+    console.log(`[beeper-media] Uploading ${filename} (${mimeType}, ${buffer.length} bytes) to Matrix media`);
+    const uploadRes = await fetch(
+      `${HOMESERVER}/_matrix/media/v3/upload?filename=${encodeURIComponent(filename)}`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": mimeType },
+        body: buffer as unknown as BodyInit,
+      }
+    );
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.text().catch(() => "");
+      throw new Error(`Matrix media upload failed (${uploadRes.status}): ${errBody}`);
+    }
+    const { content_uri: mxcUrl } = await uploadRes.json() as { content_uri: string };
+    console.log(`[beeper-media] Uploaded → ${mxcUrl}`);
+
+    // Resolve the local token (sendMediaFile may be called with _localToken=null when Matrix-only)
+    const tok = _localToken ?? resolvedSession.localToken ?? process.env.BEEPER_LOCAL_TOKEN;
+    if (!tok) throw new Error("No local Beeper token — cannot send encrypted event");
+
+    // Send via local API using the same attachment shape Beeper uses for received media.
+    // The local API handles E2E encryption transparently.
+    const attachType = isImage ? "img" : isVideo ? "video" : "file";
+    const sendBody: any = {
+      attachments: [{
+        id: mxcUrl,
+        type: attachType,
+        mimeType,
+        fileName: filename,
+        fileSize: buffer.length,
+      }],
+    };
+    if (caption) sendBody.text = caption;
+
+    const localApi = getLocalApi(resolvedSession);
+    console.log(`[beeper-media] Sending via local API roomId=${roomId} type=${attachType} endpoint=${localApi}`);
+    const sendRes = await fetch(`${localApi}/v1/chats/${encodeURIComponent(roomId)}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+      body: JSON.stringify(sendBody),
+    });
+    if (!sendRes.ok) {
+      const errBody = await sendRes.text().catch(() => "");
+      throw new Error(`Local API media send failed (${sendRes.status}): ${errBody}`);
+    }
+    const data = await sendRes.json() as any;
+    console.log(`[beeper-media] Sent via local API, pendingMessageID=${data.pendingMessageID}`);
+    return data.pendingMessageID ?? "sent";
   },
 };

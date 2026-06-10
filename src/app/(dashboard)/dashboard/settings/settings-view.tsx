@@ -616,10 +616,10 @@ function WhatsAppModal({ onClose }: { onClose: () => void }) {
 }
 
 function BeeperModal({ onConnect, onClose }: {
-  onConnect: (d: { matrixId: string; accessToken: string; localToken?: string }) => Promise<void>;
+  onConnect: (d: { matrixId: string; accessToken: string; localToken?: string; localEndpoint?: string }) => Promise<void>;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState({ matrixId: "", accessToken: "", localToken: "" });
+  const [form, setForm] = useState({ matrixId: "", accessToken: "", localToken: "", localEndpoint: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
@@ -632,6 +632,7 @@ function BeeperModal({ onConnect, onClose }: {
         matrixId: form.matrixId.trim(),
         accessToken: form.accessToken.trim(),
         localToken: form.localToken.trim() || undefined,
+        localEndpoint: form.localEndpoint.trim() || undefined,
       });
       onClose();
     }
@@ -666,6 +667,13 @@ function BeeperModal({ onConnect, onClose }: {
               <input value={form.localToken} onChange={set("localToken")} placeholder="bdapi_..." className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
               <span className="text-[10px] text-muted-foreground/75 mt-1 block leading-normal">
                 Open Beeper Desktop → Settings → Integrations → Approved connections → click "+".
+              </span>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Beeper Local Endpoint <span className="text-xs text-muted-foreground/60">(Optional — only if Beeper runs on a different machine)</span></label>
+              <input value={form.localEndpoint} onChange={set("localEndpoint")} placeholder="https://abc123.ngrok.io" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+              <span className="text-[10px] text-muted-foreground/75 mt-1 block leading-normal">
+                Leave blank if Beeper is running on the same server. Otherwise run <code className="bg-muted px-1 rounded">ngrok http 23373</code> on your machine and paste the URL here.
               </span>
             </div>
           </div>

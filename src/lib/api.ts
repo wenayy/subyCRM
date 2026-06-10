@@ -540,7 +540,7 @@ export interface CalendarEventApi {
 // ─── Beeper API ─────────────────────────────────────────────
 export const beeperApi = {
   status: () => apiFetch<{ connected: boolean; matrixId: string | null; lastSync: string | null; hasLocalToken?: boolean }>("/api/beeper/status"),
-  connect: (data: { matrixId: string; accessToken: string; localToken?: string }) =>
+  connect: (data: { matrixId: string; accessToken: string; localToken?: string; localEndpoint?: string }) =>
     apiFetch<{ ok: boolean; matrixId: string }>("/api/beeper/connect", { method: "POST", body: JSON.stringify(data) }),
   sync: (full = false) => apiFetch<{ synced: number }>(`/api/beeper/sync${full ? "?full=true" : ""}`, { method: "POST" }),
   disconnect: () => apiFetch<{ ok: boolean }>("/api/beeper/disconnect", { method: "DELETE" }),

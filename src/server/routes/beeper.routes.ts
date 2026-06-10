@@ -14,12 +14,12 @@ router.get("/status", async (req, res, next) => {
 router.post("/connect", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
-    const { matrixId, accessToken, localToken } = req.body as { matrixId: string; accessToken: string; localToken?: string };
+    const { matrixId, accessToken, localToken, localEndpoint } = req.body as { matrixId: string; accessToken: string; localToken?: string; localEndpoint?: string };
     if (!matrixId?.trim() || !accessToken?.trim()) {
       res.status(400).json({ error: "matrixId and accessToken are required" });
       return;
     }
-    const result = await beeperService.connect(userId, matrixId.trim(), accessToken.trim(), localToken?.trim());
+    const result = await beeperService.connect(userId, matrixId.trim(), accessToken.trim(), localToken?.trim(), localEndpoint?.trim());
     res.json({ ok: true, matrixId: result.matrixId });
   } catch (err: any) {
     res.status(400).json({ error: err.message || "Failed to connect to Beeper Matrix homeserver" });

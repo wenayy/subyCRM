@@ -341,11 +341,13 @@ export const inboxService = {
           // Immediately fetch the message's local Beeper ID so we store it with the same
           // bl-{id} format the sync uses — this prevents duplicates on the next sync tick.
           let canonicalId: string = tempId;
-          const localToken = process.env.BEEPER_LOCAL_TOKEN;
+          const beeperSess = await (prisma as any).beeperSession.findUnique({ where: { userId: userId ?? "default" } }).catch(() => null);
+          const localToken = beeperSess?.localToken || process.env.BEEPER_LOCAL_TOKEN;
+          const beeperEndpoint = (beeperSess?.localEndpoint || "").trim().replace(/\/$/, "") || "http://localhost:23373";
           if (localToken) {
             try {
               const msgsRes = await fetch(
-                `http://localhost:23373/v1/chats/${encodeURIComponent(matrixRoomId)}/messages?limit=1`,
+                `${beeperEndpoint}/v1/chats/${encodeURIComponent(matrixRoomId)}/messages?limit=1`,
                 { headers: { Authorization: `Bearer ${localToken}` } },
               );
               if (msgsRes.ok) {
