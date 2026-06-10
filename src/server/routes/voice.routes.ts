@@ -43,7 +43,8 @@ voiceRouter.post("/simulate", async (req, res, next) => {
   try {
     const { transcript } = req.body as { transcript: string };
     if (!transcript?.trim()) { res.status(400).json({ error: "transcript required" }); return; }
-    const result = await processVoiceCapture(transcript.trim());
+    const userId = res.locals.session?.user?.id ?? "default";
+    const result = await processVoiceCapture(transcript.trim(), userId);
     res.json(result);
   } catch (err) { next(err); }
 });

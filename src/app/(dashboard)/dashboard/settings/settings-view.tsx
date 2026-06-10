@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { calendarApi, gmailApi, discordApi, slackApi, xApi, whatsappApi, telegramPersonalApi, linkedinApi, telegramBotApi } from "@/lib/api";
+import { calendarApi, gmailApi, discordApi, slackApi, xApi, whatsappApi, telegramPersonalApi, linkedinApi, telegramBotApi, beeperApi } from "@/lib/api";
 import { authClient } from "@/lib/auth-client";
 import { ImportView } from "../import/import-view";
 
@@ -84,6 +84,13 @@ const INTEGRATIONS: IntegrationDef[] = [
     color: "#0A66C2", bg: "#0A66C215",
     iconPath: "M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z",
   },
+  {
+    key: "beeper",
+    name: "Beeper / Matrix",
+    description: "Sync and reply to your LinkedIn, X/Twitter, WhatsApp, and Telegram DMs via Beeper's Matrix Cloud API.",
+    color: "#3FBC8C", bg: "#3FBC8C15",
+    iconPath: "M.632.55v22.9H2.28V24H0V0h2.28v.55zm7.043 7.26v1.157h.033c.309-.443.683-.784 1.117-1.024.433-.245.936-.365 1.5-.365.54 0 1.033.107 1.488.32.45.214.773.553.96 1.016.293-.39.674-.716 1.14-.98.467-.264.99-.396 1.564-.396.414 0 .8.065 1.157.2.36.13.666.32.92.566.26.245.46.552.604.92.144.366.216.78.216 1.236v6.07h-2.28V11.4c0-.273-.015-.53-.044-.762a1.549 1.549 0 00-.2-.614.994 0 00-.422-.402c-.184-.096-.414-.143-.688-.143-.277 0-.505.057-.683.176a1.18 1.18 0 00-.413.445 1.816 0 00-.2.621 4.457 4.457 0 00-.044.637v5.192h-2.28V11.4c0-.244-.008-.487-.022-.728a1.923 1.923 0 00-.156-.658 1.046 1.046 0 00-.378-.45c-.168-.113-.398-.17-.692-.17a1.53 1.53 0 00-.378.054 1.07 1.07 0 00-.39.204 1.16 1.16 0 00-.307.41c-.08.178-.12.408-.12.69v5.698H5.11V7.81h2.564zm14.842 15.64V.55H21.72V0H24v24h-2.28v-.55z",
+  },
 ];
 
 const STATUS_META: Record<Status, { label: string; bg: string; color: string; dot: string }> = {
@@ -95,7 +102,7 @@ const STATUS_META: Record<Status, { label: string; bg: string; color: string; do
 const GROUPS = [
   { label: "Voice assistant", keys: ["subyassist_bot"] },
   { label: "Calendar & Email", keys: ["google_calendar", "gmail"] },
-  { label: "Messaging", keys: ["whatsapp", "telegram_personal", "slack", "discord"] },
+  { label: "Messaging", keys: ["whatsapp", "telegram_personal", "beeper", "slack", "discord"] },
   { label: "Social", keys: ["x", "linkedin"] },
 ];
 
@@ -608,6 +615,71 @@ function WhatsAppModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+function BeeperModal({ onConnect, onClose }: {
+  onConnect: (d: { matrixId: string; accessToken: string; localToken?: string }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState({ matrixId: "", accessToken: "", localToken: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const submit = async () => {
+    if (!form.matrixId.trim() || !form.accessToken.trim()) { setError("Matrix ID and Access Token are required"); return; }
+    setLoading(true); setError("");
+    try {
+      await onConnect({
+        matrixId: form.matrixId.trim(),
+        accessToken: form.accessToken.trim(),
+        localToken: form.localToken.trim() || undefined,
+      });
+      onClose();
+    }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed"); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-[420px] rounded-2xl p-6">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-bold text-foreground">Connect Beeper</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 py-2">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Enter your Beeper Matrix ID and Access Token to sync LinkedIn, X/Twitter, WhatsApp, and Telegram DMs.
+            <br />
+            <br />
+            To find your token: Open <strong>Beeper Desktop</strong> → <strong>Settings</strong> (Gear icon) → <strong>Help & Support</strong> → scroll to <strong>Active Sessions</strong> → copy the <strong>access token</strong> of the current session.
+          </p>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Beeper Matrix ID <span className="text-status-red">*</span></label>
+              <input value={form.matrixId} onChange={set("matrixId")} placeholder="@username:beeper.com" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Matrix Access Token <span className="text-status-red">*</span></label>
+              <input value={form.accessToken} onChange={set("accessToken")} type="password" placeholder="Paste access token value" className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Local Desktop API Token <span className="text-xs text-muted-foreground/60">(Optional, required for sending LinkedIn/X messages)</span></label>
+              <input value={form.localToken} onChange={set("localToken")} placeholder="bdapi_..." className="w-full px-3.5 py-2 text-sm rounded-xl border border-border bg-muted/30 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all placeholder:text-muted-foreground/60 font-mono" />
+              <span className="text-[10px] text-muted-foreground/75 mt-1 block leading-normal">
+                Open Beeper Desktop → Settings → Integrations → Approved connections → click "+".
+              </span>
+            </div>
+          </div>
+          {error && <p className="text-status-red text-xs mt-1 bg-status-red/10 px-3 py-1.5 rounded-lg font-medium">{error}</p>}
+        </div>
+        <div className="flex gap-2.5 justify-end mt-2">
+          <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={submit} disabled={loading || !form.matrixId.trim() || !form.accessToken.trim()}>{loading && <Spinner />}{loading ? "Connecting…" : "Connect"}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Persist statuses in localStorage to avoid flicker on re-visit ───────────
 // Cache is scoped to userId so a new/different user always starts with a clean slate.
 
@@ -620,6 +692,7 @@ type CachedStatuses = {
   whatsapp?: { connected: boolean; phoneNumber: string | null };
   tgPersonal?: { connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean };
   linkedin?: { connected: boolean; profileName: string | null; hasCookie?: boolean; lastSync?: string | null };
+  beeper?: { connected: boolean; matrixId: string | null; lastSync: string | null };
 };
 
 function cacheKey(userId: string | undefined) {
@@ -654,6 +727,7 @@ export function SettingsView() {
   const [whatsapp, setWhatsapp] = useState<{ connected: boolean; phoneNumber: string | null } | null>(null);
   const [tgPersonal, setTgPersonal] = useState<{ connected: boolean; lastSync: string | null; phone?: string; hasEnvCreds?: boolean } | null>(null);
   const [linkedin, setLinkedin] = useState<{ connected: boolean; profileName: string | null; hasCookie?: boolean; lastSync?: string | null } | null>(null);
+  const [beeper, setBeeper] = useState<{ connected: boolean; matrixId: string | null; lastSync: string | null } | null>(null);
   const [botLink, setBotLink] = useState<{ linked: boolean; chatId: string | null; linkedAt: string | null } | null>(null);
   const [botToken, setBotToken] = useState<string | null>(null);
   const [botTokenLoading, setBotTokenLoading] = useState(false);
@@ -685,6 +759,9 @@ export function SettingsView() {
     linkedinApi.status()
       .then((v) => { setLinkedin(v); writeCache(uid, { ...readCache(uid), linkedin: v }); })
       .catch(() => setLinkedin((p) => p ?? { connected: false, profileName: null }));
+    beeperApi.status()
+      .then((v) => { setBeeper(v); writeCache(uid, { ...readCache(uid), beeper: v }); })
+      .catch(() => setBeeper((p) => p ?? { connected: false, matrixId: null, lastSync: null }));
     telegramBotApi.status()
       .then((v) => setBotLink(v))
       .catch(() => setBotLink((p) => p ?? { linked: false, chatId: null, linkedAt: null }));
@@ -705,11 +782,12 @@ export function SettingsView() {
     if (c.whatsapp) setWhatsapp(c.whatsapp);
     if (c.tgPersonal) setTgPersonal(c.tgPersonal);
     if (c.linkedin) setLinkedin(c.linkedin);
+    if (c.beeper) setBeeper(c.beeper);
     // Then fetch real state in background
     reload(userId);
     const params = new URLSearchParams(window.location.search);
     if (params.get("tab") === "import") setActiveTab("import");
-    if (params.get("slack") || params.get("calendar") || params.get("gmail") || params.get("x") || params.get("linkedin") || params.get("discord")) {
+    if (params.get("slack") || params.get("calendar") || params.get("gmail") || params.get("x") || params.get("linkedin") || params.get("discord") || params.get("beeper")) {
       window.history.replaceState({}, "", window.location.pathname);
       setTimeout(() => reload(userId), 2000);
     }
@@ -745,6 +823,7 @@ export function SettingsView() {
     if (key === "whatsapp") return whatsapp?.connected ? "connected" : "disconnected";
     if (key === "telegram_personal") return tgPersonal?.connected ? "connected" : "disconnected";
     if (key === "linkedin") return linkedin?.connected ? "connected" : "disconnected";
+    if (key === "beeper") return beeper?.connected ? "connected" : "disconnected";
     if (key === "subyassist_bot") return botLink?.linked ? "connected" : "disconnected";
     return "disconnected";
   };
@@ -767,8 +846,20 @@ export function SettingsView() {
       if (linkedin?.lastSync) return `Last synced ${new Date(linkedin.lastSync).toLocaleString()}`;
       return undefined;
     }
+    if (key === "beeper") {
+      if (beeper?.matrixId) return beeper.matrixId;
+      if (beeper?.lastSync) return `Last synced ${new Date(beeper.lastSync).toLocaleString()}`;
+      return undefined;
+    }
     if (key === "subyassist_bot") return botLink?.linked ? `@${botUsername} · linked` : undefined;
     return undefined;
+  };
+
+  const syncBeeper = async () => {
+    setSyncing("beeper");
+    try { await beeperApi.sync(); reload(userId); }
+    catch (e: any) { alert(`Beeper sync failed: ${e.message || "Unknown error"}`); }
+    finally { setSyncing(null); }
   };
 
   const syncX = async () => {
@@ -839,6 +930,7 @@ export function SettingsView() {
         else if (key === "whatsapp") { await whatsappApi.disconnect(); setWhatsapp({ connected: false, phoneNumber: null }); }
         else if (key === "telegram_personal") { await telegramPersonalApi.disconnect(); setTgPersonal({ connected: false, lastSync: null }); }
         else if (key === "linkedin") { await linkedinApi.disconnect(); setLinkedin({ connected: false, profileName: null, hasCookie: false, lastSync: null }); }
+        else if (key === "beeper") { await beeperApi.disconnect(); setBeeper({ connected: false, matrixId: null, lastSync: null }); }
       } catch { /* ignore */ }
       finally { setPending(null); }
       return;
@@ -861,6 +953,8 @@ export function SettingsView() {
       setModal("x");
     } else if (key === "linkedin") {
       setModal("linkedin_cookie");
+    } else if (key === "beeper") {
+      setModal("beeper");
     } else if (key === "discord") {
       setPending(key);
       try { const { url } = await discordApi.connectUrl(); window.location.href = url; }
@@ -871,7 +965,7 @@ export function SettingsView() {
     }
   };
 
-  const connectedCount = ["google_calendar", "gmail", "discord", "slack", "x", "linkedin", "whatsapp", "telegram_personal", "subyassist_bot"]
+  const connectedCount = ["google_calendar", "gmail", "discord", "slack", "x", "linkedin", "whatsapp", "telegram_personal", "subyassist_bot", "beeper"]
     .filter((k) => statusFor(k) === "connected").length;
 
   const def = Object.fromEntries(INTEGRATIONS.map((i) => [i.key, i]));
@@ -965,9 +1059,19 @@ export function SettingsView() {
                           {syncing === "discord" && <Spinner />}{syncing === "discord" ? "Syncing…" : "Sync"}
                         </Button>
                       )}
+                      {k === "x" && isConnected && (
+                        <Button size="sm" variant="outline" onClick={syncX} disabled={syncing === "x"} className="min-w-[70px]">
+                          {syncing === "x" && <Spinner />}{syncing === "x" ? "Syncing…" : "Sync"}
+                        </Button>
+                      )}
                       {k === "linkedin" && isConnected && (
                         <Button size="sm" variant="outline" onClick={syncLinkedIn} disabled={syncing === "linkedin"} className="min-w-[70px]">
                           {syncing === "linkedin" && <Spinner />}{syncing === "linkedin" ? "Syncing…" : "Sync"}
+                        </Button>
+                      )}
+                      {k === "beeper" && isConnected && (
+                        <Button size="sm" variant="outline" onClick={syncBeeper} disabled={syncing === "beeper"} className="min-w-[70px]">
+                          {syncing === "beeper" && <Spinner />}{syncing === "beeper" ? "Syncing…" : "Sync"}
                         </Button>
                       )}
                       <Button size="sm" variant={isConnected ? "outline" : "default"} onClick={() => toggle(k)} disabled={isPending} className="min-w-[100px]">
@@ -996,19 +1100,31 @@ export function SettingsView() {
                         </Button>
                       )}
                       {botToken && !botLink?.linked && (
-                        <div style={{ marginTop: 4, padding: "10px 12px", borderRadius: "var(--r)", background: "var(--al)", border: "1px solid var(--bd)", minWidth: 260 }}>
-                          <a
-                            href={`https://t.me/${botUsername}?start=${botToken}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{
-                              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                              padding: "8px 14px", borderRadius: "var(--r)", background: "#229ED9",
-                              color: "#fff", fontWeight: 600, fontSize: 13, textDecoration: "none",
-                            }}
-                          >
-                            Open Telegram to connect
-                          </a>
+                        <div style={{ marginTop: 4, padding: "10px 12px", borderRadius: "var(--r)", background: "var(--al)", border: "1px solid var(--bd)", minWidth: 280 }}>
+                          {botUsername ? (
+                            <a
+                              href={`https://t.me/${botUsername}?start=${botToken}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                                padding: "8px 14px", borderRadius: "var(--r)", background: "#229ED9",
+                                color: "#fff", fontWeight: 600, fontSize: 13, textDecoration: "none",
+                              }}
+                            >
+                              Open Telegram to connect
+                            </a>
+                          ) : null}
+                          <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "var(--bg)", border: "1px solid var(--bd)" }}>
+                            <div style={{ fontSize: 10, color: "var(--t3)", marginBottom: 3 }}>Or send this code to the bot manually:</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <code style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)", flex: 1 }}>{botToken}</code>
+                              <button
+                                onClick={() => navigator.clipboard.writeText(botToken)}
+                                style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, border: "1px solid var(--bd)", background: "var(--al)", cursor: "pointer", color: "var(--t2)" }}
+                              >Copy</button>
+                            </div>
+                          </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
                             {botPolling && <Spinner />}
                             <span style={{ fontSize: 10, color: "var(--t3)" }}>
@@ -1053,6 +1169,12 @@ export function SettingsView() {
       )}
       {modal === "whatsapp" && (
         <WhatsAppModal onClose={() => { setModal(null); reload(userId); }} />
+      )}
+      {modal === "beeper" && (
+        <BeeperModal
+          onConnect={async (d) => { await beeperApi.connect(d); reload(userId); }}
+          onClose={() => { setModal(null); reload(userId); }}
+        />
       )}
     </div>
   );

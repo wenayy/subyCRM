@@ -556,7 +556,8 @@ export function InboxView() {
     setConversations((prev) => prev.map((c) => c.key === selected.key ? { ...c, needsReply: false } : c));
 
     // Fire and forget — only revert to ⚠️ if it actually fails
-    inboxApi.reply(lastMsg.id, body, replyToId).catch((e: unknown) => {
+    const ctx = { contactId: selected.contactId, platform: selected.platform, senderId: selected.senderId };
+    inboxApi.reply(lastMsg.id, body, replyToId, ctx).catch((e: unknown) => {
       setSentMessages((prev) => {
         const list = prev[selected.key] ?? [];
         return { ...prev, [selected.key]: list.map((m) => m.id === tempId ? { ...m, status: "failed" } : m) };

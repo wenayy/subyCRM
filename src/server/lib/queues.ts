@@ -21,6 +21,7 @@ export const QUEUE_NAMES = {
   DISCORD_IMPORT: "discord-import",
   SLACK_IMPORT: "slack-import",
   WHATSAPP_SEND: "whatsapp-send",
+  BEEPER_SYNC: "beeper-sync",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -45,6 +46,7 @@ export const queues = {
   discordImport: new Queue(QUEUE_NAMES.DISCORD_IMPORT, redisConnection),
   slackImport: new Queue(QUEUE_NAMES.SLACK_IMPORT, redisConnection),
   whatsappSend: new Queue(QUEUE_NAMES.WHATSAPP_SEND, redisConnection),
+  beeperSync: new Queue(QUEUE_NAMES.BEEPER_SYNC, redisConnection),
 };
 
 /** Default job options for all queues */

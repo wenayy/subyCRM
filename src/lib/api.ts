@@ -359,8 +359,8 @@ export const inboxApi = {
 
   delete: (id: string) =>
     apiFetch<{ success: boolean }>(`/api/inbox/${id}`, { method: "DELETE" }),
-  reply: (id: string, body: string, replyToId?: string) =>
-    apiFetch<{ ok: boolean }>(`/api/inbox/${id}/reply`, { method: "POST", body: JSON.stringify({ body, replyToId }) }),
+  reply: (id: string, body: string, replyToId?: string, ctx?: { contactId?: string | null; platform?: string; senderId?: string | null }) =>
+    apiFetch<{ ok: boolean }>(`/api/inbox/${id}/reply`, { method: "POST", body: JSON.stringify({ body, replyToId, ...ctx }) }),
   react: (id: string, emoji: string) =>
     apiFetch<{ ok: boolean }>(`/api/inbox/${id}/react`, { method: "POST", body: JSON.stringify({ emoji }) }),
   upload: (filename: string, fileData: string) =>
@@ -533,3 +533,12 @@ export interface CalendarEventApi {
   description?: string;
   htmlLink?: string;
 }
+
+// ─── Beeper API ─────────────────────────────────────────────
+export const beeperApi = {
+  status: () => apiFetch<{ connected: boolean; matrixId: string | null; lastSync: string | null; hasLocalToken?: boolean }>("/api/beeper/status"),
+  connect: (data: { matrixId: string; accessToken: string; localToken?: string }) =>
+    apiFetch<{ ok: boolean; matrixId: string }>("/api/beeper/connect", { method: "POST", body: JSON.stringify(data) }),
+  sync: (full = false) => apiFetch<{ synced: number }>(`/api/beeper/sync${full ? "?full=true" : ""}`, { method: "POST" }),
+  disconnect: () => apiFetch<{ ok: boolean }>("/api/beeper/disconnect", { method: "DELETE" }),
+};

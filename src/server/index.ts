@@ -6,9 +6,13 @@ process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
 
-// Graceful shutdown: flush any pending WhatsApp session writes before exit
+// Graceful shutdown: flush sessions and stop long-polls
 async function gracefulShutdown(signal: string) {
-  console.log(`[server] ${signal} received — flushing sessions before exit`);
+  console.log(`[server] ${signal} received — shutting down`);
+  try {
+    const { beeperService } = await import("./services/beeper.service");
+    beeperService.stopAllLongPolls();
+  } catch {}
   try {
     const { flushWhatsAppSessions } = await import("./services/whatsapp.service");
     await flushWhatsAppSessions();
@@ -49,6 +53,7 @@ import sequenceRouter from "./routes/sequence.routes";
 import pipelineRouter from "./routes/pipeline.routes";
 import telegramBotRouter from "./routes/telegram-bot.routes";
 import matrixRouter from "./routes/matrix.routes";
+import beeperRouter from "./routes/beeper.routes";
 
 const app = express();
 const PORT = process.env.PORT || process.env.API_PORT || 4002;
@@ -169,6 +174,7 @@ app.use("/api/x", xRouter);
 app.use("/api/whatsapp", whatsappRouter);
 app.use("/api/telegram-personal", telegramPersonalRouter);
 app.use("/api/linkedin", linkedinRouter);
+app.use("/api/beeper", beeperRouter);
 app.use("/api/sequences", sequenceRouter);
 app.use("/api/pipeline", pipelineRouter);
 app.use("/api/telegram-bot", telegramBotRouter);
@@ -513,6 +519,44 @@ app.listen(PORT, async () => {
     }
   })();
 
+  // ── Backfill: strip HTML from existing inbox messages (LinkedIn, WA bots, Telegram) ──
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/prisma");
+      const htmlMsgs = await (prisma as any).inboxMessage.findMany({
+        where: { body: { contains: "<" } },
+        select: { id: true, body: true, preview: true },
+      });
+      if (htmlMsgs.length === 0) return;
+
+      function stripHtml(html: string): string {
+        return html
+          .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n")
+          .replace(/<\/div>/gi, "\n").replace(/<\/blockquote>/gi, "\n")
+          .replace(/<[^>]+>/g, "")
+          .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+          .replace(/&amp;/g, "&").replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+          .replace(/&nbsp;/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+      }
+
+      let fixed = 0;
+      for (const m of htmlMsgs) {
+        const clean = stripHtml(m.body ?? "");
+        if (clean !== m.body) {
+          await (prisma as any).inboxMessage.update({
+            where: { id: m.id },
+            data: { body: clean, preview: clean.slice(0, 120) },
+          }).catch(() => {});
+          fixed++;
+        }
+      }
+      if (fixed > 0) console.log(`[startup] Stripped HTML from ${fixed} existing message(s)`);
+    } catch (e: any) {
+      console.error("[startup] HTML strip error:", e.message);
+    }
+  })();
+
   // X (Twitter) uses scheduled BullMQ sync — no persistent socket to reconnect
 
   const { telegramPersonalService } = await import("./services/telegram-personal.service");
@@ -604,6 +648,41 @@ app.listen(PORT, async () => {
     { repeat: { cron: "0 */12 * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
   console.log("[server] LinkedIn sync scheduled every 12 hours");
+
+  // ── Contact dedup: split any contacts that were wrongly merged before the fix ──
+  void (async () => {
+    try {
+      const { splitWronglyMergedContacts } = await import("./services/dedup.service");
+      const { split } = await splitWronglyMergedContacts();
+      if (split > 0) console.log(`[startup] Split ${split} wrongly merged contact platform(s)`);
+    } catch (e: any) {
+      console.error("[startup] Contact split error:", e.message);
+    }
+  })();
+
+  // ── Beeper: remove any legacy BullMQ repeatable jobs and start real-time long-poll ──
+  const beeperRepeatables = await queues.beeperSync.getRepeatableJobs().catch(() => [] as any[]);
+  for (const job of beeperRepeatables) {
+    await queues.beeperSync.removeRepeatableByKey(job.key).catch(() => {});
+  }
+  void (async () => {
+    try {
+      const { beeperService } = await import("./services/beeper.service");
+      const sessions = await (prisma as any).beeperSession.findMany({
+        where: { connected: true },
+        select: { userId: true, localToken: true },
+      });
+      for (const session of sessions) {
+        const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
+        if (localToken) {
+          beeperService.startLongPoll(session.userId);
+        }
+      }
+      console.log(`[server] Beeper long-poll started for ${sessions.length} connected session(s)`);
+    } catch (err: any) {
+      console.error("[server] Failed to start Beeper long-poll:", err.message);
+    }
+  })();
 
 });
 

@@ -133,10 +133,13 @@ router.post("/:id/react", async (req, res, next) => {
 
 router.post("/:id/reply", async (req, res, next) => {
   try {
-    const { body, replyToId } = req.body as { body: string; replyToId?: string };
+    const { body, replyToId, contactId, platform, senderId } = req.body as {
+      body: string; replyToId?: string;
+      contactId?: string; platform?: string; senderId?: string;
+    };
     if (!body?.trim()) { res.status(400).json({ error: "body required" }); return; }
     const userId = res.locals.session?.user?.id;
-    await inboxService.reply(req.params.id, body.trim(), userId, replyToId);
+    await inboxService.reply(req.params.id, body.trim(), userId, replyToId, { contactId, platform, senderId });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

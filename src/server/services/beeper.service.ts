@@ -1,0 +1,838 @@
+import { prisma } from "../lib/prisma";
+import { inboxService } from "./inbox.service";
+import { encrypt, decrypt } from "../lib/encryption";
+import { deduplicateContacts } from "./dedup.service";
+import type { PlatformType } from "@prisma/client";
+
+const HOMESERVER = "https://matrix.beeper.com";
+const LOCAL_API = "http://localhost:23373";
+
+// Persistent long-poll connections per userId
+const activeLongPolls = new Map<string, AbortController>();
+
+// Bridge system notifications that look like messages but aren't
+const SYSTEM_MESSAGE_RE = /^(you (joined|left) the chat|.+ (joined|left) the (chat|group)|this chat is end-to-end encrypted|messages? and calls? are end-to-end encrypted)\.?$/i;
+
+const NETWORK_TO_PLATFORM: Record<string, string> = {
+  "LinkedIn": "linkedin",
+  "Twitter/X": "x",
+  "Twitter": "x",
+  "X": "x",
+  "WhatsApp": "whatsapp",
+  "Telegram": "telegram",
+  "Discord": "discord",
+  "iMessage": "imessage",
+  "Signal": "signal",
+  "Instagram": "instagram",
+  "Facebook Messenger": "facebook",
+  "Slack": "slack",
+};
+
+// Matrix filter — only receive message events, nothing else
+const LONG_POLL_FILTER = JSON.stringify({
+  room: {
+    timeline: { types: ["m.room.message", "m.room.encrypted"], limit: 10 },
+    state: { types: [] },
+    ephemeral: { not_types: ["*"] },
+    account_data: { not_types: ["*"] },
+  },
+  account_data: { not_types: ["*"] },
+  presence: { not_types: ["*"] },
+});
+
+function parseBeeperSender(sender: string): { platform: string; platformId: string } | null {
+  const match = sender.match(/^@(linkedin|twitter|whatsapp|telegram|discord|signal|instagram|facebook|slack|imessage)_(.+):/);
+  if (!match) return null;
+
+  const [, service, rawId] = match;
+  const platform = service === "twitter" ? "x" : service;
+
+  // Decode Matrix uppercase encoding (e.g. _a -> A)
+  const platformId = rawId.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+  return { platform, platformId };
+}
+
+function profileUrl(platform: string, platformId: string): string | null {
+  if (platform === "x") return `https://x.com/${platformId}`;
+  if (platform === "telegram") return `https://t.me/${platformId}`;
+  if (platform === "linkedin") return `https://linkedin.com/in/${platformId}`;
+  return null;
+}
+
+// Beeper bridges (LinkedIn, WA bots, Telegram formatted msgs) often send HTML in the text field.
+// Convert to clean plain text before storing.
+function stripHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/blockquote>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export const beeperService = {
+  async connect(userId: string, matrixId: string, accessToken: string, localToken?: string) {
+    const whoamiUrl = `${HOMESERVER}/_matrix/client/v3/account/whoami`;
+    const res = await fetch(whoamiUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) {
+      throw new Error("Invalid access token. Please verify your Beeper Matrix token.");
+    }
+
+    const data = await res.json() as { user_id?: string };
+    const validatedMatrixId = data.user_id || matrixId;
+    const encryptedToken = encrypt(accessToken);
+
+    await (prisma as any).beeperSession.upsert({
+      where: { userId },
+      create: { userId, matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, connected: true },
+      update: { matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, connected: true },
+    });
+
+    // Initial sync to pull history, then start real-time long-poll
+    beeperService.sync(userId).then(() => {
+      const token = localToken || process.env.BEEPER_LOCAL_TOKEN;
+      if (token) beeperService.startLongPoll(userId);
+    }).catch(console.error);
+
+    return { matrixId: validatedMatrixId };
+  },
+
+  async getStatus(userId: string) {
+    const session = await (prisma as any).beeperSession.findUnique({ where: { userId } }).catch(() => null);
+    if (!session) {
+      return { connected: false, matrixId: null, lastSync: null, hasLocalToken: false, isPolling: false };
+    }
+    return {
+      connected: session.connected,
+      matrixId: session.matrixId,
+      lastSync: session.lastSyncAt?.toISOString() ?? null,
+      hasLocalToken: !!session.localToken,
+      isPolling: activeLongPolls.has(userId),
+    };
+  },
+
+  async disconnect(userId: string) {
+    beeperService.stopLongPoll(userId);
+    await (prisma as any).beeperSession.deleteMany({ where: { userId } });
+  },
+
+  // ─── Real-time long-poll via Matrix ──────────────────────────
+  startLongPoll(userId: string): void {
+    // Stop any existing poll for this user first
+    beeperService.stopLongPoll(userId);
+
+    const controller = new AbortController();
+    activeLongPolls.set(userId, controller);
+
+    (async () => {
+      console.log(`[beeper-poll] Starting real-time long-poll for user=${userId}`);
+      let backoffMs = 0;
+
+      while (!controller.signal.aborted) {
+        if (backoffMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          if (controller.signal.aborted) break;
+          backoffMs = 0;
+        }
+
+        let session: any;
+        try {
+          session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+        } catch {
+          backoffMs = 5000;
+          continue;
+        }
+
+        if (!session?.connected) {
+          console.log(`[beeper-poll] Session disconnected for user=${userId}, stopping`);
+          break;
+        }
+
+        const accessToken = decrypt(session.accessToken);
+        const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
+        const since = session.nextBatch;
+
+        let url = `${HOMESERVER}/_matrix/client/v3/sync?timeout=30000&filter=${encodeURIComponent(LONG_POLL_FILTER)}`;
+        if (since) url += `&since=${encodeURIComponent(since)}`;
+
+        let res: Response;
+        try {
+          res = await fetch(url, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: controller.signal,
+          });
+        } catch (err: any) {
+          if (controller.signal.aborted) break;
+          console.warn(`[beeper-poll] Network error for user=${userId}: ${err.message}`);
+          backoffMs = 5000;
+          continue;
+        }
+
+        if (res.status === 401) {
+          console.warn(`[beeper-poll] Token expired for user=${userId}, stopping`);
+          await (prisma as any).beeperSession.update({
+            where: { userId },
+            data: { connected: false },
+          }).catch(() => {});
+          break;
+        }
+
+        if (!res.ok) {
+          console.warn(`[beeper-poll] Matrix returned ${res.status} for user=${userId}, backing off`);
+          backoffMs = 5000;
+          continue;
+        }
+
+        let data: any;
+        try {
+          data = await res.json();
+        } catch {
+          backoffMs = 1000;
+          continue;
+        }
+
+        const nextBatch: string | undefined = data.next_batch;
+        const rooms: Record<string, any> = data.rooms?.join ?? {};
+
+        // Persist nextBatch immediately — if server restarts we resume without re-processing
+        if (nextBatch) {
+          await (prisma as any).beeperSession.update({
+            where: { userId },
+            data: { nextBatch, lastSyncAt: new Date() },
+          }).catch(() => {});
+        }
+
+        if (!localToken) continue; // No local API — can't decrypt
+
+        const activeRooms = Object.entries(rooms).filter(([, roomData]) => {
+          const timelineEvents: any[] = (roomData as any).timeline?.events ?? [];
+          return timelineEvents.some((e: any) =>
+            e.type === "m.room.message" || e.type === "m.room.encrypted"
+          );
+        });
+
+        if (activeRooms.length === 0) continue;
+
+        // Wait for Beeper's local bridge to finish processing the event before we fetch.
+        // Without this delay the local API often returns stale results (race condition).
+        await new Promise((r) => setTimeout(r, 1500));
+        if (controller.signal.aborted) break;
+
+        // Process rooms sequentially to avoid saturating the DB connection pool
+        for (const [roomId] of activeRooms) {
+          if (controller.signal.aborted) break;
+
+          const { synced } = await beeperService.syncSingleChat(userId, roomId, localToken).catch((err) => {
+            console.warn(`[beeper-poll] syncSingleChat failed room=${roomId}: ${err.message}`);
+            return { synced: 0 };
+          });
+
+          // Retry once if we got 0 new messages — the local API may still be catching up
+          if (synced === 0) {
+            await new Promise((r) => setTimeout(r, 2000));
+            if (controller.signal.aborted) break;
+            await beeperService.syncSingleChat(userId, roomId, localToken).catch(() => {});
+          }
+        }
+      }
+
+      activeLongPolls.delete(userId);
+      console.log(`[beeper-poll] Long-poll ended for user=${userId}`);
+    })();
+  },
+
+  stopLongPoll(userId: string): void {
+    const controller = activeLongPolls.get(userId);
+    if (controller) {
+      controller.abort();
+      activeLongPolls.delete(userId);
+    }
+  },
+
+  stopAllLongPolls(): void {
+    for (const controller of activeLongPolls.values()) {
+      controller.abort();
+    }
+    activeLongPolls.clear();
+  },
+
+  // ─── Fetch & store messages for a single room from local API ──
+  async syncSingleChat(userId: string, roomId: string, localToken: string): Promise<{ synced: number }> {
+    const headers = { Authorization: `Bearer ${localToken}` };
+
+    // Try to resolve contact from existing messages for this room
+    const prevMsg = await (prisma as any).inboxMessage.findFirst({
+      where: { matrixRoomId: roomId, userId },
+      orderBy: { receivedAt: "desc" },
+      select: { contactId: true, contactName: true, platform: true, senderId: true },
+    });
+
+    let contactId: string | null = prevMsg?.contactId ?? null;
+    let contactName: string | null = prevMsg?.contactName ?? null;
+    let platform: string | null = prevMsg?.platform ?? null;
+    let platformId: string | null = prevMsg?.senderId ?? null;
+
+    // If room is unknown, ask local API for chat metadata
+    if (!contactId || !platform) {
+      const chatRes = await fetch(`${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}`, { headers });
+      if (!chatRes.ok) return { synced: 0 };
+      const chat = await chatRes.json() as any;
+
+      if (!NETWORK_TO_PLATFORM[chat.network] || chat.type !== "single") return { synced: 0 };
+      platform = NETWORK_TO_PLATFORM[chat.network];
+
+      const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
+      if (!otherParticipant) return { synced: 0 };
+      platformId = otherParticipant.username || otherParticipant.id;
+      const displayName: string = otherParticipant.fullName || chat.title || platformId;
+
+      const platformRecord = await prisma.platform.findFirst({
+        where: { type: platform as PlatformType, platformId: platformId! },
+      });
+      if (platformRecord) {
+        contactId = platformRecord.contactId;
+        const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+        contactName = contact?.name ?? displayName;
+        if (contact?.userId !== userId) {
+          await prisma.contact.update({ where: { id: contactId }, data: { userId } }).catch(() => {});
+        }
+      } else {
+        const contact = await prisma.contact.create({
+          data: {
+            userId,
+            name: displayName,
+            platforms: {
+              create: [{ type: platform as PlatformType, platformId: platformId!, displayName, profileUrl: profileUrl(platform, platformId!) }],
+            },
+          },
+        });
+        contactId = contact.id;
+        contactName = contact.name;
+        deduplicateContacts().catch(console.error);
+      }
+    }
+
+    if (!contactId || !platform || !platformId) return { synced: 0 };
+
+    // Fetch the latest messages from local API
+    const msgsRes = await fetch(`${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}/messages?limit=50`, { headers });
+    if (!msgsRes.ok) return { synced: 0 };
+    const msgsData = await msgsRes.json() as any;
+    const messages: any[] = msgsData.items ?? [];
+
+    let synced = 0;
+
+    for (const msg of messages) {
+      const rawText = (msg.text || msg.body || "").trim();
+      if (!rawText) continue;
+      const cleanText = stripHtml(rawText);
+      if (!cleanText) continue;
+      if (SYSTEM_MESSAGE_RE.test(cleanText)) continue;
+
+      const canonicalId = `bl-${msg.id}`;
+      const receivedAt = new Date(msg.timestamp);
+      const ts = receivedAt.getTime();
+
+      // Already stored under canonical ID — skip
+      const exists = await (prisma as any).inboxMessage.findFirst({
+        where: { platform: platform as any, externalId: canonicalId, userId },
+        select: { id: true },
+      });
+      if (exists) continue;
+
+      // Dedup by body+timestamp: Beeper sometimes assigns a new ID to the same message
+      // (e.g. pending → final Telegram ID), which would bypass the externalId check above.
+      const bodyDup = await (prisma as any).inboxMessage.findFirst({
+        where: {
+          userId, contactId, platform: platform as any,
+          body: cleanText, fromMe: !!msg.isSender,
+          receivedAt: { gte: new Date(ts - 30000), lte: new Date(ts + 30000) },
+        },
+        select: { id: true },
+      });
+      if (bodyDup) {
+        await (prisma as any).inboxMessage.update({
+          where: { id: bodyDup.id },
+          data: { externalId: canonicalId, matrixRoomId: roomId },
+        }).catch(() => {});
+        continue;
+      }
+
+      // Sent message: check if stored under a temp ID and merge
+      if (msg.isSender) {
+        const tempEntry = await (prisma as any).inboxMessage.findFirst({
+          where: {
+            userId, contactId, platform: platform as any, fromMe: true,
+            receivedAt: { gte: new Date(ts - 30000), lte: new Date(ts + 30000) },
+            NOT: { externalId: canonicalId },
+          },
+          select: { id: true, body: true },
+        });
+        if (tempEntry && tempEntry.body === cleanText) {
+          await (prisma as any).inboxMessage.update({
+            where: { id: tempEntry.id },
+            data: { externalId: canonicalId, matrixRoomId: roomId },
+          }).catch(() => {});
+          continue;
+        }
+      }
+
+      await inboxService.upsert({
+        platform: platform as any,
+        externalId: canonicalId,
+        userId,
+        contactId,
+        contactName: contactName!,
+        senderId: platformId!,
+        preview: cleanText.slice(0, 120),
+        body: cleanText,
+        receivedAt,
+        needsReply: !msg.isSender,
+        fromMe: !!msg.isSender,
+      });
+      await (prisma as any).inboxMessage.updateMany({
+        where: { externalId: canonicalId, userId },
+        data: { matrixRoomId: roomId },
+      }).catch(() => {});
+      synced++;
+    }
+
+    if (synced > 0) {
+      console.log(`[beeper-poll] room=${roomId} — stored ${synced} new message(s)`);
+    }
+
+    return { synced };
+  },
+
+  // ─── Full sync via local API (used for initial/manual sync) ──
+  async syncViaLocalApi(userId: string, localToken: string): Promise<{ synced: number; importedContacts: number }> {
+    const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+    const cutoff = session?.lastSyncAt
+      ? new Date(session.lastSyncAt)
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days on first sync
+
+    const headers = { Authorization: `Bearer ${localToken}` };
+
+    const chatsRes = await fetch(`${LOCAL_API}/v1/chats`, { headers });
+    if (!chatsRes.ok) throw new Error(`Local Beeper API failed: ${chatsRes.status}`);
+    const chatsData = await chatsRes.json() as any;
+    const chats: any[] = chatsData.items ?? [];
+
+    const dmChats = chats.filter((c: any) => {
+      if (!NETWORK_TO_PLATFORM[c.network] || c.type !== "single") return false;
+      if (session?.lastSyncAt && c.lastActivity) {
+        return new Date(c.lastActivity) > new Date(session.lastSyncAt);
+      }
+      return true;
+    });
+    console.log(`[beeper-local] ${dmChats.length} active chats to sync`);
+
+    let synced = 0;
+    let importedContacts = 0;
+
+    for (const chat of dmChats) {
+      const chatId: string = chat.id;
+      const network: string = chat.network;
+      const platform = NETWORK_TO_PLATFORM[network]!;
+
+      const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
+      if (!otherParticipant) continue;
+
+      const platformId: string = otherParticipant.username || otherParticipant.id;
+      const displayName: string = otherParticipant.fullName || chat.title || platformId;
+
+      let contactId: string | null = null;
+      let contactName: string = displayName;
+
+      const platformRecord = await prisma.platform.findFirst({
+        where: { type: platform as PlatformType, platformId },
+      });
+      if (platformRecord) {
+        contactId = platformRecord.contactId;
+        const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+        if (contact) {
+          contactName = contact.name;
+          if (contact.userId !== userId) {
+            await prisma.contact.update({ where: { id: contact.id }, data: { userId } }).catch(() => {});
+          }
+        }
+      } else {
+        const contact = await prisma.contact.create({
+          data: {
+            userId,
+            name: displayName,
+            platforms: {
+              create: [{ type: platform as PlatformType, platformId, displayName, profileUrl: profileUrl(platform, platformId) }],
+            },
+          },
+        });
+        contactId = contact.id;
+        contactName = contact.name;
+        importedContacts++;
+      }
+
+      let cursor: string | null = null;
+      let reachedCutoff = false;
+
+      while (!reachedCutoff) {
+        const url = cursor
+          ? `${LOCAL_API}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50&cursor=${cursor}`
+          : `${LOCAL_API}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50`;
+        const msgsRes = await fetch(url, { headers });
+        if (!msgsRes.ok) break;
+        const msgsData = await msgsRes.json() as any;
+        const messages: any[] = msgsData.items ?? [];
+
+        for (const msg of messages) {
+          const rawText = (msg.text || msg.body || "").trim();
+          if (!rawText) continue;
+          const cleanText = stripHtml(rawText);
+          if (!cleanText) continue;
+          if (SYSTEM_MESSAGE_RE.test(cleanText)) continue;
+          const receivedAt = new Date(msg.timestamp);
+          if (receivedAt <= cutoff) { reachedCutoff = true; break; }
+
+          const canonicalId = `bl-${msg.id}`;
+          const ts = receivedAt.getTime();
+
+          // Body+timestamp dedup — catches Beeper pending→final ID reassignment
+          const bodyDup = await (prisma as any).inboxMessage.findFirst({
+            where: {
+              userId, contactId, platform: platform as any,
+              body: cleanText, fromMe: !!msg.isSender,
+              receivedAt: { gte: new Date(ts - 30000), lte: new Date(ts + 30000) },
+            },
+            select: { id: true },
+          });
+          if (bodyDup) {
+            await (prisma as any).inboxMessage.update({
+              where: { id: bodyDup.id },
+              data: { externalId: canonicalId, matrixRoomId: chatId },
+            }).catch(() => {});
+            continue;
+          }
+
+          if (msg.isSender) {
+            const existing = await (prisma as any).inboxMessage.findFirst({
+              where: {
+                userId, contactId, platform: platform as any, fromMe: true,
+                receivedAt: { gte: new Date(ts - 30000), lte: new Date(ts + 30000) },
+                NOT: { externalId: canonicalId },
+              },
+              select: { id: true, body: true },
+            });
+            if (existing && existing.body === cleanText) {
+              await (prisma as any).inboxMessage.update({
+                where: { id: existing.id },
+                data: { externalId: canonicalId, matrixRoomId: chatId },
+              }).catch(() => {});
+              continue;
+            }
+          }
+
+          await inboxService.upsert({
+            platform: platform as any,
+            externalId: canonicalId,
+            userId,
+            contactId,
+            contactName,
+            senderId: platformId,
+            preview: cleanText.slice(0, 120),
+            body: cleanText,
+            receivedAt,
+            needsReply: !msg.isSender,
+            fromMe: !!msg.isSender,
+          });
+          await (prisma as any).inboxMessage.updateMany({
+            where: { externalId: canonicalId, userId },
+            data: { matrixRoomId: chatId },
+          }).catch(() => {});
+          synced++;
+        }
+
+        if (reachedCutoff || !msgsData.hasMore) break;
+        cursor = msgsData.oldestCursor ?? null;
+        if (!cursor) break;
+      }
+    }
+
+    if (importedContacts > 0) {
+      deduplicateContacts().catch(console.error);
+    }
+
+    await (prisma as any).beeperSession.update({
+      where: { userId },
+      data: { lastSyncAt: new Date() },
+    });
+
+    console.log(`[beeper-local] Done — synced=${synced} new messages, imported=${importedContacts} contacts`);
+    return { synced, importedContacts };
+  },
+
+  async sync(userId: string): Promise<{ synced: number; importedContacts: number }> {
+    const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+    if (!session || !session.connected) {
+      throw new Error("Beeper not connected");
+    }
+
+    // Use local Beeper desktop API when available — gives decrypted messages directly
+    const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
+    if (localToken) {
+      return beeperService.syncViaLocalApi(userId, localToken);
+    }
+
+    const accessToken = decrypt(session.accessToken);
+    const matrixId = session.matrixId;
+
+    const filter = JSON.stringify({
+      room: {
+        timeline: { limit: 50 },
+        state: { types: ["m.room.member", "m.room.encryption"] },
+      },
+    });
+
+    let syncUrl = `${HOMESERVER}/_matrix/client/v3/sync?timeout=0&filter=${encodeURIComponent(filter)}`;
+    if (session.nextBatch) {
+      syncUrl += `&since=${session.nextBatch}`;
+    }
+
+    console.log(`[beeper-sync] Syncing Matrix for user=${userId} since=${session.nextBatch || "beginning"}`);
+    const res = await fetch(syncUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        await (prisma as any).beeperSession.update({
+          where: { userId },
+          data: { connected: false },
+        });
+        throw new Error("Beeper session expired. Please reconnect.");
+      }
+      throw new Error(`Matrix sync failed: ${res.statusText}`);
+    }
+
+    const data = await res.json() as any;
+    const nextBatch = data.next_batch;
+    const rooms = data.rooms?.join ?? {};
+
+    let synced = 0;
+    let importedContacts = 0;
+
+    for (const [roomId, roomData] of Object.entries(rooms) as [string, any][]) {
+      let otherParticipantId: string | null = null;
+      let otherParticipantName: string | null = null;
+
+      const stateEvents = roomData.state?.events ?? [];
+      const timelineEvents = roomData.timeline?.events ?? [];
+      const allEvents = [...stateEvents, ...timelineEvents];
+
+      for (const event of allEvents) {
+        if (event.type !== "m.room.member" || !event.state_key || event.state_key === matrixId) continue;
+        const candidate = event.state_key as string;
+        const name = (event.content?.displayname || event.content?.name) ?? null;
+        if (parseBeeperSender(candidate)) {
+          otherParticipantId = candidate;
+          otherParticipantName = name;
+        } else if (!otherParticipantId) {
+          otherParticipantId = candidate;
+          otherParticipantName = name;
+        }
+      }
+
+      let parsed = otherParticipantId ? parseBeeperSender(otherParticipantId) : null;
+      let resolvedContactId: string | null = null;
+      let resolvedContactName: string | null = otherParticipantName;
+
+      if (!parsed) {
+        const prevMsg = await (prisma as any).inboxMessage.findFirst({
+          where: { matrixRoomId: roomId, userId },
+          orderBy: { receivedAt: "desc" },
+          select: { senderId: true, platform: true, contactId: true, contactName: true },
+        });
+        if (!prevMsg?.senderId || !prevMsg?.platform) continue;
+        parsed = { platform: prevMsg.platform, platformId: prevMsg.senderId };
+        resolvedContactId = prevMsg.contactId;
+        resolvedContactName = prevMsg.contactName;
+      }
+
+      const { platform, platformId } = parsed;
+
+      let contactId: string | null = resolvedContactId;
+      let contactName: string | null = resolvedContactName;
+
+      if (!resolvedContactId) {
+        const platformRecord = await prisma.platform.findFirst({
+          where: { type: platform as PlatformType, platformId },
+        });
+
+        if (platformRecord) {
+          contactId = platformRecord.contactId;
+          const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+          if (contact) {
+            contactName = contact.name;
+            if (contact.userId !== userId) {
+              await prisma.contact.update({ where: { id: contact.id }, data: { userId } }).catch(() => {});
+            }
+          }
+        } else {
+          const resolvedName = otherParticipantName || platformId;
+          const contact = await prisma.contact.create({
+            data: {
+              userId,
+              name: resolvedName,
+              platforms: {
+                create: [{
+                  type: platform as PlatformType,
+                  platformId,
+                  displayName: resolvedName,
+                  profileUrl: profileUrl(platform, platformId),
+                }],
+              },
+            },
+          });
+          contactId = contact.id;
+          contactName = contact.name;
+          importedContacts++;
+        }
+      }
+
+      for (const event of timelineEvents) {
+        if (event.type !== "m.room.message" && event.type !== "m.room.encrypted") continue;
+
+        const isFromMe = event.sender === matrixId;
+        const body = event.type === "m.room.encrypted"
+          ? "[Encrypted message]"
+          : (event.content?.body || "[No message content]");
+        const receivedAt = new Date(event.origin_server_ts);
+
+        let resolvedExternalId = event.event_id;
+        if (isFromMe) {
+          try {
+            const { getBeeperEchoId } = await import("../import/beeper");
+            const echoId = getBeeperEchoId(event.event_id);
+            if (echoId) {
+              const pendingMsg = await prisma.inboxMessage.findFirst({
+                where: { userId, platform: platform as any, externalId: echoId },
+              });
+              if (pendingMsg) {
+                await prisma.inboxMessage.update({
+                  where: { id: pendingMsg.id },
+                  data: { externalId: event.event_id },
+                }).catch(() => {});
+              }
+            }
+          } catch {}
+        }
+
+        await inboxService.upsert({
+          platform,
+          externalId: resolvedExternalId,
+          userId,
+          contactId,
+          contactName,
+          senderId: parsed.platformId,
+          preview: body.slice(0, 120),
+          body,
+          receivedAt,
+          needsReply: !isFromMe,
+          fromMe: isFromMe,
+        });
+
+        await (prisma as any).inboxMessage.updateMany({
+          where: { platform: platform as PlatformType, externalId: event.event_id, userId },
+          data: { matrixRoomId: roomId },
+        }).catch(() => {});
+
+        synced++;
+      }
+    }
+
+    if (importedContacts > 0) {
+      deduplicateContacts().catch(console.error);
+    }
+
+    await (prisma as any).beeperSession.update({
+      where: { userId },
+      data: { nextBatch, lastSyncAt: new Date() },
+    });
+
+    try {
+      const { decryptEncryptedMessages, syncLocalMessagesForContacts } = await import("../import/beeper");
+      const localSyncedResult = await syncLocalMessagesForContacts(userId);
+      const decryptedCount = await decryptEncryptedMessages(userId);
+      console.log(`[beeper-sync] Post-sync local update: synced ${localSyncedResult.synced} messages, decrypted ${decryptedCount}`);
+    } catch (localErr: any) {
+      console.error("[beeper-sync] Local message sync failed (non-fatal):", localErr.message);
+    }
+
+    return { synced, importedContacts };
+  },
+
+  async sendMessage(userId: string, roomId: string, text: string, platform?: string): Promise<string> {
+    const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+    if (!session || !session.connected) {
+      throw new Error("Beeper not connected");
+    }
+
+    const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
+
+    // Always prefer the local Beeper API — it handles encryption for all platforms
+    // (WhatsApp, Telegram, X, LinkedIn, iMessage, Signal, etc.) automatically.
+    if (localToken) {
+      console.log(`[beeper-send] Sending via local API platform=${platform} roomId=${roomId}`);
+      const url = `${LOCAL_API}/v1/chats/${encodeURIComponent(roomId)}/messages`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${localToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Local Beeper API send failed: ${res.statusText} ${errText}`);
+      }
+
+      const data = await res.json() as { pendingMessageID: string };
+      return data.pendingMessageID;
+    }
+
+    const accessToken = decrypt(session.accessToken);
+    const txnId = Math.random().toString(36).slice(2, 12);
+    const url = `${HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txnId}`;
+
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        msgtype: "m.text",
+        body: text,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Matrix send failed: ${res.statusText}`);
+    }
+
+    const data = await res.json() as { event_id: string };
+    return data.event_id;
+  },
+};

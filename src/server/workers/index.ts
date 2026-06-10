@@ -18,6 +18,7 @@ import { startTelegramImportWorker } from "./telegram-import.worker";
 import { startDiscordImportWorker } from "./discord-import.worker";
 import { startSlackImportWorker } from "./slack-import.worker";
 import { startWhatsAppSendWorker } from "./whatsapp-send.worker";
+import { startBeeperSyncWorker } from "./beeper-sync.worker";
 
 let workers: Worker[] = [];
 
@@ -44,6 +45,7 @@ export function startAllWorkers() {
     startDiscordImportWorker(),
     startSlackImportWorker(),
     startWhatsAppSendWorker(),
+    startBeeperSyncWorker(),
   ];
 
   console.log(`[workers] ${workers.length} workers running`);

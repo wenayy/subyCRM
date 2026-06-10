@@ -214,9 +214,16 @@ export const xService = {
     const usersMap: Record<string, any> = state.users ?? {};
     const entries: any[] = state.entries ?? [];
 
+    console.log(`[x-sync] inbox response keys: ${Object.keys(state).join(", ")}`);
+    console.log(`[x-sync] entries count: ${entries.length}, users count: ${Object.keys(usersMap).length}`);
+    if (entries.length > 0) {
+      console.log(`[x-sync] first entry keys: ${Object.keys(entries[0]).join(", ")}`);
+      console.log(`[x-sync] first entry sample:`, JSON.stringify(entries[0]).slice(0, 300));
+    }
+
     let synced = 0;
     for (const entry of entries) {
-      const md = entry.message?.data?.message_data;
+      const md = entry.message?.message_data ?? entry.message?.data?.message_data;
       if (!md?.text || !md.id) continue;
 
       const createdAt = new Date(Number(md.time));

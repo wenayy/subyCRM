@@ -1,11 +1,9 @@
 import { prisma } from "../lib/prisma";
 
-// Normalize phone numbers for comparison
 function normalizePhone(phone: string): string {
   return phone.replace(/[\s\-\(\)\.]/g, "").replace(/^00/, "+");
 }
 
-// Simple Levenshtein distance
 export function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
@@ -22,8 +20,7 @@ interface DeduplicateResult {
   merges: { kept: string; merged: string; reason: string }[];
 }
 
-// Check if a contact with a similar name already exists before creating a new one.
-// Returns the existing contact if found, null otherwise.
+// Used only by Telegram bot intent matching — exact full-name only, never fuzzy
 export async function findSimilarContact(name: string, userId?: string): Promise<{ id: string; name: string } | null> {
   const normalized = name.toLowerCase().trim();
   if (normalized.length < 3) return null;
@@ -33,39 +30,21 @@ export async function findSimilarContact(name: string, userId?: string): Promise
     select: { id: true, name: true },
   });
 
-  const searchFirst = normalized.split(/\s+/)[0];
-
   for (const c of contacts) {
     const existing = c.name.toLowerCase().trim();
-    if (existing.length < 3) continue; // skip single/double-char contacts like "N", "Ar"
-
-    const existingFirst = existing.split(/\s+/)[0];
-
-    // Exact full name
+    if (existing.length < 3) continue;
     if (normalized === existing) return c;
-
-    // Levenshtein — threshold proportional to length so "yogesh" never matches "lokesh"
-    const minLen = Math.min(normalized.length, existing.length);
-    const levThreshold = minLen <= 5 ? 0 : minLen <= 7 ? 1 : 2;
-    if (levenshtein(normalized, existing) <= levThreshold) return c;
-
-    // First-name exact match (both 3+ chars)
-    if (searchFirst.length >= 3 && existingFirst.length >= 3 && searchFirst === existingFirst) return c;
-
-    // First-name fuzzy (both 5+ chars, distance ≤ 1)
-    if (searchFirst.length >= 5 && existingFirst.length >= 5 && levenshtein(searchFirst, existingFirst) <= 1) return c;
-
-    // Substring — only for substantial names (4+ chars) to avoid "n" / "ar" false positives
-    if (existing.length >= 4 && normalized.includes(existing)) return c;
-    if (normalized.length >= 4 && existing.includes(normalized)) return c;
   }
   return null;
 }
 
+// Safe merge rules: phone match or email match ONLY.
+// Name-based matching is completely removed — display names are not unique identifiers
+// (many different people share the same name on X/WhatsApp/Telegram).
 export async function deduplicateContacts(): Promise<DeduplicateResult> {
   const contacts = await prisma.contact.findMany({
     include: { platforms: true },
-    orderBy: { createdAt: "asc" }, // keep oldest
+    orderBy: { createdAt: "asc" },
   });
 
   const merges: { kept: string; merged: string; reason: string }[] = [];
@@ -81,12 +60,43 @@ export async function deduplicateContacts(): Promise<DeduplicateResult> {
       const b = contacts[j];
       let matchReason = "";
 
-      // 1. Exact phone match
-      const phonesA = a.platforms.filter(p => p.platformId.startsWith("+") || p.type === "whatsapp").map(p => normalizePhone(p.platformId));
-      const phonesB = b.platforms.filter(p => p.platformId.startsWith("+") || p.type === "whatsapp").map(p => normalizePhone(p.platformId));
+      // Block: if both contacts already have the same platform type with different IDs,
+      // they are definitely different people
+      const typesA = new Map<string, string[]>();
+      const typesB = new Map<string, string[]>();
+      for (const p of a.platforms) {
+        if (!typesA.has(p.type)) typesA.set(p.type, []);
+        typesA.get(p.type)!.push(normalizePhone(p.platformId));
+      }
+      for (const p of b.platforms) {
+        if (!typesB.has(p.type)) typesB.set(p.type, []);
+        typesB.get(p.type)!.push(normalizePhone(p.platformId));
+      }
+
+      let hasConflict = false;
+      for (const [type, idsA] of typesA) {
+        const idsB = typesB.get(type);
+        if (!idsB) continue;
+        // Any ID overlap between same-type platforms is OK; any mismatch = conflict
+        const overlap = idsA.some(id => idsB.includes(id));
+        if (!overlap) { hasConflict = true; break; }
+      }
+      if (hasConflict) continue;
+
+      // 1. Exact phone match (WhatsApp / Telegram phone numbers)
+      const phonesA = a.platforms
+        .filter(p => p.type === "whatsapp" || p.type === "telegram" || /^\+?\d{7,}$/.test(p.platformId))
+        .map(p => normalizePhone(p.platformId))
+        .filter(p => p.length >= 7);
+      const phonesB = b.platforms
+        .filter(p => p.type === "whatsapp" || p.type === "telegram" || /^\+?\d{7,}$/.test(p.platformId))
+        .map(p => normalizePhone(p.platformId))
+        .filter(p => p.length >= 7);
+
+      outer1:
       for (const pa of phonesA) {
         for (const pb of phonesB) {
-          if (pa && pb && pa === pb) matchReason = `phone: ${pa}`;
+          if (pa === pb) { matchReason = `phone: ${pa}`; break outer1; }
         }
       }
 
@@ -94,29 +104,15 @@ export async function deduplicateContacts(): Promise<DeduplicateResult> {
       if (!matchReason) {
         const emailsA = a.platforms.filter(p => p.type === "email").map(p => p.platformId.toLowerCase());
         const emailsB = b.platforms.filter(p => p.type === "email").map(p => p.platformId.toLowerCase());
+        outer2:
         for (const ea of emailsA) {
           for (const eb of emailsB) {
-            if (ea && eb && ea === eb) matchReason = `email: ${ea}`;
-          }
-        }
-      }
-
-      // 3. Fuzzy name match (Levenshtein < 3) + same company
-      if (!matchReason) {
-        const nameA = a.name.toLowerCase().trim();
-        const nameB = b.name.toLowerCase().trim();
-        if (nameA.length >= 3 && nameB.length >= 3 && levenshtein(nameA, nameB) <= 2) {
-          // Same name, check if company matches or both have no company
-          if (a.company && b.company && a.company.toLowerCase() === b.company.toLowerCase()) {
-            matchReason = `fuzzy name + company: ${a.name} / ${b.name}`;
-          } else if (!a.company && !b.company) {
-            matchReason = `fuzzy name: ${a.name} / ${b.name}`;
+            if (ea === eb) { matchReason = `email: ${ea}`; break outer2; }
           }
         }
       }
 
       if (matchReason) {
-        // Merge b into a (a is older, keep it)
         await mergeContacts(a.id, b.id);
         deleted.add(b.id);
         merges.push({ kept: a.id, merged: b.id, reason: matchReason });
@@ -127,12 +123,66 @@ export async function deduplicateContacts(): Promise<DeduplicateResult> {
   return { mergedCount: merges.length, merges };
 }
 
+// Fix existing wrong merges: any contact that has multiple entries of the same platform
+// type with different platform IDs is a bad merge — split each extra into its own contact.
+export async function splitWronglyMergedContacts(): Promise<{ split: number }> {
+  const contacts = await prisma.contact.findMany({
+    include: { platforms: true },
+  });
+
+  let split = 0;
+
+  for (const contact of contacts) {
+    const byType = new Map<string, Array<typeof contact.platforms[0]>>();
+    for (const p of contact.platforms) {
+      if (!byType.has(p.type)) byType.set(p.type, []);
+      byType.get(p.type)!.push(p);
+    }
+
+    for (const [type, entries] of byType) {
+      if (entries.length <= 1) continue;
+
+      // Keep the first entry (smallest id = oldest) with the original contact
+      entries.sort((a, b) => a.id < b.id ? -1 : 1);
+      const [, ...extras] = entries;
+
+      for (const extra of extras) {
+        try {
+          const newName = extra.displayName || extra.platformId;
+
+          const newContact = await prisma.contact.create({
+            data: { userId: contact.userId, name: newName },
+          });
+
+          // Move platform record to new contact
+          await prisma.platform.update({
+            where: { id: extra.id },
+            data: { contactId: newContact.id },
+          });
+
+          // Move inbox messages that belong to this specific sender
+          await (prisma as any).inboxMessage.updateMany({
+            where: { contactId: contact.id, platform: type as any, senderId: extra.platformId },
+            data: { contactId: newContact.id, contactName: newName },
+          });
+
+          split++;
+          console.log(`[split] "${newName}" (${type}: ${extra.platformId}) split from "${contact.name}"`);
+        } catch (e: any) {
+          console.error(`[split] Failed for ${extra.platformId}:`, e.message);
+        }
+      }
+    }
+  }
+
+  console.log(`[split] Done — split ${split} wrongly merged platform(s) into separate contacts`);
+  return { split };
+}
+
 async function mergeContacts(keepId: string, mergeId: string) {
-  // Move inbox messages before the transaction (updateMany not in $transaction for dynamic models)
   await (prisma as any).inboxMessage.updateMany({ where: { contactId: mergeId }, data: { contactId: keepId } });
 
   await prisma.$transaction([
-    // Move platforms (skip duplicates)
     prisma.$executeRaw`
       UPDATE "contacts"."platforms" SET contact_id = ${keepId}
       WHERE contact_id = ${mergeId}
@@ -141,17 +191,12 @@ async function mergeContacts(keepId: string, mergeId: string) {
         WHERE p2.contact_id = ${keepId} AND p2.type = "contacts"."platforms".type AND p2.platform_id = "contacts"."platforms".platform_id
       )
     `,
-    // Move interactions
     prisma.interaction.updateMany({ where: { contactId: mergeId }, data: { contactId: keepId } }),
-    // Move notes
     prisma.note.updateMany({ where: { contactId: mergeId }, data: { contactId: keepId } }),
-    // Delete duplicate platforms
     prisma.platform.deleteMany({ where: { contactId: mergeId } }),
-    // Delete merged contact
     prisma.contact.delete({ where: { id: mergeId } }),
   ]);
 
-  // Update last contact date on the kept contact
   const lastInteraction = await prisma.interaction.findFirst({
     where: { contactId: keepId },
     orderBy: { occurredAt: "desc" },

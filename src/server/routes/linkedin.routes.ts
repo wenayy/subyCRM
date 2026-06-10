@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { linkedinService } from "../services/linkedin.service";
+import { prisma } from "../lib/prisma";
 
 const router = Router();
 
@@ -60,6 +61,8 @@ router.post("/cookie", async (req, res, next) => {
 router.post("/sync", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
+    // Reset cutoff so a full 7-day backfill runs
+    await (prisma as any).linkedInToken.update({ where: { userId }, data: { lastSyncAt: null } }).catch(() => {});
     res.json(await linkedinService.syncMessages(userId));
   } catch (err) { next(err); }
 });

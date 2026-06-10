@@ -171,10 +171,46 @@ export const linkedinService = {
     };
 
     // Fetch conversation list
-    const convRes = await fetch(
-      "https://www.linkedin.com/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=inbox",
-      { headers }
-    );
+    console.log(`[linkedin-sync] fetching conversations for userId=${userId}, liAt=${liAt.slice(0,8)}..., csrf=${csrf ? csrf.slice(0,8)+"..." : "none"}`);
+    let convRes: Response;
+    try {
+      convRes = await fetch(
+        "https://www.linkedin.com/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=inbox",
+        { headers, redirect: "manual" }
+      );
+    } catch (fetchErr: any) {
+      console.error(`[linkedin-sync] fetch() threw:`, fetchErr.message, "cause:", fetchErr.cause);
+      throw fetchErr;
+    }
+    console.log(`[linkedin-sync] response status=${convRes.status} location=${convRes.headers.get("location")}`);
+    // LinkedIn does a CSRF cookie refresh: 302 to the same URL with Set-Cookie.
+    // Follow it once manually with the new cookies merged in.
+    if (convRes.status >= 300 && convRes.status < 400) {
+      const location = convRes.headers.get("location") ?? "";
+      // Collect any new cookies from the redirect response
+      const rawSetCookie = convRes.headers.get("set-cookie") ?? "";
+      const newCookiePairs = rawSetCookie.split(/,(?=[^;]+=[^;]+)/)
+        .map(c => c.split(";")[0].trim())
+        .filter(Boolean);
+      const mergedCookies = newCookiePairs.length
+        ? `${cookieHeader}; ${newCookiePairs.join("; ")}`
+        : cookieHeader;
+      console.log(`[linkedin-sync] following redirect to ${location} with ${newCookiePairs.length} new cookies`);
+      try {
+        convRes = await fetch(
+          location || "https://www.linkedin.com/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=inbox",
+          { headers: { ...headers, cookie: mergedCookies }, redirect: "manual" }
+        );
+      } catch (fetchErr: any) {
+        console.error(`[linkedin-sync] redirect follow threw:`, fetchErr.message, fetchErr.cause);
+        throw fetchErr;
+      }
+      console.log(`[linkedin-sync] after redirect follow: status=${convRes.status} content-type=${convRes.headers.get("content-type")}`);
+      // If still redirecting, the session is truly invalid
+      if (convRes.status >= 300 && convRes.status < 400) {
+        throw new Error(`LinkedIn session expired — please paste fresh li_at + JSESSIONID cookies from your browser.`);
+      }
+    }
     if (!convRes.ok || convRes.status === 999) {
       if (convRes.status === 401 || convRes.status === 403 || convRes.status === 999) {
         console.warn(`[linkedin-sync] userId=${userId} — session invalid (${convRes.status}), clearing cookie`);
@@ -258,6 +294,7 @@ export const linkedinService = {
           await inboxService.upsert({
             platform: "linkedin",
             externalId: msgId,
+            userId,
             contactId,
             contactName,
             senderId: senderLinkedInId ?? senderPublicId,

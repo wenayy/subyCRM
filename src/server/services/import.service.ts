@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma";
 import { importFromBeeper } from "../import/beeper";
 import { deduplicateContacts } from "./dedup.service";
+import { beeperService } from "./beeper.service";
 import type { PlatformType } from "@prisma/client";
 
 function profileUrl(platform: string, platformId: string): string | null {
@@ -17,6 +18,38 @@ export const importService = {
     })).id;
 
     try {
+      // Find user ID from the job
+      const job = await prisma.importJob.findUnique({ where: { id: jobId } });
+      const userId = job?.userId ?? "default";
+
+      // Check if Beeper Matrix Cloud session is connected
+      const session = await (prisma as any).beeperSession.findUnique({ where: { userId } }).catch(() => null);
+
+      if (session && session.connected) {
+        console.log(`[import/beeper] Beeper Cloud Matrix API session found for user=${userId}. Syncing...`);
+        // Force a full sync to fetch all historic joined rooms and participants
+        await (prisma as any).beeperSession.update({
+          where: { userId },
+          data: { nextBatch: null },
+        }).catch(() => {});
+
+        const syncResult = await beeperService.sync(userId);
+
+        await prisma.importJob.update({
+          where: { id: jobId },
+          data: {
+            status: "completed",
+            totalFound: syncResult.synced,
+            imported: syncResult.importedContacts,
+            deduplicated: 0, // Deduplication is run inside beeperService.sync
+            errors: 0,
+            completedAt: new Date(),
+          },
+        });
+        return jobId;
+      }
+
+      // SQLite Fallback path
       const { contacts, errors } = importFromBeeper();
       let imported = 0;
       let skipped = 0;
@@ -60,6 +93,7 @@ export const importService = {
 
           await prisma.contact.create({
             data: {
+              userId,
               name: c.name,
               lastContactDate: c.lastMessageTs ? new Date(c.lastMessageTs) : null,
               platforms: {
@@ -76,6 +110,16 @@ export const importService = {
         } catch {
           skipped++;
         }
+      }
+
+      // Sync and decrypt local messages for fallback SQLite path too
+      try {
+        const { decryptEncryptedMessages, syncLocalMessagesForContacts } = await import("../import/beeper");
+        const localSyncedResult = await syncLocalMessagesForContacts(userId);
+        const decryptedCount = await decryptEncryptedMessages(userId);
+        console.log(`[import/beeper] Local SQLite sync complete: synced ${localSyncedResult.synced} messages, decrypted ${decryptedCount} messages`);
+      } catch (localErr: any) {
+        console.error("[import/beeper] Local SQLite message sync failed (non-fatal):", localErr.message);
       }
 
       let dedupCount = 0;

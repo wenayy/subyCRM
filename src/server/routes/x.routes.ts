@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { xService } from "../services/x.service";
+import { prisma } from "../lib/prisma";
 
 const router = Router();
 
@@ -77,8 +78,16 @@ router.post("/connect", async (req, res, next) => {
 router.post("/sync", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
-    res.json(await xService.sync(userId));
-  } catch (err) { next(err); }
+    console.log(`[x-sync-route] POST /sync userId=${userId}`);
+    // Reset lastSyncAt so a full 7-day backfill runs
+    await (prisma as any).xToken.update({ where: { userId }, data: { lastSyncAt: null } }).catch((e: any) => console.warn("[x-sync-route] reset lastSyncAt failed:", e.message));
+    const result = await xService.syncWithCookie(userId);
+    console.log(`[x-sync-route] done — synced=${result.synced}`);
+    res.json(result);
+  } catch (err: any) {
+    console.error(`[x-sync-route] error:`, err.message);
+    next(err);
+  }
 });
 
 router.delete("/disconnect", async (req, res, next) => {

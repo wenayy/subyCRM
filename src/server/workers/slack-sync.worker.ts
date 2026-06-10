@@ -38,7 +38,8 @@ export function startSlackSyncWorker() {
     },
     {
       connection: redis,
-      concurrency: 2,
+      concurrency: 1,
+      lockDuration: 300_000,   // 5 min — Slack sync can take a while with many messages
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },
   );

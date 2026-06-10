@@ -279,8 +279,15 @@ export const inboxService = {
     return result;
   },
 
-  async reply(id: string, text: string, userId?: string, replyToId?: string): Promise<void> {
-    const msg = await (prisma as any).inboxMessage.findUnique({ where: { id } });
+  async reply(id: string, text: string, userId?: string, replyToId?: string, ctx?: { contactId?: string; platform?: string; senderId?: string }): Promise<void> {
+    let msg = await (prisma as any).inboxMessage.findUnique({ where: { id } });
+    if (!msg && ctx?.contactId && ctx?.platform) {
+      // Reference message may have been re-synced or deduped — fall back to most recent in conversation
+      msg = await (prisma as any).inboxMessage.findFirst({
+        where: { contactId: ctx.contactId, platform: ctx.platform },
+        orderBy: { receivedAt: "desc" },
+      });
+    }
     if (!msg) throw new Error("Message not found");
 
     // ── Save to DB immediately → SSE fires → UI updates in < 100ms ─────────────
@@ -329,7 +336,49 @@ export const inboxService = {
       try {
         // ── Resolve destination in background ─────────────────────────────────────────
 
-        if (msg.platform === "whatsapp") {
+        let matrixRoomId = (msg as any).matrixRoomId || null;
+        if (!matrixRoomId && msg.contactId) {
+          const sibling = await (prisma as any).inboxMessage.findFirst({
+            where: { contactId: msg.contactId, platform: msg.platform, matrixRoomId: { not: null } },
+            orderBy: { receivedAt: "desc" },
+          });
+          if (sibling) matrixRoomId = sibling.matrixRoomId;
+        }
+
+        if (matrixRoomId) {
+          const { beeperService } = await import("./beeper.service");
+          await beeperService.sendMessage(userId ?? "default", matrixRoomId, text, msg.platform);
+
+          // Immediately fetch the message's local Beeper ID so we store it with the same
+          // bl-{id} format the sync uses — this prevents duplicates on the next sync tick.
+          let canonicalId: string = tempId;
+          const localToken = process.env.BEEPER_LOCAL_TOKEN;
+          if (localToken) {
+            try {
+              const msgsRes = await fetch(
+                `http://localhost:23373/v1/chats/${encodeURIComponent(matrixRoomId)}/messages?limit=1`,
+                { headers: { Authorization: `Bearer ${localToken}` } },
+              );
+              if (msgsRes.ok) {
+                const msgsData = await msgsRes.json() as any;
+                const latest = msgsData.items?.[0];
+                if (latest?.id && latest?.isSender) canonicalId = `bl-${latest.id}`;
+              }
+            } catch {}
+          }
+
+          try {
+            await (prisma as any).inboxMessage.updateMany({
+              where: { platform: msg.platform, externalId: tempId },
+              data: { matrixRoomId, externalId: canonicalId },
+            });
+          } catch {
+            // Sync already created the canonical bl- entry — delete the temp optimistic row
+            await (prisma as any).inboxMessage.deleteMany({
+              where: { platform: msg.platform, externalId: tempId, userId: userId ?? "default" },
+            }).catch(() => {});
+          }
+        } else if (msg.platform === "whatsapp") {
           // Prefer phone-based JID from the platform record — avoids @lid format which
           // Baileys may not be able to resolve without a full contact sync
           if (msg.contactId) {

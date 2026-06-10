@@ -12,10 +12,10 @@ export function startVoiceCaptureWorker() {
   const worker = new Worker<VoiceCaptureJobData>(
     QUEUE_NAMES.VOICE_CAPTURE,
     async (job: Job<VoiceCaptureJobData>) => {
-      const { transcript } = job.data;
+      const { transcript, userId = "default" } = job.data;
 
       console.log(`[voice-capture] Processing transcript: "${transcript.slice(0, 80)}..."`);
-      const result = await processVoiceCapture(transcript);
+      const result = await processVoiceCapture(transcript, userId);
       console.log(`[voice-capture] Done — action=${result.action} status=${result.status}`);
       return result;
     },

@@ -615,6 +615,24 @@ async function processMessage(msg: any, isHistorical: boolean, s: UserState): Pr
         quotedBody,
         quotedFromMe,
       });
+
+      // Backfill earlier messages from this sender that landed as raw digits
+      // (historical sync has no pushName, so they get the JID digits as name).
+      if (!fromMe && msg.pushName) {
+        const digits = jidDigits(remoteJid, s);
+        if (digits) {
+          await (prisma as any).inboxMessage.updateMany({
+            where: {
+              userId: s.userId,
+              platform: "whatsapp",
+              senderId: remoteJid,
+              contactId: null,
+              contactName: { in: [digits, remoteJid, remoteJid.replace(/@.+$/, "")] },
+            },
+            data: { contactName: msg.pushName },
+          }).catch(() => {});
+        }
+      }
       return;
     }
   }
@@ -978,6 +996,27 @@ async function connectSocket(userId: string): Promise<{ qr?: string; connected: 
     sock.ev.on("contacts.upsert", async (c: any[]) => {
       if (s.generation !== myGen) return;
       ingestContacts(c, s);
+
+      // For unknowns (no phone-book name), use their WhatsApp display name (notify/pushName)
+      // to backfill inbox messages that currently show as raw digits.
+      for (const info of c) {
+        if (!info.id?.endsWith("@s.whatsapp.net")) continue;
+        const displayName: string | undefined = info.notify || info.verifiedName;
+        if (!displayName || info.name) continue; // skip if saved in phone — phone name wins
+        const digits = info.id.split("@")[0].replace(/\D/g, "");
+        if (digits.length < 5) continue;
+        await (prisma as any).inboxMessage.updateMany({
+          where: {
+            userId: s.userId,
+            platform: "whatsapp",
+            senderId: info.id,
+            contactId: null,
+            contactName: { in: [digits, info.id, info.id.replace(/@.+$/, "")] },
+          },
+          data: { contactName: displayName },
+        }).catch(() => {});
+      }
+
       // Auto-import contacts into CRM on first contacts.upsert after a fresh connect
       if (!s.autoImportDone && s.contactsCache.size > 0) {
         s.autoImportDone = true;
@@ -1419,7 +1458,10 @@ export const whatsappService = {
     const result: Array<{ jid: string; name: string; phoneDigits: string }> = [];
     for (const [jid, info] of s.contactsCache.entries()) {
       if (jid.endsWith("@g.us") || jid.endsWith("@broadcast") || jid === "status@broadcast") continue;
-      const name = info.name || info.verifiedName || info.notify;
+      // Only import contacts saved in the phone book (info.name).
+      // Contacts only known by their WhatsApp display name (info.notify) are NOT saved in
+      // the phone — they should appear in inbox but not become CRM contacts.
+      const name = info.name || info.verifiedName;
       if (!name) continue;
       const phoneDigits = jidDigits(jid, s);
       if (phoneDigits.length < 5) continue;

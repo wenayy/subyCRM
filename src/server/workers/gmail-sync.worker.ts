@@ -39,7 +39,8 @@ export function startGmailSyncWorker() {
     },
     {
       connection: redis,
-      concurrency: 2,
+      concurrency: 1,
+      lockDuration: 300_000,
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     },
   );

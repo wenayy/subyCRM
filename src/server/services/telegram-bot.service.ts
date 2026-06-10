@@ -120,15 +120,12 @@ Keep noteContent and reminderContent concise (1 sentence max).`;
 }
 
 // ── Core: process a transcript → DB writes → return result ───────────────────
-async function getUserIdForChat(chatId: number): Promise<string> {
+async function getUserIdForChat(chatId: number): Promise<string | null> {
   const link = await (prisma as any).telegramBotLink.findUnique({
     where: { chatId: String(chatId) },
     select: { userId: true },
   });
-  if (link) return link.userId;
-  // Fall back to first registered user if no link exists
-  const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
-  return user?.id ?? "default";
+  return link?.userId ?? null;
 }
 
 function parseDueDate(raw: string | null): Date {
@@ -146,9 +143,8 @@ function fmtDue(d: Date): string {
   return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
 }
 
-export async function processVoiceCapture(transcript: string, chatId?: number): Promise<CaptureResult> {
+export async function processVoiceCapture(transcript: string, userId: string, chatId?: number): Promise<CaptureResult> {
   const startMs = Date.now();
-  const userId = chatId ? await getUserIdForChat(chatId) : await getUserIdForChat(0);
 
   let intent: ParsedIntent;
   try {
@@ -315,6 +311,8 @@ async function handleMessage(msg: TelegramBot.Message) {
     return;
   }
 
+  const userId = linked.userId;
+
   let transcript: string;
   if (msg.voice) {
     await send("🎙️ Transcribing…");
@@ -326,7 +324,6 @@ async function handleMessage(msg: TelegramBot.Message) {
     }
   } else if (msg.text && !msg.text.startsWith("/")) {
     transcript = msg.text;
-    const userId = await getUserIdForChat(chatId);
     const senderName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") || msg.from?.username || String(chatId);
     const contact = await prisma.contact.findFirst({
       where: { userId, name: { contains: senderName.split(" ")[0], mode: "insensitive" } },
@@ -350,7 +347,7 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   await send(`📝 _"${transcript}"_\n\n⏳ Processing…`);
   try {
-    const result = await processVoiceCapture(transcript, chatId);
+    const result = await processVoiceCapture(transcript, userId, chatId);
     await send(result.replyMessage);
   } catch (err) {
     console.error("[telegram-bot] processVoiceCapture failed:", err);
@@ -373,6 +370,12 @@ export function startBot() {
   g.__telegramBot = bot;
   console.log("[telegram-bot] polling started");
 
+  // Cache username immediately so the settings linking URL is always correct
+  bot.getMe().then((me) => {
+    _cachedUsername = me.username ?? null;
+    console.log(`[telegram-bot] bot username: @${_cachedUsername}`);
+  }).catch(() => {});
+
   bot.on("voice", handleMessage);
   bot.on("message", (msg: TelegramBot.Message) => { if (!msg.voice) handleMessage(msg); });
   bot.on("polling_error", (err: Error) => console.error("[telegram-bot] polling error:", err.message));
@@ -386,11 +389,11 @@ export async function getBotUsername(): Promise<string> {
   if (bot) {
     try {
       const me = await bot.getMe();
-      _cachedUsername = me.username ?? "subyassistant_bot";
-      return _cachedUsername;
+      _cachedUsername = me.username ?? null;
+      return _cachedUsername ?? "";
     } catch {}
   }
-  return "subyassistant_bot";
+  return "";
 }
 
 export async function sendBotReply(chatId: string, text: string): Promise<void> {
