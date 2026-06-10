@@ -17,3 +17,7 @@ export function setCached(key: string, data: unknown) {
 export function invalidateCache(key: string) {
   store.delete(key);
 }
+
+export function clearAllCache() {
+  store.clear();
+}
