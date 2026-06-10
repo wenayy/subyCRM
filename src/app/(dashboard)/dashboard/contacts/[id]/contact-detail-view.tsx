@@ -449,10 +449,15 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
 
   return (
     <div className="flex flex-col gap-6 w-full">
-      {/* Back link */}
-      <Button size="sm" variant="outline" onClick={() => router.push("/dashboard/contacts")} className="self-start">
-        ← Back to contacts
-      </Button>
+      {/* Back link + inbox shortcut */}
+      <div className="flex gap-2 self-start">
+        <Button size="sm" variant="outline" onClick={() => router.push("/dashboard/contacts")}>
+          ← Back to contacts
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => router.push(`/dashboard/inbox?contactId=${id}`)}>
+          Open in Inbox →
+        </Button>
+      </div>
 
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">

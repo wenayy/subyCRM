@@ -865,9 +865,16 @@ export function SettingsView() {
 
   const syncBeeper = async () => {
     setSyncing("beeper");
-    try { await beeperApi.sync(); reload(userId); }
-    catch (e: any) { alert(`Beeper sync failed: ${e.message || "Unknown error"}`); }
-    finally { setSyncing(null); }
+    try {
+      await beeperApi.sync();
+      reload(userId);
+      // Show "Started" briefly so user knows it kicked off
+      setTimeout(() => setSyncing("beeper-done"), 0);
+      setTimeout(() => setSyncing(null), 3000);
+    } catch (e: any) {
+      alert(`Beeper sync failed: ${e.message || "Unknown error"}`);
+      setSyncing(null);
+    }
   };
 
   const syncX = async () => {
@@ -1078,8 +1085,9 @@ export function SettingsView() {
                         </Button>
                       )}
                       {k === "beeper" && isConnected && (
-                        <Button size="sm" variant="outline" onClick={syncBeeper} disabled={syncing === "beeper"} className="min-w-[70px]">
-                          {syncing === "beeper" && <Spinner />}{syncing === "beeper" ? "Syncing…" : "Sync"}
+                        <Button size="sm" variant={syncing === "beeper-done" ? "default" : "outline"} onClick={syncBeeper} disabled={syncing === "beeper"} className="min-w-[70px]">
+                          {syncing === "beeper" && <Spinner />}
+                          {syncing === "beeper" ? "Starting…" : syncing === "beeper-done" ? "✓ Syncing" : "Sync"}
                         </Button>
                       )}
                       <Button size="sm" variant={isConnected ? "outline" : "default"} onClick={() => toggle(k)} disabled={isPending} className="min-w-[100px]">

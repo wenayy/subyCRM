@@ -121,8 +121,8 @@ async function downloadBeeperMedia(
     try {
       buffer = await fs.readFile(localPath);
       console.log(`[beeper-media-rx] read from srcURL ${localPath} (${buffer.length} bytes)`);
-    } catch (e: any) {
-      console.warn(`[beeper-media-rx] srcURL read failed: ${e?.message}`);
+    } catch {
+      // File not downloaded by Beeper yet — fall through to mxc proxy
     }
   }
 
@@ -180,7 +180,7 @@ export const beeperService = {
     await (prisma as any).beeperSession.upsert({
       where: { userId },
       create: { userId, matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, localEndpoint: localEndpoint || null, connected: true },
-      update: { matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, localEndpoint: localEndpoint || null, connected: true },
+      update: { matrixId: validatedMatrixId, accessToken: encryptedToken, localToken: localToken || null, localEndpoint: localEndpoint || null, connected: true, lastSyncAt: null, nextBatch: null },
     });
 
     // Initial sync to pull history, then start real-time long-poll
@@ -483,7 +483,7 @@ export const beeperService = {
     if (!contactId || !platform || !platformId) return { synced: 0 };
 
     // Fetch the latest messages from local API
-    const msgsRes = await fetch(`${localEndpoint}/v1/chats/${encodeURIComponent(roomId)}/messages?limit=50`, { headers });
+    const msgsRes = await fetch(`${localEndpoint}/v1/chats/${encodeURIComponent(roomId)}/messages?limit=100`, { headers });
     if (!msgsRes.ok) return { synced: 0 };
     const msgsData = await msgsRes.json() as any;
     const messages: any[] = msgsData.items ?? [];
@@ -589,16 +589,35 @@ export const beeperService = {
   // ─── Full sync via local API (used for initial/manual sync) ──
   async syncViaLocalApi(userId: string, localToken: string, localEndpoint = DEFAULT_LOCAL_API): Promise<{ synced: number; importedContacts: number }> {
     const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+    const isFirstSync = !session?.lastSyncAt;
+    // First sync: import all history. Subsequent syncs: only last 30 days of new messages.
     const cutoff = session?.lastSyncAt
       ? new Date(session.lastSyncAt)
-      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days on first sync
+      : new Date(0);
 
     const headers = { Authorization: `Bearer ${localToken}` };
 
-    const chatsRes = await fetch(`${localEndpoint}/v1/chats`, { headers });
-    if (!chatsRes.ok) throw new Error(`Local Beeper API failed: ${chatsRes.status}`);
-    const chatsData = await chatsRes.json() as any;
-    const chats: any[] = chatsData.items ?? [];
+    // Paginate through all chats — API defaults to ~25 per page
+    const chats: any[] = [];
+    let chatCursor: string | null = null;
+    while (true) {
+      const url = chatCursor
+        ? `${localEndpoint}/v1/chats?limit=100&cursor=${chatCursor}`
+        : `${localEndpoint}/v1/chats?limit=100`;
+      const chatsRes = await fetch(url, { headers });
+      if (!chatsRes.ok) throw new Error(`Local Beeper API failed: ${chatsRes.status}`);
+      const chatsData = await chatsRes.json() as any;
+      chats.push(...(chatsData.items ?? []));
+      if (!chatsData.hasMore) break;
+      chatCursor = chatsData.oldestCursor ?? chatsData.nextCursor ?? null;
+      if (!chatCursor) break;
+    }
+
+    console.log(`[beeper-local] total chats=${chats.length}`);
+    for (const c of chats) {
+      const known = !!NETWORK_TO_PLATFORM[c.network];
+      const isDm = c.type === "single";
+    }
 
     const dmChats = chats.filter((c: any) => {
       if (!NETWORK_TO_PLATFORM[c.network] || c.type !== "single") return false;
@@ -607,12 +626,12 @@ export const beeperService = {
       }
       return true;
     });
-    console.log(`[beeper-local] ${dmChats.length} active chats to sync`);
+    console.log(`[beeper-local] ${dmChats.length} active DM chats to sync`);
 
     let synced = 0;
     let importedContacts = 0;
 
-    const syncOneChat = async (chat: any): Promise<{ synced: number; imported: number }> => {
+    const syncOneChat = async (chat: any, quickOnly = false): Promise<{ synced: number; imported: number }> => {
       const chatId: string = chat.id;
       const network: string = chat.network;
       const platform = NETWORK_TO_PLATFORM[network]!;
@@ -652,28 +671,47 @@ export const beeperService = {
           }
         }
       } else {
-        const contact = await prisma.contact.create({
-          data: {
-            userId,
-            name: displayName,
-            platforms: {
-              create: [{ type: platform as PlatformType, platformId, displayName, profileUrl: profileUrl(platform, platformId) }],
+        try {
+          const contact = await prisma.contact.create({
+            data: {
+              userId,
+              name: displayName,
+              platforms: {
+                create: [{ type: platform as PlatformType, platformId, displayName, profileUrl: profileUrl(platform, platformId) }],
+              },
             },
-          },
-        });
-        contactId = contact.id;
-        contactName = contact.name;
-        imported++;
+          });
+          contactId = contact.id;
+          contactName = contact.name;
+          imported++;
+        } catch {
+          // Race condition: another parallel chat created this contact first — look it up
+          const existing = await prisma.platform.findFirst({ where: { type: platform as PlatformType, platformId } });
+          if (existing) { contactId = existing.contactId; }
+          else return { synced: 0, imported: 0 };
+        }
       }
 
       let chatSynced = 0;
       let cursor: string | null = null;
       let reachedCutoff = false;
 
+      // Skip message fetch entirely if this is an incremental sync and we already
+      // have recent messages for this contact — saves a round trip per chat
+      if (!isFirstSync && contactId) {
+        const recentMsg = await (prisma as any).inboxMessage.findFirst({
+          where: { userId, contactId, platform: platform as any },
+          orderBy: { receivedAt: "desc" },
+          select: { id: true },
+        });
+        if (recentMsg) return { synced: 0, imported };
+      }
+
       while (!reachedCutoff) {
+        const msgLimit = quickOnly ? 1 : 100;
         const url = cursor
-          ? `${localEndpoint}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50&cursor=${cursor}`
-          : `${localEndpoint}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=50`;
+          ? `${localEndpoint}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=${msgLimit}&cursor=${cursor}`
+          : `${localEndpoint}/v1/chats/${encodeURIComponent(chatId)}/messages?limit=${msgLimit}`;
         const msgsRes = await fetch(url, { headers });
         if (!msgsRes.ok) break;
         const msgsData = await msgsRes.json() as any;
@@ -752,7 +790,7 @@ export const beeperService = {
           chatSynced++;
         }
 
-        if (reachedCutoff || !msgsData.hasMore) break;
+        if (quickOnly || reachedCutoff || !msgsData.hasMore) break;
         cursor = msgsData.oldestCursor ?? null;
         if (!cursor) break;
       }
@@ -760,22 +798,56 @@ export const beeperService = {
       return { synced: chatSynced, imported };
     };
 
-    // Process chats in parallel batches of 8 — dramatically faster over high-latency connections
-    const BATCH = 8;
-    for (let i = 0; i < dmChats.length; i += BATCH) {
-      const batch = dmChats.slice(i, i + BATCH);
-      const results = await Promise.allSettled(batch.map(syncOneChat));
-      for (const r of results) {
-        if (r.status === "fulfilled") {
-          synced += r.value.synced;
-          importedContacts += r.value.imported;
+    if (isFirstSync) {
+      // Phase 1: fetch 1 message per chat — creates all contacts + shows latest message instantly
+      const Q_BATCH = 16;
+      for (let i = 0; i < dmChats.length; i += Q_BATCH) {
+        const batch = dmChats.slice(i, i + Q_BATCH);
+        const results = await Promise.allSettled(batch.map((c) => syncOneChat(c, true)));
+        for (const r of results) {
+          if (r.status === "fulfilled") {
+            synced += r.value.synced;
+            importedContacts += r.value.imported;
+          }
         }
+        console.log(`[beeper-local] phase1 batch ${Math.floor(i / Q_BATCH) + 1}/${Math.ceil(dmChats.length / Q_BATCH)} done — contacts=${importedContacts}`);
       }
-      console.log(`[beeper-local] batch ${Math.floor(i / BATCH) + 1}/${Math.ceil(dmChats.length / BATCH)} done — synced=${synced} contacts=${importedContacts}`);
-    }
+      if (importedContacts > 0) {
+        deduplicateContacts().catch(console.error);
+      }
 
-    if (importedContacts > 0) {
-      deduplicateContacts().catch(console.error);
+      // Phase 2: full history — runs in background so the initial connect returns fast
+      setImmediate(async () => {
+        console.log(`[beeper-local] phase2 starting full history for ${dmChats.length} chats`);
+        let p2synced = 0;
+        const F_BATCH = 8;
+        for (let i = 0; i < dmChats.length; i += F_BATCH) {
+          const batch = dmChats.slice(i, i + F_BATCH);
+          const results = await Promise.allSettled(batch.map((c) => syncOneChat(c, false)));
+          for (const r of results) {
+            if (r.status === "fulfilled") p2synced += r.value.synced;
+          }
+          console.log(`[beeper-local] phase2 batch ${Math.floor(i / F_BATCH) + 1}/${Math.ceil(dmChats.length / F_BATCH)} done — synced=${p2synced}`);
+        }
+        console.log(`[beeper-local] phase2 complete — ${p2synced} historical messages synced`);
+      });
+    } else {
+      // Incremental: single-phase, only chats active since last sync
+      const BATCH = 8;
+      for (let i = 0; i < dmChats.length; i += BATCH) {
+        const batch = dmChats.slice(i, i + BATCH);
+        const results = await Promise.allSettled(batch.map((c) => syncOneChat(c, false)));
+        for (const r of results) {
+          if (r.status === "fulfilled") {
+            synced += r.value.synced;
+            importedContacts += r.value.imported;
+          }
+        }
+        console.log(`[beeper-local] batch ${Math.floor(i / BATCH) + 1}/${Math.ceil(dmChats.length / BATCH)} done — synced=${synced} contacts=${importedContacts}`);
+      }
+      if (importedContacts > 0) {
+        deduplicateContacts().catch(console.error);
+      }
     }
 
     // Grab a fresh Matrix nextBatch pointing to "right now" so the long-poll that

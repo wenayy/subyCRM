@@ -37,7 +37,6 @@ router.delete("/disconnect", async (req, res, next) => {
 router.post("/sync", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
-    // Reset nextBatch and lastSyncAt to force a full reload if requested
     const { full } = req.query as { full?: string };
     if (full === "true") {
       await (prisma as any).beeperSession.update({
@@ -45,7 +44,11 @@ router.post("/sync", async (req, res, next) => {
         data: { nextBatch: null, lastSyncAt: null },
       }).catch(() => {});
     }
-    res.json(await beeperService.sync(userId));
+    // Respond immediately — sync runs in background to avoid HTTP timeout
+    res.json({ ok: true, syncing: true });
+    beeperService.sync(userId).catch((err) =>
+      console.error("[beeper-sync] background sync error:", err?.message ?? err)
+    );
   } catch (err: any) {
     res.status(400).json({ error: err.message || "Failed to sync Beeper Matrix rooms" });
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { inboxApi, meApi, gmailApi, slackApi, contactsApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
 import { PlatformIcon } from "@/components/platform-icon";
 import { Star, Archive, ArchiveRestore } from "lucide-react";
@@ -106,6 +106,8 @@ function renderMessageBody(text: string, onImageClick?: (url: string) => void) {
 
 export function InboxView() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const deepLinkContactId = searchParams.get("contactId");
   const bottomRef = useRef<HTMLDivElement>(null);
   const lastScrolledKeyRef = useRef<string | null>(null);
   const threadLoadingRef = useRef(false);
@@ -252,9 +254,12 @@ export function InboxView() {
     fetchConvsRef.current = fetchConvs;
 
     fetchConvs().then((convs) => {
-      if (convs && !cached && convs.length > 0) {
-        selectConversation(convs[0]);
+      if (!convs || convs.length === 0) return;
+      if (deepLinkContactId) {
+        const match = convs.find((c) => c.contactId === deepLinkContactId);
+        if (match) { selectConversation(match); return; }
       }
+      if (!cached) selectConversation(convs[0]);
     });
 
     // SSE for real-time push — conversations + active thread refresh on new messages
