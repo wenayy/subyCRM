@@ -612,13 +612,13 @@ export const beeperService = {
     let synced = 0;
     let importedContacts = 0;
 
-    for (const chat of dmChats) {
+    const syncOneChat = async (chat: any): Promise<{ synced: number; imported: number }> => {
       const chatId: string = chat.id;
       const network: string = chat.network;
       const platform = NETWORK_TO_PLATFORM[network]!;
 
       const otherParticipant = (chat.participants?.items ?? []).find((p: any) => !p.isSelf);
-      if (!otherParticipant) continue;
+      if (!otherParticipant) return { synced: 0, imported: 0 };
 
       const nativeIdMatchSync = (otherParticipant.id || "").match(/^@[a-z]+_(.+):[^:]+$/);
       const platformId: string = (nativeIdMatchSync ? nativeIdMatchSync[1] : null) || otherParticipant.username || otherParticipant.id || otherParticipant.userID || chat.id;
@@ -626,6 +626,7 @@ export const beeperService = {
 
       let contactId: string | null = null;
       let contactName: string = displayName;
+      let imported = 0;
 
       let platformRecord = await prisma.platform.findFirst({
         where: { type: platform as PlatformType, platformId },
@@ -662,9 +663,10 @@ export const beeperService = {
         });
         contactId = contact.id;
         contactName = contact.name;
-        importedContacts++;
+        imported++;
       }
 
+      let chatSynced = 0;
       let cursor: string | null = null;
       let reachedCutoff = false;
 
@@ -682,7 +684,6 @@ export const beeperService = {
           const attachments: any[] = msg.attachments ?? [];
           let cleanText = stripHtml(rawText);
           if (attachments.length > 0) {
-            console.log(`[beeper-media-rx] msg id=${msg.id} has ${attachments.length} attachment(s): ${JSON.stringify(attachments.map((a: any) => ({ url: a.url, mimeType: a.mimeType, filename: a.filename })))}`);
             const mediaTags = (await Promise.all(
               attachments.map((a: any) => downloadBeeperMedia(a, localToken, String(msg.id), localEndpoint))
             )).filter(Boolean) as string[];
@@ -690,10 +691,7 @@ export const beeperService = {
               cleanText = cleanText ? `${cleanText}\n\n${mediaTags.join("\n")}` : mediaTags.join("\n");
             }
           }
-          if (!cleanText) {
-            console.log(`[beeper-sync] skipping msg id=${msg.id} — empty after processing`);
-            continue;
-          }
+          if (!cleanText) continue;
           if (SYSTEM_MESSAGE_RE.test(cleanText)) continue;
           const receivedAt = new Date(msg.timestamp);
           if (receivedAt <= cutoff) { reachedCutoff = true; break; }
@@ -701,7 +699,6 @@ export const beeperService = {
           const canonicalId = `bl-${msg.id}`;
           const ts = receivedAt.getTime();
 
-          // Body+timestamp dedup — catches Beeper pending→final ID reassignment
           const bodyDup = await (prisma as any).inboxMessage.findFirst({
             where: {
               userId, contactId, platform: platform as any,
@@ -752,13 +749,29 @@ export const beeperService = {
             where: { externalId: canonicalId, userId },
             data: { matrixRoomId: chatId },
           }).catch(() => {});
-          synced++;
+          chatSynced++;
         }
 
         if (reachedCutoff || !msgsData.hasMore) break;
         cursor = msgsData.oldestCursor ?? null;
         if (!cursor) break;
       }
+
+      return { synced: chatSynced, imported };
+    };
+
+    // Process chats in parallel batches of 8 — dramatically faster over high-latency connections
+    const BATCH = 8;
+    for (let i = 0; i < dmChats.length; i += BATCH) {
+      const batch = dmChats.slice(i, i + BATCH);
+      const results = await Promise.allSettled(batch.map(syncOneChat));
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          synced += r.value.synced;
+          importedContacts += r.value.imported;
+        }
+      }
+      console.log(`[beeper-local] batch ${Math.floor(i / BATCH) + 1}/${Math.ceil(dmChats.length / BATCH)} done — synced=${synced} contacts=${importedContacts}`);
     }
 
     if (importedContacts > 0) {
