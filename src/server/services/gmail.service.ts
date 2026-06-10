@@ -269,7 +269,6 @@ export async function syncThreads(userId: string): Promise<number> {
           preview: subject ?? body.slice(0, 120),
           body,
           receivedAt: isNaN(msgDate.getTime()) ? new Date() : msgDate,
-          needsReply: !msgFromMe,
           fromMe: msgFromMe,
         });
       }

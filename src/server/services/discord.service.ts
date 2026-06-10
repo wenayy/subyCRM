@@ -108,7 +108,6 @@ function startBot() {
           preview: text.slice(0, 120),
           body: text,
           receivedAt: message.createdAt,
-          needsReply: true,
           fromMe: false,
         });
       } catch { /* ignore */ }
@@ -161,7 +160,6 @@ async function syncDMHistory(botToken: string, userId: string) {
           preview: msg.content.slice(0, 120),
           body: msg.content,
           receivedAt: new Date(msg.timestamp),
-          needsReply: !fromMe,
           fromMe,
         });
         synced++;
@@ -217,7 +215,6 @@ async function syncGuildHistory(botToken: string, userId: string) {
             preview: msg.content.slice(0, 120),
             body: msg.content,
             receivedAt: new Date(msg.timestamp),
-            needsReply: false,
             fromMe: false,
           });
           synced++;

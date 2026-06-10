@@ -338,7 +338,6 @@ async function handleMessage(msg: TelegramBot.Message) {
         preview: msg.text.slice(0, 120),
         body: msg.text,
         receivedAt: new Date(msg.date * 1000),
-        needsReply: true,
       }).catch(() => {});
     }
   } else {

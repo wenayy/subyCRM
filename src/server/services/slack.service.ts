@@ -104,7 +104,6 @@ async function startSocket() {
           preview: text.slice(0, 120),
           body: text,
           receivedAt: new Date(parseFloat(ts) * 1000),
-          needsReply: !fromMe,
           fromMe,
         });
 
@@ -231,7 +230,6 @@ export const slackService = {
             preview: msg.text.slice(0, 120),
             body: msg.text,
             receivedAt: new Date(parseFloat(msg.ts) * 1000),
-            needsReply: !fromMe,
             fromMe,
           });
           synced++;

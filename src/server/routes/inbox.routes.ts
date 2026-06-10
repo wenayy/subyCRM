@@ -112,8 +112,8 @@ router.delete("/:id", async (req, res, next) => {
 router.patch("/:id", async (req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
-    const { read, starred, needsReply } = req.body as { read?: boolean; starred?: boolean; needsReply?: boolean };
-    res.json(await inboxService.updateMessage(req.params.id, { read, starred, needsReply }, userId));
+    const { read, starred } = req.body as { read?: boolean; starred?: boolean };
+    res.json(await inboxService.updateMessage(req.params.id, { read, starred }, userId));
   } catch (err) { next(err); }
 });
 
@@ -140,6 +140,24 @@ router.post("/:id/reply", async (req, res, next) => {
     if (!body?.trim()) { res.status(400).json({ error: "body required" }); return; }
     const userId = res.locals.session?.user?.id;
     await inboxService.reply(req.params.id, body.trim(), userId, replyToId, { contactId, platform, senderId });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+router.post("/archive", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { contactId, senderId, platform } = req.body as { contactId?: string; senderId?: string; platform: string };
+    await inboxService.archiveConversation({ contactId, senderId, platform, userId });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+router.post("/unarchive", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const { contactId, senderId, platform } = req.body as { contactId?: string; senderId?: string; platform: string };
+    await inboxService.unarchiveConversation({ contactId, senderId, platform, userId });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

@@ -4,7 +4,7 @@ import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { inboxApi, meApi, gmailApi, slackApi, contactsApi, type InboxConversationApi, type InboxMessageApi } from "@/lib/api";
 import { PlatformIcon } from "@/components/platform-icon";
-import { Star } from "lucide-react";
+import { Star, Archive, ArchiveRestore } from "lucide-react";
 import type { PlatformType } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { getCached, setCached } from "@/lib/page-cache";
@@ -17,7 +17,7 @@ interface SentMessage {
   quotedFromMe?: boolean | null;
 }
 
-type Filter = "all" | "unread" | "needs_reply" | "starred" | "unknown";
+type Filter = "all" | "unread" | "archived" | "starred" | "unknown";
 
 function fmtAgo(iso: string): string {
   const m = (Date.now() - new Date(iso).getTime()) / 60000;
@@ -267,6 +267,11 @@ export function InboxView() {
           const isKnownMatch = data.contactId && data.contactId === sel.contactId && data.platform === sel.platform;
           const isUnknownMatch = !data.contactId && !sel.contactId && data.platform === sel.platform && msg.senderId === sel.senderId;
           if (isKnownMatch || isUnknownMatch) {
+            // Message arrived in the currently open chat — clear its unread immediately
+            setConversations((prev) => prev.map((c) =>
+              c.key === sel.key ? { ...c, unreadCount: 0 } : c
+            ));
+            window.dispatchEvent(new Event("inbox-read"));
             setThread((prev) => {
               const idx = prev.findIndex((m) => m.id === msg.id);
               let next: typeof prev;
@@ -504,12 +509,14 @@ export function InboxView() {
     setConversations((prev) => prev.map((c) =>
       c.key === conv.key ? { ...c, unreadCount: 0, latestMessage: { ...c.latestMessage, read: true } } : c
     ));
+    window.dispatchEvent(new Event("inbox-read"));
   };
 
   const filtered = conversations.filter((c) => {
     if (platformFilter !== "all" && c.platform !== platformFilter) return false;
+    if (filter === "archived") return c.archived;
+    if (c.archived) return false; // hide archived from all other tabs
     if (filter === "unread") return c.unreadCount > 0;
-    if (filter === "needs_reply") return c.needsReply;
     if (filter === "starred") return c.starred;
     if (filter === "unknown") return !c.contactId;
     return true;
@@ -523,10 +530,10 @@ export function InboxView() {
     }, new Map<string, number>()),
   ).sort((a, b) => b[1] - a[1]);
 
-  const totalUnread = conversations.reduce((s, c) => s + c.unreadCount, 0);
-  const totalNeedsReply = conversations.filter((c) => c.needsReply).length;
-  const totalStarred = conversations.filter((c) => c.starred).length;
-  const totalUnknown = conversations.filter((c) => !c.contactId).length;
+  const totalUnread = conversations.filter((c) => !c.archived).reduce((s, c) => s + c.unreadCount, 0);
+  const totalArchived = conversations.filter((c) => c.archived).length;
+  const totalStarred = conversations.filter((c) => c.starred && !c.archived).length;
+  const totalUnknown = conversations.filter((c) => !c.contactId && !c.archived).length;
 
   const handleSend = () => {
     const textBody = textareaRef.current?.value.trim() ?? "";
@@ -553,7 +560,6 @@ export function InboxView() {
       quotedFromMe: replyingTo ? !!replyingTo.fromMe : null,
     };
     setSentMessages((prev) => ({ ...prev, [selected.key]: [...(prev[selected.key] ?? []), outgoing] }));
-    setConversations((prev) => prev.map((c) => c.key === selected.key ? { ...c, needsReply: false } : c));
 
     // Fire and forget — only revert to ⚠️ if it actually fails
     const ctx = { contactId: selected.contactId, platform: selected.platform, senderId: selected.senderId };
@@ -564,6 +570,27 @@ export function InboxView() {
       });
       setSendError(e instanceof Error ? e.message : "Failed to send");
     });
+  };
+
+  const handleArchive = async (conv: InboxConversationApi) => {
+    const isArchived = conv.archived;
+    // Optimistic update
+    setConversations((prev) => prev.map((c) => c.key === conv.key ? { ...c, archived: !isArchived } : c));
+    if (selected?.key === conv.key && !isArchived) {
+      // Move to next non-archived conversation, or clear
+      const remaining = conversations.filter((c) => c.key !== conv.key && !c.archived);
+      setSelected(remaining[0] ?? null);
+    }
+    try {
+      if (isArchived) {
+        await inboxApi.unarchiveConversation(conv.contactId, conv.senderId, conv.platform);
+      } else {
+        await inboxApi.archiveConversation(conv.contactId, conv.senderId, conv.platform);
+      }
+    } catch {
+      // Revert on failure
+      setConversations((prev) => prev.map((c) => c.key === conv.key ? { ...c, archived: isArchived } : c));
+    }
   };
 
   const handleDeleteMsg = async (msgId: string) => {
@@ -705,24 +732,25 @@ export function InboxView() {
           <div>
             <h1 className="text-xl font-bold tracking-tight">Inbox</h1>
             <p style={{ color: "var(--t2)", fontSize: 13, marginTop: 4 }}>
-              {loading ? <span className="inline-block h-3 w-32 bg-muted/60 animate-pulse rounded align-middle" /> : `${totalUnread} unread · ${totalNeedsReply} need reply`}
+              {loading ? <span className="inline-block h-3 w-32 bg-muted/60 animate-pulse rounded align-middle" /> : `${totalUnread} unread`}
             </p>
           </div>
           <div style={{ display: "flex", gap: 4, background: "var(--muted)", borderRadius: 8, padding: 3, flexWrap: "wrap" }}>
-            {(["all", "unread", "needs_reply", "starred", "unknown"] as Filter[]).map((f) => {
+            {(["all", "unread", "archived", "starred", "unknown"] as Filter[]).map((f) => {
               const label =
-                f === "all" ? `All ${conversations.length}` :
+                f === "all" ? `All ${conversations.filter((c) => !c.archived).length}` :
                 f === "unread" ? `Unread ${totalUnread}` :
-                f === "needs_reply" ? `Needs reply ${totalNeedsReply}` :
+                f === "archived" ? `Archived ${totalArchived}` :
                 f === "starred" ? `Starred ${totalStarred}` :
                 `Unknown ${totalUnknown}`;
               const isUnknownTab = f === "unknown";
+              const isArchivedTab = f === "archived";
               return (
                 <button key={f} onClick={() => setFilter(f)}
                   style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap",
-                    background: filter === f ? (isUnknownTab ? "#f59e0b" : "var(--card)") : "transparent",
+                    background: filter === f ? (isUnknownTab ? "#f59e0b" : isArchivedTab ? "var(--t3)" : "var(--card)") : "transparent",
                     boxShadow: filter === f ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-                    color: filter === f ? (isUnknownTab ? "#fff" : "var(--t1)") : isUnknownTab && totalUnknown > 0 ? "#f59e0b" : "var(--t3)",
+                    color: filter === f ? (isUnknownTab || isArchivedTab ? "#fff" : "var(--t1)") : isUnknownTab && totalUnknown > 0 ? "#f59e0b" : "var(--t3)",
                     fontWeight: filter === f ? 600 : 400 }}>
                   {label}
                 </button>
@@ -837,24 +865,16 @@ export function InboxView() {
                     }}>
                       {conv.latestMessage.preview ?? conv.latestMessage.body ?? ""}
                     </div>
-                    {(conv.needsReply || conv.unreadCount > 0) && (
-                      <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                        {conv.needsReply && (
-                          <span style={{
-                            fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
-                            background: "var(--ob)", color: "var(--oc)", letterSpacing: "0.04em",
-                          }}>NEEDS REPLY</span>
-                        )}
-                        {conv.unreadCount > 0 && (
-                          <span style={{
-                            fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10,
-                            background: "#2563eb", color: "#fff",
-                          }}>
-                            {conv.unreadCount}
-                          </span>
-                        )}
-                      </div>
-                    )}
+                    <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                      {conv.unreadCount > 0 && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10,
+                          background: "#2563eb", color: "#fff",
+                        }}>
+                          {conv.unreadCount}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </button>
               );
@@ -965,6 +985,14 @@ export function InboxView() {
                     display: "flex", alignItems: "center", padding: 4, borderRadius: 6,
                     background: "transparent", border: "none" }}>
                   <Star size={18} fill={selected.starred ? "#f59e0b" : "none"} />
+                </div>
+                <div role="button" tabIndex={0}
+                  onClick={() => handleArchive(selected)}
+                  title={selected.archived ? "Unarchive" : "Archive"}
+                  style={{ cursor: "pointer", color: selected.archived ? "#6366f1" : "var(--t3)",
+                    display: "flex", alignItems: "center", padding: 4, borderRadius: 6,
+                    background: "transparent", border: "none" }}>
+                  {selected.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />}
                 </div>
                 {selected.contactId ? (
                   <Button size="sm" variant="outline"

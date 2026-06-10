@@ -563,7 +563,6 @@ export const telegramPersonalService = {
             preview: body.slice(0, 120),
             body,
             receivedAt: new Date(msg.date * 1000),
-            needsReply: !msg.out,
             fromMe: !!msg.out,
           });
           synced++;
@@ -647,7 +646,6 @@ export const telegramPersonalService = {
               preview: body.slice(0, 120),
               body,
               receivedAt: new Date(msg.date * 1000),
-              needsReply: !msg.out,
               fromMe: !!msg.out,
             });
             // Link any prior messages that were saved without a contactId
@@ -749,7 +747,6 @@ export const telegramPersonalService = {
             preview: media.caption ? media.caption.slice(0, 120) : "[File]",
             body: text,
             receivedAt: new Date(sentMediaMsg.date * 1000),
-            needsReply: false,
             fromMe: true,
           });
         }
@@ -780,7 +777,6 @@ export const telegramPersonalService = {
         preview: text.slice(0, 120),
         body: text,
         receivedAt: new Date(sentMsg.date * 1000),
-        needsReply: false,
         fromMe: true,
       });
     }

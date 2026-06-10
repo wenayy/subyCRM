@@ -88,7 +88,6 @@ export async function handleMatrixTransaction(
       preview: body.slice(0, 120),
       body,
       receivedAt,
-      needsReply: true,
       fromMe: false,
     });
   }

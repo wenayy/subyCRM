@@ -11,7 +11,6 @@ export interface InboxMessage {
   receivedAt: string;
   read: boolean;
   starred: boolean;
-  needsReply: boolean;
 }
 
 const ago = (h: number) => new Date(Date.now() - h * 3600 * 1000).toISOString();
@@ -31,7 +30,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(0.4),
     read: false,
     starred: true,
-    needsReply: true,
   },
   {
     id: "msg-2",
@@ -42,7 +40,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(2),
     read: false,
     starred: false,
-    needsReply: true,
   },
   {
     id: "msg-3",
@@ -53,7 +50,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(5),
     read: false,
     starred: false,
-    needsReply: true,
   },
   {
     id: "msg-4",
@@ -64,7 +60,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(8),
     read: true,
     starred: false,
-    needsReply: true,
   },
   {
     id: "msg-5",
@@ -75,7 +70,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(11),
     read: true,
     starred: false,
-    needsReply: false,
   },
   {
     id: "msg-6",
@@ -86,7 +80,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(20),
     read: true,
     starred: false,
-    needsReply: false,
   },
   {
     id: "msg-7",
@@ -97,7 +90,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(26),
     read: true,
     starred: false,
-    needsReply: false,
   },
   {
     id: "msg-8",
@@ -108,7 +100,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(36),
     read: true,
     starred: true,
-    needsReply: true,
   },
   {
     id: "msg-9",
@@ -119,7 +110,6 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(50),
     read: true,
     starred: false,
-    needsReply: true,
   },
   {
     id: "msg-10",
@@ -130,6 +120,5 @@ export const MOCK_INBOX: InboxMessage[] = [
     receivedAt: ago(72),
     read: true,
     starred: false,
-    needsReply: false,
   },
 ];

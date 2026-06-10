@@ -301,7 +301,6 @@ export const linkedinService = {
             preview: body.slice(0, 120),
             body,
             receivedAt: new Date(createdAt),
-            needsReply: !isFromMe,
             fromMe: !!isFromMe,
           });
           synced++;

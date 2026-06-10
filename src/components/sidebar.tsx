@@ -110,7 +110,8 @@ export default function Sidebar() {
     const refreshInbox = () => inboxApi.getStats().then((s) => setUnreadInbox(s.unread)).catch(() => {});
     refreshInbox();
     const interval = setInterval(refreshInbox, 30000);
-    return () => clearInterval(interval);
+    window.addEventListener("inbox-read", refreshInbox);
+    return () => { clearInterval(interval); window.removeEventListener("inbox-read", refreshInbox); };
   }, []);
 
   const isActive = (href: string) =>

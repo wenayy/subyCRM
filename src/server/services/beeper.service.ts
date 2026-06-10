@@ -455,7 +455,6 @@ export const beeperService = {
         preview: cleanText.slice(0, 120),
         body: cleanText,
         receivedAt,
-        needsReply: !msg.isSender,
         fromMe: !!msg.isSender,
       });
       await (prisma as any).inboxMessage.updateMany({
@@ -608,7 +607,6 @@ export const beeperService = {
             preview: cleanText.slice(0, 120),
             body: cleanText,
             receivedAt,
-            needsReply: !msg.isSender,
             fromMe: !!msg.isSender,
           });
           await (prisma as any).inboxMessage.updateMany({
@@ -825,7 +823,6 @@ export const beeperService = {
           preview: body.slice(0, 120),
           body,
           receivedAt,
-          needsReply: !isFromMe,
           fromMe: isFromMe,
         });
 

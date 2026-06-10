@@ -330,7 +330,6 @@ export async function syncLocalMessagesForContacts(userId: string): Promise<{ sy
             preview: body.slice(0, 120),
             body,
             receivedAt: new Date(row.timestamp),
-            needsReply: !isFromMe,
             fromMe: isFromMe,
             matrixRoomId: row.matrixRoomId,
             ...(read !== undefined ? { read } : {}),
@@ -342,7 +341,6 @@ export async function syncLocalMessagesForContacts(userId: string): Promise<{ sy
             body,
             receivedAt: new Date(row.timestamp),
             fromMe: isFromMe,
-            needsReply: !isFromMe,
             matrixRoomId: row.matrixRoomId,
           },
         });

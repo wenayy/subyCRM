@@ -446,7 +446,7 @@ model InboxMessage {
   fromMe      Boolean      @default(false) @map("from_me")
   read        Boolean      @default(false)
   starred     Boolean      @default(false)
-  needsReply  Boolean      @default(false)
+  archived    Boolean      @default(false)
   waStatus    String?      @map("wa_status")
   quotedId    String?      @map("quoted_id")
   quotedBody  String?      @map("quoted_body")

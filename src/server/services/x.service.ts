@@ -265,7 +265,6 @@ export const xService = {
         preview: md.text.slice(0, 120),
         body: md.text,
         receivedAt: createdAt,
-        needsReply: !isFromMe,
         fromMe: isFromMe,
       });
       synced++;
@@ -349,7 +348,6 @@ export const xService = {
           preview: text.slice(0, 120),
           body: text,
           receivedAt: createdAt,
-          needsReply: !isFromMe,
           fromMe: isFromMe,
         });
         synced++;

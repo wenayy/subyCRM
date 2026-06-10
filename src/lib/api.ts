@@ -316,7 +316,6 @@ export interface InboxMessageApi {
   body: string | null;
   read: boolean;
   starred: boolean;
-  needsReply: boolean;
   fromMe: boolean;
   receivedAt: string;
   senderId: string | null;
@@ -334,7 +333,7 @@ export interface InboxConversationApi {
   senderId: string | null;
   latestMessage: InboxMessageApi;
   unreadCount: number;
-  needsReply: boolean;
+  archived: boolean;
   messageCount: number;
   starred: boolean;
 }
@@ -346,9 +345,13 @@ export const inboxApi = {
     apiFetch<InboxMessageApi[]>(`/api/inbox/thread?contactId=${encodeURIComponent(contactId)}&platform=${encodeURIComponent(platform)}`),
   getContactMessages: (contactId: string) =>
     apiFetch<InboxMessageApi[]>(`/api/inbox/contact/${encodeURIComponent(contactId)}`),
-  getStats: () => apiFetch<{ total: number; unread: number; needsReply: number; starred: number }>("/api/inbox/stats"),
-  update: (id: string, data: { read?: boolean; starred?: boolean; needsReply?: boolean }) =>
+  getStats: () => apiFetch<{ total: number; unread: number; starred: number }>("/api/inbox/stats"),
+  update: (id: string, data: { read?: boolean; starred?: boolean }) =>
     apiFetch<InboxMessageApi>(`/api/inbox/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  archiveConversation: (contactId: string | null, senderId: string | null, platform: string) =>
+    apiFetch<{ ok: boolean }>("/api/inbox/archive", { method: "POST", body: JSON.stringify({ contactId, senderId, platform }) }),
+  unarchiveConversation: (contactId: string | null, senderId: string | null, platform: string) =>
+    apiFetch<{ ok: boolean }>("/api/inbox/unarchive", { method: "POST", body: JSON.stringify({ contactId, senderId, platform }) }),
 
   markConversationRead: (contactId: string, platform: string) =>
     apiFetch<{ success: boolean }>("/api/inbox/mark-read", { method: "POST", body: JSON.stringify({ contactId, platform }) }),

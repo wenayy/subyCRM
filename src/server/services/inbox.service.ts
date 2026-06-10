@@ -34,7 +34,7 @@ export const inboxService = {
     const map = new Map<string, {
       key: string; contactId: string | null; contactName: string | null;
       platform: string; senderId: string | null;
-      latestMessage: any; unreadCount: number; needsReply: boolean; messageCount: number; starred: boolean;
+      latestMessage: any; unreadCount: number; archived: boolean; messageCount: number; starred: boolean;
     }>();
 
     for (const msg of messages) {
@@ -52,7 +52,7 @@ export const inboxService = {
           key, contactId: msg.contactId ?? null, contactName: currentName,
           platform: msg.platform, senderId: msg.senderId,
           latestMessage: { ...msg, contactName: currentName },
-          unreadCount: 0, needsReply: !!msg.needsReply, messageCount: 0, starred: false,
+          unreadCount: 0, archived: !!msg.archived, messageCount: 0, starred: false,
         });
       }
       const conv = map.get(key)!;
@@ -101,9 +101,8 @@ export const inboxService = {
   },
 
   async getStats(userId: string = "default") {
-    const [total, needsReply, starred, unreadConvGroups] = await Promise.all([
+    const [total, starred, unreadConvGroups] = await Promise.all([
       (prisma as any).inboxMessage.count({ where: { userId, contactId: { not: null } } }),
-      (prisma as any).inboxMessage.count({ where: { userId, needsReply: true, contactId: { not: null } } }),
       (prisma as any).inboxMessage.count({ where: { userId, starred: true, contactId: { not: null } } }),
       (prisma as any).inboxMessage.groupBy({
         by: ["contactId", "platform"],
@@ -111,10 +110,10 @@ export const inboxService = {
       }),
     ]);
     const unread = unreadConvGroups.length; // unread conversations, not messages
-    return { total, unread, needsReply, starred };
+    return { total, unread, starred };
   },
 
-  async updateMessage(id: string, data: { read?: boolean; starred?: boolean; needsReply?: boolean }, userId: string = "default") {
+  async updateMessage(id: string, data: { read?: boolean; starred?: boolean }, userId: string = "default") {
     return (prisma as any).inboxMessage.update({ where: { id, userId }, data });
   },
 
@@ -197,7 +196,7 @@ export const inboxService = {
     preview?: string | null;
     body?: string | null;
     receivedAt: Date;
-    needsReply?: boolean;
+  
     fromMe?: boolean;
     waStatus?: string | null;
     quotedId?: string | null;
@@ -215,7 +214,7 @@ export const inboxService = {
       create: { platform, externalId, userId: resolvedUserId, ...rest, ...(read !== undefined ? { read } : {}) },
       update: {
         contactId: rest.contactId, contactName: rest.contactName, preview: rest.preview,
-        body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe, needsReply: rest.needsReply,
+        body: rest.body, receivedAt: rest.receivedAt, fromMe: rest.fromMe,
       },
     });
     // Set WA-specific fields in a separate update — silently skipped if columns don't exist yet
@@ -307,22 +306,12 @@ export const inboxService = {
       preview: text.slice(0, 120),
       body: text,
       receivedAt: new Date(),
-      needsReply: false,
       fromMe: true,
       waStatus: msg.platform === "whatsapp" ? "sent" : null,
       quotedId: quotedOriginal?.externalId ?? null,
       quotedBody: quotedOriginal?.body ?? quotedOriginal?.preview ?? null,
       quotedFromMe: quotedOriginal != null ? !!quotedOriginal.fromMe : null,
     });
-
-    if (msg.contactId) {
-      await (prisma as any).inboxMessage.updateMany({
-        where: { contactId: msg.contactId, platform: msg.platform, needsReply: true },
-        data: { needsReply: false },
-      });
-    } else {
-      await (prisma as any).inboxMessage.update({ where: { id }, data: { needsReply: false } });
-    }
 
     // ── Actually resolve and send in background — never blocks the HTTP response ─────────────
     void (async () => {
@@ -611,6 +600,24 @@ export const inboxService = {
         broadcastInboxEvent("send_failed", { platform: msg.platform, tempId, contactId: msg.contactId, error: errMsg });
       }
     })();
+  },
+
+  async archiveConversation(opts: { contactId?: string | null; senderId?: string | null; platform: string; userId?: string }) {
+    const { contactId, senderId, platform, userId = "default" } = opts;
+    if (contactId) {
+      await (prisma as any).inboxMessage.updateMany({ where: { userId, contactId, platform }, data: { archived: true } });
+    } else if (senderId) {
+      await (prisma as any).inboxMessage.updateMany({ where: { userId, contactId: null, senderId, platform }, data: { archived: true } });
+    }
+  },
+
+  async unarchiveConversation(opts: { contactId?: string | null; senderId?: string | null; platform: string; userId?: string }) {
+    const { contactId, senderId, platform, userId = "default" } = opts;
+    if (contactId) {
+      await (prisma as any).inboxMessage.updateMany({ where: { userId, contactId, platform }, data: { archived: false } });
+    } else if (senderId) {
+      await (prisma as any).inboxMessage.updateMany({ where: { userId, contactId: null, senderId, platform }, data: { archived: false } });
+    }
   },
 
   async linkMessagesToContact(contactId: string, platformType: string, platformId: string) {
