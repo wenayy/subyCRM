@@ -5,13 +5,28 @@ import { cache } from "../lib/cache";
 // ─── Tag CRUD router (mounted at /api/tags) ─────────────────
 export const tagRouter = Router();
 
-// GET /api/tags — list all tags (shared across the team, deduplicated by name)
+// GET /api/tags — list the user's tags, deduplicated by name
 tagRouter.get("/", async (req, res, next) => {
   try {
-    const tags = await prisma.tag.findMany({
+    const userId = res.locals.session?.user?.id ?? "default";
+    let tags = await prisma.tag.findMany({
+      where: { userId },
       orderBy: { name: "asc" },
       include: { _count: { select: { contactTags: true } } },
     });
+    // First use: seed the default tag set so the picker isn't empty
+    if (tags.length === 0) {
+      const DEFAULT_TAGS = ["Investor", "Strategic", "EU", "US", "Crypto"];
+      await prisma.tag.createMany({
+        data: DEFAULT_TAGS.map((name) => ({ userId, name })),
+        skipDuplicates: true,
+      });
+      tags = await prisma.tag.findMany({
+        where: { userId },
+        orderBy: { name: "asc" },
+        include: { _count: { select: { contactTags: true } } },
+      });
+    }
     // Deduplicate by name (keep the one with the most uses if duplicates exist)
     const seen = new Map<string, typeof tags[number]>();
     for (const t of tags) {
@@ -74,8 +89,8 @@ contactTagRouter.post("/:id/tags", async (req, res, next) => {
       return;
     }
 
-    // Verify the tag exists (tags are shared across the team)
-    const tag = await prisma.tag.findFirst({ where: { id: resolvedTagId } });
+    // Verify the tag exists and belongs to this user
+    const tag = await prisma.tag.findFirst({ where: { id: resolvedTagId, userId } });
     if (!tag) {
       res.status(404).json({ error: "Tag not found" });
       return;
