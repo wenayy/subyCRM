@@ -102,8 +102,9 @@ const STATUS_META: Record<Status, { label: string; bg: string; color: string; do
 const GROUPS = [
   { label: "Voice assistant", keys: ["subyassist_bot"] },
   { label: "Calendar & Email", keys: ["google_calendar", "gmail"] },
-  { label: "Messaging", keys: ["whatsapp", "telegram_personal", "beeper", "slack", "discord"] },
-  { label: "Social", keys: ["x", "linkedin"] },
+  { label: "Messaging", keys: ["beeper"] },
+  // Hidden (code intact): { label: "Messaging", keys: ["whatsapp", "telegram_personal", "beeper", "slack", "discord"] },
+  // Hidden (code intact): { label: "Social", keys: ["x", "linkedin"] },
 ];
 
 // ─── Per-integration connect modals ──────────────────────────────────────────

@@ -1,30 +1,23 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
-import { clearAllCache } from "@/lib/page-cache";
+import { setActiveUser } from "@/lib/page-cache";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { data: session, isPending } = authClient.useSession();
-  const prevUserIdRef = useRef<string | null | undefined>(undefined);
+  // Scope the cache to the current user on every render — before any child reads it.
+  // This ensures a different user never gets a cache hit from a previous user's session.
+  setActiveUser(session?.user?.id ?? null);
 
   useEffect(() => {
     if (!isPending && !session) {
       router.replace(`/sign-in?callbackURL=${encodeURIComponent(pathname)}`);
     }
   }, [isPending, pathname, router, session]);
-
-  // Clear stale cache when the logged-in user changes so no user ever sees another's data
-  useEffect(() => {
-    const currentId = session?.user?.id ?? null;
-    if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== currentId) {
-      clearAllCache();
-    }
-    prevUserIdRef.current = currentId;
-  }, [session?.user?.id]);
 
   if (isPending || !session) {
     return (
