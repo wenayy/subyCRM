@@ -126,7 +126,7 @@ export const importService = {
       if (imported > 0) {
         try {
           console.log(`[import/beeper] Running deduplication...`);
-          const dedup = await deduplicateContacts();
+          const dedup = await deduplicateContacts(userId);
           dedupCount = dedup.mergedCount;
         } catch (dedupErr) {
           console.error("[import/beeper] Deduplication failed (non-fatal):", dedupErr);

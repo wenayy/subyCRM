@@ -168,7 +168,7 @@ async function downloadTelegramMedia(client: any, msg: any): Promise<string | nu
 }
 
 // Link existing CRM contacts to Telegram entities by name/phone (no new contacts created)
-async function linkContactsByName(dialogs: any[]): Promise<void> {
+async function linkContactsByName(userId: string, dialogs: any[]): Promise<void> {
   for (const dialog of dialogs) {
     try {
       const entity = dialog.entity as any;
@@ -177,7 +177,7 @@ async function linkContactsByName(dialogs: any[]): Promise<void> {
       if (!idStr) continue;
 
       // Skip if platform record already exists
-      const existing = await prisma.platform.findFirst({ where: { type: "telegram", platformId: idStr } });
+      const existing = await prisma.platform.findFirst({ where: { type: "telegram", platformId: idStr, contact: { userId } } });
       if (existing) continue;
 
       const firstName = entity.firstName ?? "";
@@ -188,13 +188,13 @@ async function linkContactsByName(dialogs: any[]): Promise<void> {
 
       // Try matching existing CRM contact by name
       let contact = fullName
-        ? await prisma.contact.findFirst({ where: { name: { equals: fullName, mode: "insensitive" } } })
+        ? await prisma.contact.findFirst({ where: { userId, name: { equals: fullName, mode: "insensitive" } } })
         : null;
 
-      // Fallback: match by phone against all platform records
+      // Fallback: match by phone against this user's platform records
       if (!contact && phone) {
         const digits = phone.replace(/\D/g, "").slice(-10);
-        const plat = await prisma.platform.findFirst({ where: { platformId: { endsWith: digits } } });
+        const plat = await prisma.platform.findFirst({ where: { platformId: { endsWith: digits }, contact: { userId } } });
         if (plat) contact = await prisma.contact.findUnique({ where: { id: plat.contactId } });
       }
 
@@ -476,10 +476,10 @@ export const telegramPersonalService = {
         // Also create a whatsapp platform if phone is known
         if (phone) {
           const created = await prisma.contact.findFirst({
-            where: { platforms: { some: { type: "telegram", platformId: platformIdToUse } } },
+            where: { userId, platforms: { some: { type: "telegram", platformId: platformIdToUse } } },
           });
           if (created) {
-            const exists = await prisma.platform.findFirst({ where: { type: "whatsapp", platformId: phone } });
+            const exists = await prisma.platform.findFirst({ where: { type: "whatsapp", platformId: phone, contact: { userId } } });
             if (!exists) {
               await prisma.platform.create({
                 data: { contactId: created.id, type: "whatsapp", platformId: phone, displayName: fullName },
@@ -519,7 +519,7 @@ export const telegramPersonalService = {
     const dialogs = await client.getDialogs({ limit: dialogLimit });
 
     // Link any existing CRM contacts to Telegram entities by name/phone before syncing
-    await linkContactsByName(dialogs);
+    await linkContactsByName(userId, dialogs);
 
     let synced = 0;
 
@@ -717,7 +717,7 @@ export const telegramPersonalService = {
 
     // Try to find contact by platformId (username), then by numeric senderId, then by contactId passed from the reply chain
     const platform = await prisma.platform.findFirst({
-      where: { type: "telegram", OR: [{ platformId: peer }, { platformId: peer.replace(/^@/, "") }] },
+      where: { type: "telegram", contact: { userId }, OR: [{ platformId: peer }, { platformId: peer.replace(/^@/, "") }] },
       include: { contact: true },
     });
     let contact = platform?.contact ?? null;

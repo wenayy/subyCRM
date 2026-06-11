@@ -400,7 +400,7 @@ export const enrichmentService = {
     if (linkedinMatch.matched && linkedinMatch.profileId && !linkedinPlatform) {
       try {
         const existing = await prisma.platform.findFirst({
-          where: { type: "linkedin", platformId: linkedinMatch.profileId },
+          where: { type: "linkedin", platformId: linkedinMatch.profileId, contact: { userId: contact.userId } },
         });
         if (existing) {
           if (existing.contactId !== contactId)
@@ -425,7 +425,7 @@ export const enrichmentService = {
     if (twitterMatch.matched && twitterMatch.profileId && !xPlatform) {
       try {
         const existing = await prisma.platform.findFirst({
-          where: { type: "x", platformId: twitterMatch.profileId },
+          where: { type: "x", platformId: twitterMatch.profileId, contact: { userId: contact.userId } },
         });
         if (existing) {
           if (existing.contactId !== contactId)

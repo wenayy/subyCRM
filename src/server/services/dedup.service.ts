@@ -41,8 +41,9 @@ export async function findSimilarContact(name: string, userId?: string): Promise
 // Safe merge rules: phone match or email match ONLY.
 // Name-based matching is completely removed — display names are not unique identifiers
 // (many different people share the same name on X/WhatsApp/Telegram).
-export async function deduplicateContacts(): Promise<DeduplicateResult> {
+export async function deduplicateContacts(userId: string): Promise<DeduplicateResult> {
   const contacts = await prisma.contact.findMany({
+    where: { userId },
     include: { platforms: true },
     orderBy: { createdAt: "asc" },
   });
@@ -181,8 +182,11 @@ export async function splitWronglyMergedContacts(): Promise<{ split: number }> {
 
 // Fix contacts duplicated by Beeper using username-as-platformId while native integration
 // used numeric ID. Merges pairs that share the same displayName on the same platform.
-export async function mergeBeepDuplicates(): Promise<{ merged: number }> {
-  const platforms = await prisma.platform.findMany({ select: { id: true, type: true, platformId: true, displayName: true, contactId: true } });
+export async function mergeBeepDuplicates(userId: string): Promise<{ merged: number }> {
+  const platforms = await prisma.platform.findMany({
+    where: { contact: { userId } },
+    select: { id: true, type: true, platformId: true, displayName: true, contactId: true },
+  });
   const merged = new Set<string>();
   let count = 0;
 

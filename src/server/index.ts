@@ -653,10 +653,15 @@ app.listen(PORT, async () => {
   void (async () => {
     try {
       const { splitWronglyMergedContacts, mergeBeepDuplicates } = await import("./services/dedup.service");
+      const { prisma } = await import("./lib/prisma");
       const { split } = await splitWronglyMergedContacts();
       if (split > 0) console.log(`[startup] Split ${split} wrongly merged contact platform(s)`);
-      const { merged } = await mergeBeepDuplicates();
-      if (merged > 0) console.log(`[startup] Merged ${merged} Beeper/native duplicate contact(s)`);
+      // Dedup is per-user: never merge contacts across different accounts
+      const users = await prisma.user.findMany({ select: { id: true } });
+      for (const u of users) {
+        const { merged } = await mergeBeepDuplicates(u.id);
+        if (merged > 0) console.log(`[startup] Merged ${merged} Beeper/native duplicate contact(s) for user ${u.id}`);
+      }
     } catch (e: any) {
       console.error("[startup] Contact dedup error:", e.message);
     }

@@ -242,6 +242,7 @@ export const xService = {
         const platform = await prisma.platform.findFirst({
           where: {
             type: "x",
+            contact: { userId },
             OR: [
               ...(screenName ? [{ platformId: screenName }] : []),
               { platformId: otherUserId },
@@ -324,6 +325,7 @@ export const xService = {
         const plat = await prisma.platform.findFirst({
           where: {
             type: "x",
+            contact: { userId },
             OR: [
               { platformId: senderId },
               ...(username ? [{ platformId: { equals: username, mode: "insensitive" } }] : []),

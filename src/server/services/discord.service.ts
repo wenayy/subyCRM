@@ -39,7 +39,7 @@ function verifyState(state: string): string {
   }
 }
 
-async function findContactForDiscord(author: { id: string; username: string; globalName?: string | null }) {
+async function findContactForDiscord(userId: string, author: { id: string; username: string; globalName?: string | null }) {
   if (!author) return null;
   const discordUserId = author.id;
   const username = author.username;
@@ -48,6 +48,7 @@ async function findContactForDiscord(author: { id: string; username: string; glo
   // Match by Discord user ID or username only — no name fallback to avoid cross-contact contamination
   const plat = await (prisma as any).platform.findFirst({
     where: {
+      contact: { userId },
       OR: [
         { type: "discord", platformId: discordUserId },
         { type: "discord", platformId: { equals: username, mode: "insensitive" } },
@@ -89,14 +90,14 @@ function startBot() {
         if (!text) return;
 
         const displayName = message.author.globalName ?? message.author.username;
-        const contact = await findContactForDiscord({
+        const discordTokenRec = await (prisma as any).discordToken.findFirst();
+        const botUserId = discordTokenRec?.userId ?? "default";
+
+        const contact = await findContactForDiscord(botUserId, {
           id: message.author.id,
           username: message.author.username,
           globalName: message.author.globalName,
         });
-
-        const discordTokenRec = await (prisma as any).discordToken.findFirst();
-        const botUserId = discordTokenRec?.userId ?? "default";
 
         await inboxService.upsert({
           platform: "discord",
@@ -133,7 +134,7 @@ async function syncDMHistory(botToken: string, userId: string) {
     for (const dm of dms.filter((d) => d.type === 1)) {
       const recipient = dm.recipients?.[0];
       if (!recipient || recipient.bot) continue;
-      const contact = await findContactForDiscord({
+      const contact = await findContactForDiscord(userId, {
         id: recipient.id,
         username: recipient.username,
         globalName: recipient.global_name,
@@ -198,7 +199,7 @@ async function syncGuildHistory(botToken: string, userId: string) {
           if (msg.author.bot) continue;
           if (!msg.content?.trim()) continue;
 
-          const contact = await findContactForDiscord({
+          const contact = await findContactForDiscord(userId, {
             id: msg.author.id,
             username: msg.author.username,
             globalName: msg.author.global_name,
@@ -411,7 +412,7 @@ export const discordService = {
         const globalName = dUser.globalName ?? username;
         const discordUserId = dUser.id;
 
-        const contact = await findContactForDiscord({
+        const contact = await findContactForDiscord(userId, {
           id: dUser.id,
           username: dUser.username,
           globalName: dUser.globalName,

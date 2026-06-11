@@ -442,7 +442,7 @@ export const beeperService = {
       const displayName: string = otherParticipant.fullName || otherParticipant.displayName || chat.title || platformId;
 
       let platformRecord = await prisma.platform.findFirst({
-        where: { type: platform as PlatformType, platformId: platformId! },
+        where: { type: platform as PlatformType, platformId: platformId!, contact: { userId } },
       });
       // Fallback: match by username or displayName (handles case where native integration
       // stored username as platformId and Beeper now has the numeric ID, or vice versa)
@@ -450,6 +450,7 @@ export const beeperService = {
         platformRecord = await (prisma as any).platform.findFirst({
           where: {
             type: platform as PlatformType,
+            contact: { userId },
             OR: [
               { displayName: { equals: displayName, mode: "insensitive" } },
               { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
@@ -461,9 +462,6 @@ export const beeperService = {
         contactId = platformRecord.contactId;
         const contact = await prisma.contact.findUnique({ where: { id: contactId } });
         contactName = contact?.name ?? displayName;
-        if (contact?.userId !== userId) {
-          await prisma.contact.update({ where: { id: contactId }, data: { userId } }).catch(() => {});
-        }
       } else {
         const contact = await prisma.contact.create({
           data: {
@@ -476,7 +474,7 @@ export const beeperService = {
         });
         contactId = contact.id;
         contactName = contact.name;
-        deduplicateContacts().catch(console.error);
+        deduplicateContacts(userId).catch(console.error);
       }
     }
 
@@ -648,12 +646,13 @@ export const beeperService = {
       let imported = 0;
 
       let platformRecord = await prisma.platform.findFirst({
-        where: { type: platform as PlatformType, platformId },
+        where: { type: platform as PlatformType, platformId, contact: { userId } },
       });
       if (!platformRecord && displayName) {
         platformRecord = await (prisma as any).platform.findFirst({
           where: {
             type: platform as PlatformType,
+            contact: { userId },
             OR: [
               { displayName: { equals: displayName, mode: "insensitive" } },
               { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
@@ -666,9 +665,6 @@ export const beeperService = {
         const contact = await prisma.contact.findUnique({ where: { id: contactId } });
         if (contact) {
           contactName = contact.name;
-          if (contact.userId !== userId) {
-            await prisma.contact.update({ where: { id: contact.id }, data: { userId } }).catch(() => {});
-          }
         }
       } else {
         try {
@@ -686,7 +682,7 @@ export const beeperService = {
           imported++;
         } catch {
           // Race condition: another parallel chat created this contact first — look it up
-          const existing = await prisma.platform.findFirst({ where: { type: platform as PlatformType, platformId } });
+          const existing = await prisma.platform.findFirst({ where: { type: platform as PlatformType, platformId, contact: { userId } } });
           if (existing) { contactId = existing.contactId; }
           else return { synced: 0, imported: 0 };
         }
@@ -813,7 +809,7 @@ export const beeperService = {
         console.log(`[beeper-local] phase1 batch ${Math.floor(i / Q_BATCH) + 1}/${Math.ceil(dmChats.length / Q_BATCH)} done — contacts=${importedContacts}`);
       }
       if (importedContacts > 0) {
-        deduplicateContacts().catch(console.error);
+        deduplicateContacts(userId).catch(console.error);
       }
 
       // Phase 2: full history — runs in background so the initial connect returns fast
@@ -846,7 +842,7 @@ export const beeperService = {
         console.log(`[beeper-local] batch ${Math.floor(i / BATCH) + 1}/${Math.ceil(dmChats.length / BATCH)} done — synced=${synced} contacts=${importedContacts}`);
       }
       if (importedContacts > 0) {
-        deduplicateContacts().catch(console.error);
+        deduplicateContacts(userId).catch(console.error);
       }
     }
 
@@ -975,7 +971,7 @@ export const beeperService = {
 
       if (!resolvedContactId) {
         const platformRecord = await prisma.platform.findFirst({
-          where: { type: platform as PlatformType, platformId },
+          where: { type: platform as PlatformType, platformId, contact: { userId } },
         });
 
         if (platformRecord) {
@@ -983,9 +979,6 @@ export const beeperService = {
           const contact = await prisma.contact.findUnique({ where: { id: contactId } });
           if (contact) {
             contactName = contact.name;
-            if (contact.userId !== userId) {
-              await prisma.contact.update({ where: { id: contact.id }, data: { userId } }).catch(() => {});
-            }
           }
         } else {
           const resolvedName = otherParticipantName || platformId;
@@ -1060,7 +1053,7 @@ export const beeperService = {
     }
 
     if (importedContacts > 0) {
-      deduplicateContacts().catch(console.error);
+      deduplicateContacts(userId).catch(console.error);
     }
 
     await (prisma as any).beeperSession.update({

@@ -68,8 +68,9 @@ router.post("/manual", async (req, res, next) => {
       },
     });
 
-    // Create the contact
-    const contact = await contactService.create(req.body);
+    // Create the contact, owned by the logged-in user
+    const userId = res.locals.session?.user?.id ?? "default";
+    const contact = await contactService.create(userId, req.body);
 
     res.status(201).json({ job, contact });
   } catch (err) {

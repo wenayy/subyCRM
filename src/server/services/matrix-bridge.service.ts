@@ -31,7 +31,7 @@ async function resolveContact(
 ): Promise<{ contactId: string; contactName: string }> {
   // Try to find existing contact by platform record
   const existing = await prisma.platform.findFirst({
-    where: { type: platform, platformId },
+    where: { type: platform, platformId, contact: { userId } },
     select: { contactId: true, contact: { select: { name: true } } },
   });
 

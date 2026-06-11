@@ -86,6 +86,7 @@ async function startSocket() {
         // (name matching caused cross-platform contamination, e.g. "wee waai" → "weenay")
         const plat = await (prisma as any).platform.findFirst({
           where: {
+            contact: { userId },
             OR: [
               { type: "slack", platformId: slackUserId },
               ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
@@ -212,6 +213,7 @@ export const slackService = {
           // Find CRM contact — match by Slack user ID or email only; no name fallback
           const plat = await (prisma as any).platform.findFirst({
             where: {
+              contact: { userId },
               OR: [
                 { type: "slack", platformId: otherUserId },
                 ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
@@ -275,6 +277,7 @@ export const slackService = {
         // Check if already in CRM by Slack ID or email
         const existing = await (prisma as any).platform.findFirst({
           where: {
+            contact: { userId },
             OR: [
               { type: "slack", platformId: slackId },
               ...(email ? [{ type: "email", platformId: { equals: email, mode: "insensitive" } }] : []),
