@@ -31,6 +31,6 @@ export const CACHE_KEYS = {
   contactSummary: (id: string) => `contact:${id}:summary`,
   contactBriefing: (id: string) => `contact:${id}:briefing`,
   suggestions: (userId: string) => `suggestions:${userId}`,
-  contactsList: (filters: any) => `contacts:list:${JSON.stringify(filters)}`,
-  contactsStats: () => 'contacts:stats',
+  contactsList: (userId: string, filters: any) => `contacts:list:${userId}:${JSON.stringify(filters)}`,
+  contactsStats: (userId: string) => `contacts:stats:${userId}`,
 };

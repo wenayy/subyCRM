@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
 import { encrypt, decrypt } from "../lib/encryption";
+import { cache as apiCache } from "../lib/cache";
 
 function decryptSession(rec: any) {
   if (!rec) return rec;
@@ -496,6 +497,7 @@ export const telegramPersonalService = {
     }
 
     console.log(`[telegram-import] done — imported=${imported} updated=${updated} skipped=${skipped}`);
+    if (imported > 0 || updated > 0) apiCache.invalidateContacts().catch(() => {});
     return { imported, updated, skipped };
   },
 

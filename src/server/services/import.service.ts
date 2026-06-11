@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma";
 import { importFromBeeper } from "../import/beeper";
 import { deduplicateContacts } from "./dedup.service";
+import { cache } from "../lib/cache";
 import { beeperService } from "./beeper.service";
 import type { PlatformType } from "@prisma/client";
 
@@ -124,6 +125,7 @@ export const importService = {
 
       let dedupCount = 0;
       if (imported > 0) {
+        cache.invalidateContacts().catch(() => {});
         try {
           console.log(`[import/beeper] Running deduplication...`);
           const dedup = await deduplicateContacts(userId);

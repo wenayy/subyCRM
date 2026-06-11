@@ -160,6 +160,10 @@ export function startWhatsAppImportWorker() {
         },
       });
 
+      if (imported > 0 || updated > 0) {
+        const { cache } = await import("../lib/cache");
+        cache.invalidateContacts().catch(() => {});
+      }
       return { imported, updated, skipped };
     },
     { connection: redis, concurrency: 1, lockDuration: 300_000 }

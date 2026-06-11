@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
 import { encrypt, decrypt } from "../lib/encryption";
+import { cache } from "../lib/cache";
 
 const CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
@@ -326,6 +327,7 @@ export const slackService = {
       }
     }
 
+    if (imported > 0 || updated > 0) cache.invalidateContacts().catch(() => {});
     return { imported, updated, skipped };
   },
 

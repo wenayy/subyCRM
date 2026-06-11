@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
 import { encrypt, decrypt } from "../lib/encryption";
 import { deduplicateContacts } from "./dedup.service";
+import { cache } from "../lib/cache";
 import type { PlatformType } from "@prisma/client";
 import fs from "fs/promises";
 import path from "path";
@@ -475,6 +476,7 @@ export const beeperService = {
         contactId = contact.id;
         contactName = contact.name;
         deduplicateContacts(userId).catch(console.error);
+        cache.invalidateContacts().catch(() => {});
       }
     }
 
@@ -810,6 +812,7 @@ export const beeperService = {
       }
       if (importedContacts > 0) {
         deduplicateContacts(userId).catch(console.error);
+        cache.invalidateContacts().catch(() => {});
       }
 
       // Phase 2: full history — runs in background so the initial connect returns fast
@@ -843,6 +846,7 @@ export const beeperService = {
       }
       if (importedContacts > 0) {
         deduplicateContacts(userId).catch(console.error);
+        cache.invalidateContacts().catch(() => {});
       }
     }
 
@@ -1054,6 +1058,7 @@ export const beeperService = {
 
     if (importedContacts > 0) {
       deduplicateContacts(userId).catch(console.error);
+      cache.invalidateContacts().catch(() => {});
     }
 
     await (prisma as any).beeperSession.update({

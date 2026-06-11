@@ -31,7 +31,7 @@ router.get("/", async (req, res, next) => {
       limit: req.query.limit ? Number(req.query.limit) : undefined,
     };
 
-    const cacheKey = CACHE_KEYS.contactsList(filters);
+    const cacheKey = CACHE_KEYS.contactsList(userId, filters);
     const cached = await cache.get(cacheKey);
     if (cached) {
       res.json(cached);
@@ -50,7 +50,7 @@ router.get("/", async (req, res, next) => {
 router.get("/stats", async (_req, res, next) => {
   try {
     const userId = res.locals.session?.user?.id ?? "default";
-    const cacheKey = CACHE_KEYS.contactsStats();
+    const cacheKey = CACHE_KEYS.contactsStats(userId);
     const cached = await cache.get(cacheKey);
     if (cached) {
       res.json(cached);

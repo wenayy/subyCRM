@@ -120,6 +120,10 @@ export function startCsvImportWorker() {
           where: { id: jobId },
           data: { status: "completed", totalFound, imported, deduplicated: skipped, errors, completedAt: new Date() },
         });
+        if (imported > 0) {
+          const { cache } = await import("../lib/cache");
+          cache.invalidateContacts().catch(() => {});
+        }
       } catch (err: any) {
         console.error("[csv-import worker] failed:", err);
         await prisma.importJob.update({
