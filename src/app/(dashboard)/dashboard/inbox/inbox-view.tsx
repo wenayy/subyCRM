@@ -228,10 +228,24 @@ export function InboxView() {
 
   useEffect(() => {
     const cached = getCached<InboxConversationApi[]>("inbox:conversations");
+    let lastConvsSig = "";
+    let convRefetchTimer: ReturnType<typeof setTimeout> | null = null;
+    // Coalesce bursts of SSE events into one refetch — avoids list churn during syncs
+    const scheduleConvRefetch = () => {
+      if (convRefetchTimer) return;
+      convRefetchTimer = setTimeout(() => {
+        convRefetchTimer = null;
+        fetchConvsRef.current?.();
+      }, 1500);
+    };
 
     const fetchConvs = async () => {
       try {
         const convs = await inboxApi.getConversations();
+        // Identical payload → skip the state update entirely so the list doesn't re-render
+        const sig = JSON.stringify(convs);
+        if (sig === lastConvsSig) { setLoading(false); return convs; }
+        lastConvsSig = sig;
         setCached("inbox:conversations", convs);
         // Always show the currently-open conversation as read — the mark-read DB write
         // may not have finished yet, causing a stale unreadCount to flash back in.
@@ -267,8 +281,8 @@ export function InboxView() {
     const es = new EventSource(`${API_BASE}/api/inbox/events`, { withCredentials: true });
 
     es.addEventListener("new_message", (e) => {
-      // Background re-fetch for eventual consistency — don't await
-      fetchConvsRef.current?.();
+      // Background re-fetch for eventual consistency — coalesced, don't await
+      scheduleConvRefetch();
 
       try {
         const data = JSON.parse((e as MessageEvent).data || "{}");
@@ -292,6 +306,10 @@ export function InboxView() {
               const isRead = isCurrentChat || !!msg.fromMe;
               if (idx >= 0) {
                 const existing = prev[idx];
+                // Historical/backfill message (older than what's already shown):
+                // don't reorder or bump unread — the next poll places it correctly.
+                const isNewer = +new Date(msg.receivedAt) >= +new Date(existing.latestMessage?.receivedAt ?? 0);
+                if (!isNewer) return prev;
                 const updated = {
                   ...existing,
                   latestMessage: msg,
@@ -356,7 +374,7 @@ export function InboxView() {
     });
 
     es.addEventListener("message_deleted", (e) => {
-      fetchConvsRef.current?.();
+      scheduleConvRefetch();
       try {
         const data = JSON.parse((e as MessageEvent).data || "{}");
         if (data.id) {
@@ -382,7 +400,7 @@ export function InboxView() {
     });
 
     es.addEventListener("conversations_changed", () => {
-      fetchConvsRef.current?.();
+      scheduleConvRefetch();
     });
 
     es.addEventListener("typing", (e) => {
@@ -435,6 +453,7 @@ export function InboxView() {
     return () => {
       es.close();
       clearInterval(iv);
+      if (convRefetchTimer) clearTimeout(convRefetchTimer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -611,16 +611,16 @@ app.listen(PORT, async () => {
   );
   console.log("[server] Gmail sync scheduled every 10 minutes");
 
-  // ── BullMQ: X DM sync every 12 hours (not active yet) ──────
+  // ── BullMQ: X DM sync every 2 minutes ──────────────────────
   await queues.xDmSync
     .removeRepeatable("x-dm-sync", { cron: "0 */12 * * *" })
     .catch(() => {});
   await queues.xDmSync.add(
     "x-dm-sync",
     {},
-    { repeat: { cron: "0 */12 * * *" }, ...DEFAULT_JOB_OPTIONS },
+    { repeat: { cron: "*/2 * * * *" }, ...DEFAULT_JOB_OPTIONS },
   );
-  console.log("[server] X DM sync scheduled every 12 hours");
+  console.log("[server] X DM sync scheduled every 2 minutes");
 
   // ── BullMQ: Slack DM sync every 5 minutes ──────────────────
   await queues.slackSync

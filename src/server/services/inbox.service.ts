@@ -227,8 +227,13 @@ export const inboxService = {
       void (prisma as any).inboxMessage.update({ where: { id: result.id }, data: waFields }).catch(() => {});
     }
 
-    // Fire SSE immediately after the DB save — don't wait for interaction/contact updates
-    broadcastInboxEvent("new_message", { platform, contactId: rest.contactId, fromMe: rest.fromMe, message: result });
+    // Fire SSE immediately after the DB save — don't wait for interaction/contact updates.
+    // Only live messages broadcast: historical backfill syncs (old receivedAt) would
+    // make the inbox list jump around as old conversations get bumped to the top.
+    const isLive = data.receivedAt >= new Date(Date.now() - 10 * 60 * 1000);
+    if (isLive) {
+      broadcastInboxEvent("new_message", { platform, contactId: rest.contactId, fromMe: rest.fromMe, message: result });
+    }
 
     // Update interactions and contact dates in the background — never blocks message display
     if (rest.contactId) {
