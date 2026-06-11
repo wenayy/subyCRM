@@ -448,22 +448,30 @@ export const beeperService = {
       let platformRecord = await prisma.platform.findFirst({
         where: { type: platform as PlatformType, platformId: platformId!, contact: { userId } },
       });
-      // Fallback: match by username or displayName (handles case where native integration
-      // stored username as platformId and Beeper now has the numeric ID, or vice versa).
-      // Never match by displayName on phone-based platforms — numbers are the identity
-      // there and several different people can share one display name ("Yogesh").
-      if (!platformRecord && displayName) {
-        const phoneBased = platform === "whatsapp" || platform === "telegram";
+      // Fallback 1: exact username match (native integration stored the username
+      // as platformId while Beeper has the numeric ID, or vice versa)
+      if (!platformRecord && otherParticipant.username) {
         platformRecord = await (prisma as any).platform.findFirst({
           where: {
             type: platform as PlatformType,
             contact: { userId },
-            OR: [
-              ...(phoneBased ? [] : [{ displayName: { equals: displayName, mode: "insensitive" } }]),
-              { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
-            ],
+            platformId: { equals: otherParticipant.username, mode: "insensitive" },
           },
         }) ?? null;
+      }
+      // Fallback 2: display name — never on phone platforms (numbers are the
+      // identity there), and only when exactly ONE contact carries that name;
+      // with several "Sean"s a name match would link to an arbitrary person.
+      if (!platformRecord && displayName && platform !== "whatsapp" && platform !== "telegram") {
+        const nameMatches = await (prisma as any).platform.findMany({
+          where: {
+            type: platform as PlatformType,
+            contact: { userId },
+            displayName: { equals: displayName, mode: "insensitive" },
+          },
+          take: 2,
+        });
+        if (nameMatches.length === 1) platformRecord = nameMatches[0];
       }
       if (platformRecord) {
         contactId = platformRecord.contactId;
@@ -656,19 +664,27 @@ export const beeperService = {
       let platformRecord = await prisma.platform.findFirst({
         where: { type: platform as PlatformType, platformId, contact: { userId } },
       });
-      if (!platformRecord && displayName) {
-        // displayName matching is unsafe on phone platforms — see syncSingleChat
-        const phoneBased = platform === "whatsapp" || platform === "telegram";
+      // Same two-step fallback as syncSingleChat: exact username first, then
+      // display name only when unambiguous and never on phone platforms.
+      if (!platformRecord && otherParticipant.username) {
         platformRecord = await (prisma as any).platform.findFirst({
           where: {
             type: platform as PlatformType,
             contact: { userId },
-            OR: [
-              ...(phoneBased ? [] : [{ displayName: { equals: displayName, mode: "insensitive" } }]),
-              { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
-            ],
+            platformId: { equals: otherParticipant.username, mode: "insensitive" },
           },
         }) ?? null;
+      }
+      if (!platformRecord && displayName && platform !== "whatsapp" && platform !== "telegram") {
+        const nameMatches = await (prisma as any).platform.findMany({
+          where: {
+            type: platform as PlatformType,
+            contact: { userId },
+            displayName: { equals: displayName, mode: "insensitive" },
+          },
+          take: 2,
+        });
+        if (nameMatches.length === 1) platformRecord = nameMatches[0];
       }
       if (platformRecord) {
         contactId = platformRecord.contactId;
