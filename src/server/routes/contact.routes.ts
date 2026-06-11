@@ -163,7 +163,7 @@ router.get("/enrich-job/:jobId", async (req, res, next) => {
     const job = await queues.enrichContact.getJob(req.params.jobId);
     if (!job) { res.status(404).json({ error: "Job not found" }); return; }
     const state = await job.getState();
-    res.json({ state, returnValue: job.returnvalue });
+    res.json({ state, returnValue: job.returnvalue, failedReason: job.failedReason ?? null });
   } catch (err) {
     next(err);
   }

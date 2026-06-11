@@ -226,6 +226,11 @@ Return ONLY valid JSON:
 // ── Main enrichment ───────────────────────────────────────────────────────────
 export const enrichmentService = {
   async enrichContact(contactId: string) {
+    // Fail fast with a clear reason — otherwise missing keys surface as a
+    // silent "no confident match" and enrichment looks broken for no reason.
+    if (!SERPAPI_KEY) throw new Error("Enrichment unavailable: SERPAPI_KEY is not set");
+    if (!process.env.OPENAI_API_KEY) throw new Error("Enrichment unavailable: OPENAI_API_KEY is not set");
+
     const contact = await prisma.contact.findUnique({
       where: { id: contactId },
       include: { platforms: true },

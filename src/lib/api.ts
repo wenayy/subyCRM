@@ -67,11 +67,11 @@ export const contactsApi = {
       const deadline = Date.now() + 90000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1000));
-        const poll = await apiFetch<{ state: string; returnValue?: EnrichResult }>(
+        const poll = await apiFetch<{ state: string; returnValue?: EnrichResult; failedReason?: string | null }>(
           `/api/contacts/enrich-job/${res.jobId}`
         );
         if (poll.state === "completed") return poll.returnValue!;
-        if (poll.state === "failed") throw new Error("Enrichment failed");
+        if (poll.state === "failed") throw new Error(poll.failedReason || "Enrichment failed");
       }
       throw new Error("Enrichment timed out");
     }
