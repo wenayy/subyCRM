@@ -4,8 +4,10 @@ nixPkgs = ["python3", "gnumake", "gcc", "nodejs_22"]
 [phases.install]
 cmds = ["npm ci"]
 
+# Railway only runs the Express API (start:railway) — the Next.js frontend is
+# deployed on Vercel, so skip `next build` here. Only the Prisma client is needed.
 [phases.build]
-cmds = ["npm run build"]
+cmds = ["npx prisma generate"]
 
 [start]
 cmd = "npm run start:railway"
