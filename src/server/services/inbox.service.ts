@@ -332,7 +332,13 @@ export const inboxService = {
 
         let matrixRoomId = (msg as any).matrixRoomId || null;
         if (!matrixRoomId && msg.contactId) {
+          // Prefer the latest INCOMING message's room — incoming rooms come from
+          // sync and are ground truth for who this thread belongs to. Outgoing
+          // rooms can be poisoned by an earlier send to a mis-linked thread.
           const sibling = await (prisma as any).inboxMessage.findFirst({
+            where: { contactId: msg.contactId, platform: msg.platform, matrixRoomId: { not: null }, fromMe: false },
+            orderBy: { receivedAt: "desc" },
+          }) ?? await (prisma as any).inboxMessage.findFirst({
             where: { contactId: msg.contactId, platform: msg.platform, matrixRoomId: { not: null } },
             orderBy: { receivedAt: "desc" },
           });
