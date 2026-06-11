@@ -101,7 +101,7 @@ function mimeToExt(mime: string): string {
 // Beeper local API attachment shape: { id: "mxc://...", srcURL: "file:///...", mimeType, fileName, ... }
 async function downloadBeeperMedia(
   attachment: any,
-  _localToken: string,
+  localToken: string,
   msgId: string,
   localEndpoint = DEFAULT_LOCAL_API,
 ): Promise<string | null> {
@@ -115,37 +115,42 @@ async function downloadBeeperMedia(
 
   let buffer: Buffer | null = null;
 
-  // Prefer srcURL — Beeper already downloaded and decrypted the file locally
+  // Fast path: srcURL is a file:// path — works only when this server runs on
+  // the same machine as Beeper Desktop (local dev)
   const srcUrl: string | undefined = attachment.srcURL;
-  if (srcUrl) {
+  if (srcUrl?.startsWith("file://")) {
     const localPath = decodeURIComponent(srcUrl.replace(/^file:\/\//, ""));
     try {
       buffer = await fs.readFile(localPath);
       console.log(`[beeper-media-rx] read from srcURL ${localPath} (${buffer.length} bytes)`);
     } catch {
-      // File not downloaded by Beeper yet — fall through to mxc proxy
+      // File not on this machine (e.g. server on Railway) — fall through to assets/serve
     }
   }
 
-  // Fallback: download the mxc:// URL via the local Beeper API proxy
+  // Stream the decrypted bytes via the Desktop API. Works for mxc:// /
+  // localmxc:// URLs (including E2E-encrypted ones with encryptedFileInfoJSON)
+  // and also when the server is remote from Beeper Desktop.
   if (!buffer) {
-    const mxcUrl: string | undefined = attachment.id ?? attachment.url;
-    if (!mxcUrl) {
+    const assetUrl: string | undefined =
+      (srcUrl && !srcUrl.startsWith("file://") ? srcUrl : undefined) ?? attachment.id ?? attachment.url;
+    if (!assetUrl) {
       console.warn(`[beeper-media-rx] no srcURL or mxc id on attachment, keys=${Object.keys(attachment).join(",")}`);
       return null;
     }
     try {
-      // Beeper local API exposes a proxy at /v1/media/<mxc-media-id>
-      const mediaId = mxcUrl.replace(/^mxc:\/\/[^/]+\//, "");
-      const proxyUrl = `${localEndpoint}/v1/media/${mediaId}`;
-      console.log(`[beeper-media-rx] fetching via local proxy ${proxyUrl}`);
-      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(30_000) });
+      const serveUrl = `${localEndpoint}/v1/assets/serve?url=${encodeURIComponent(assetUrl)}`;
+      console.log(`[beeper-media-rx] fetching via assets/serve for msgId=${msgId}`);
+      const res = await fetch(serveUrl, {
+        headers: { Authorization: `Bearer ${localToken}` },
+        signal: AbortSignal.timeout(60_000),
+      });
       if (!res.ok) {
-        console.warn(`[beeper-media-rx] proxy fetch failed ${res.status}`);
+        console.warn(`[beeper-media-rx] assets/serve fetch failed ${res.status}`);
         return null;
       }
       buffer = Buffer.from(await res.arrayBuffer());
-      console.log(`[beeper-media-rx] downloaded ${buffer.length} bytes via proxy`);
+      console.log(`[beeper-media-rx] downloaded ${buffer.length} bytes via assets/serve`);
     } catch (e: any) {
       console.error(`[beeper-media-rx] error for msgId=${msgId}:`, e?.message);
       return null;
@@ -1147,51 +1152,32 @@ export const beeperService = {
       ".pdf": "application/pdf",
     };
     const mimeType = mimeMap[ext] ?? "application/octet-stream";
-    const isImage = mimeType.startsWith("image/");
-    const isVideo = mimeType.startsWith("video/");
 
-    // Step 1: Upload file bytes to Matrix media server (no encryption needed for media upload).
-    // Step 2: Send the event via the Beeper local API — it handles E2E encryption for the room.
     const resolvedSession = session ?? await (prisma as any).beeperSession.findUnique({ where: { userId } });
-    if (!resolvedSession?.accessToken) throw new Error("No Beeper session for media upload");
-    const accessToken = decrypt(resolvedSession.accessToken);
+    const tok = _localToken ?? resolvedSession?.localToken ?? process.env.BEEPER_LOCAL_TOKEN;
+    if (!tok) throw new Error("No local Beeper token — cannot send media");
+    const localApi = getLocalApi(resolvedSession);
 
-    console.log(`[beeper-media] Uploading ${filename} (${mimeType}, ${buffer.length} bytes) to Matrix media`);
-    const uploadRes = await fetch(
-      `${HOMESERVER}/_matrix/media/v3/upload?filename=${encodeURIComponent(filename)}`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": mimeType },
-        body: buffer as unknown as BodyInit,
-      }
-    );
+    // Step 1: upload the file to the Beeper Desktop API → uploadID.
+    // Step 2: send the message referencing that uploadID; the local API handles
+    // platform upload + E2E encryption transparently.
+    console.log(`[beeper-media] Uploading ${filename} (${mimeType}, ${buffer.length} bytes) to local API`);
+    const uploadRes = await fetch(`${localApi}/v1/assets/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ content: buffer.toString("base64"), fileName: filename, mimeType }),
+    });
     if (!uploadRes.ok) {
       const errBody = await uploadRes.text().catch(() => "");
-      throw new Error(`Matrix media upload failed (${uploadRes.status}): ${errBody}`);
+      throw new Error(`Local API asset upload failed (${uploadRes.status}): ${errBody}`);
     }
-    const { content_uri: mxcUrl } = await uploadRes.json() as { content_uri: string };
-    console.log(`[beeper-media] Uploaded → ${mxcUrl}`);
+    const { uploadID } = await uploadRes.json() as { uploadID: string };
+    console.log(`[beeper-media] Uploaded → uploadID=${uploadID}`);
 
-    // Resolve the local token (sendMediaFile may be called with _localToken=null when Matrix-only)
-    const tok = _localToken ?? resolvedSession.localToken ?? process.env.BEEPER_LOCAL_TOKEN;
-    if (!tok) throw new Error("No local Beeper token — cannot send encrypted event");
-
-    // Send via local API using the same attachment shape Beeper uses for received media.
-    // The local API handles E2E encryption transparently.
-    const attachType = isImage ? "img" : isVideo ? "video" : "file";
-    const sendBody: any = {
-      attachments: [{
-        id: mxcUrl,
-        type: attachType,
-        mimeType,
-        fileName: filename,
-        fileSize: buffer.length,
-      }],
-    };
+    const sendBody: any = { attachment: { uploadID } };
     if (caption) sendBody.text = caption;
 
-    const localApi = getLocalApi(resolvedSession);
-    console.log(`[beeper-media] Sending via local API roomId=${roomId} type=${attachType} endpoint=${localApi}`);
+    console.log(`[beeper-media] Sending via local API roomId=${roomId} endpoint=${localApi}`);
     const sendRes = await fetch(`${localApi}/v1/chats/${encodeURIComponent(roomId)}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
