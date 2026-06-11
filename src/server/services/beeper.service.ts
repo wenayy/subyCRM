@@ -100,6 +100,30 @@ function mimeToExt(mime: string): string {
 
 // Save media from a Beeper attachment to /public/media/, return markdown tag.
 // Beeper local API attachment shape: { id: "mxc://...", srcURL: "file:///...", mimeType, fileName, ... }
+// Resolve reply context for a synced message — the Desktop API exposes the
+// replied-to message as linkedMessageID. Look in the fetched batch first,
+// then fall back to the already-stored inbox row.
+async function resolveQuoted(
+  msg: any,
+  messages: any[],
+  userId: string,
+): Promise<{ quotedId?: string; quotedBody?: string; quotedFromMe?: boolean }> {
+  const linkedId = msg.linkedMessageID;
+  if (!linkedId) return {};
+  const quotedId = `bl-${linkedId}`;
+  const orig = messages.find((m: any) => String(m.id) === String(linkedId));
+  if (orig) {
+    const body = stripHtml((orig.text || "").trim()) || ((orig.attachments?.length ?? 0) > 0 ? "[Media]" : "");
+    if (body) return { quotedId, quotedBody: body, quotedFromMe: !!orig.isSender };
+  }
+  const row = await (prisma as any).inboxMessage.findFirst({
+    where: { userId, externalId: quotedId },
+    select: { body: true, fromMe: true },
+  }).catch(() => null);
+  if (row?.body) return { quotedId, quotedBody: row.body, quotedFromMe: !!row.fromMe };
+  return {};
+}
+
 async function downloadBeeperMedia(
   attachment: any,
   localToken: string,
@@ -592,6 +616,7 @@ export const beeperService = {
         }
       }
 
+      const quoted = await resolveQuoted(msg, messages, userId);
       await inboxService.upsert({
         platform: platform as any,
         externalId: canonicalId,
@@ -603,6 +628,7 @@ export const beeperService = {
         body: cleanText,
         receivedAt,
         fromMe: !!msg.isSender,
+        ...quoted,
       });
       await (prisma as any).inboxMessage.updateMany({
         where: { externalId: canonicalId, userId },
@@ -824,6 +850,7 @@ export const beeperService = {
             }
           }
 
+          const quoted = await resolveQuoted(msg, messages, userId);
           await inboxService.upsert({
             platform: platform as any,
             externalId: canonicalId,
@@ -835,6 +862,7 @@ export const beeperService = {
             body: cleanText,
             receivedAt,
             fromMe: !!msg.isSender,
+            ...quoted,
           });
           await (prisma as any).inboxMessage.updateMany({
             where: { externalId: canonicalId, userId },

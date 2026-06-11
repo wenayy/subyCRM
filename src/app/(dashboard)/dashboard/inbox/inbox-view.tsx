@@ -487,8 +487,13 @@ export function InboxView() {
   }, [thread]);
 
   // Scroll to bottom when new messages arrive
+  const prevBottomIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!selected) return;
+    const bottomId = thread[thread.length - 1]?.id ?? null;
+    const bottomChanged = bottomId !== prevBottomIdRef.current;
+    prevBottomIdRef.current = bottomId;
+
     if (isLoadingMoreRef.current) {
       isLoadingMoreRef.current = false; // clear here, after guarding, so useLayoutEffect above runs first
       return;
@@ -502,7 +507,10 @@ export function InboxView() {
       if (!loading) {
         lastScrolledKeyRef.current = selected.key;
       }
-    } else {
+    } else if (bottomChanged) {
+      // Only follow to the bottom when a genuinely new message landed there.
+      // Length changes alone (older pages merged in, mid-thread deletions)
+      // must not yank the user away from where they scrolled.
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [thread.length, thread[thread.length - 1]?.id, selected]);
@@ -523,11 +531,17 @@ export function InboxView() {
           if (selectedRef.current?.key !== key) return;
           setThread((prev) => {
             if (msgs.length >= prev.length) return msgs;
-            // Shorter list: accept it when it still contains the newest message
-            // we show (= a mid-thread deletion). Reject only stale snapshots
-            // that are merely missing the latest message.
+            // Shorter list, two possible reasons:
+            // 1. The user loaded older pages — the poll only returns the latest
+            //    window, so merge: keep loaded history older than the window and
+            //    let the window itself be server truth (reflects deletions).
+            // 2. A deletion — covered by the same merge.
+            // Reject outright only stale snapshots missing the newest message.
             const prevLastId = prev[prev.length - 1]?.id;
-            return prevLastId && msgs.some((m) => m.id === prevLastId) ? msgs : prev;
+            if (!prevLastId || !msgs.some((m) => m.id === prevLastId)) return prev;
+            const windowStart = +new Date(msgs[0]?.receivedAt ?? 0);
+            const olderPages = prev.filter((m) => +new Date(m.receivedAt) < windowStart && !msgs.some((s) => s.id === m.id));
+            return olderPages.length > 0 ? [...olderPages, ...msgs] : msgs;
           });
           threadCacheRef.current.set(key, { msgs, at: Date.now() });
         })
