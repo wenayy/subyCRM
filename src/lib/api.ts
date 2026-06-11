@@ -184,6 +184,11 @@ export const companiesApi = {
       method: "POST",
       body: JSON.stringify({ contactIds }),
     }),
+
+  removeContact: (id: string, contactId: string) =>
+    apiFetch<{ success: boolean }>(`/api/companies/${id}/contacts/${contactId}`, {
+      method: "DELETE",
+    }),
 };
 
 // ─── Reminders API ─────────────────────────────────────────

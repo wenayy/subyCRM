@@ -116,6 +116,28 @@ router.put("/:id", async (req, res, next) => {
   }
 });
 
+// DELETE /api/companies/:id/contacts/:contactId — remove a contact from a company
+// (e.g. enrichment linked the wrong person). Clears the legacy company text too,
+// otherwise autoLinkContacts would immediately re-link it by name.
+router.delete("/:id/contacts/:contactId", async (req, res, next) => {
+  try {
+    const userId = res.locals.session?.user?.id ?? "default";
+    const company = await prisma.company.findFirst({ where: { id: req.params.id, userId } });
+    if (!company) { res.status(404).json({ error: "Company not found" }); return; }
+
+    const { count } = await prisma.contact.updateMany({
+      where: { id: req.params.contactId, userId, companyId: req.params.id },
+      data: { companyId: null, company: null },
+    });
+    if (count === 0) { res.status(404).json({ error: "Contact not found in this company" }); return; }
+    const { cache } = await import("../lib/cache");
+    await cache.invalidateContacts().catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/companies/:id/assign — assign contacts to company
 router.post("/:id/assign", async (req, res, next) => {
   try {

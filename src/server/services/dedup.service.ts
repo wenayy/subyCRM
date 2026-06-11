@@ -161,9 +161,11 @@ export async function splitWronglyMergedContacts(): Promise<{ split: number }> {
             data: { contactId: newContact.id },
           });
 
-          // Move inbox messages that belong to this specific sender
+          // Move inbox messages that belong to this specific sender.
+          // contains (not equals): senderId may be stored as bare digits or as a
+          // full JID like 9175...@s.whatsapp.net
           await (prisma as any).inboxMessage.updateMany({
-            where: { contactId: contact.id, platform: type as any, senderId: extra.platformId },
+            where: { contactId: contact.id, platform: type as any, senderId: { contains: extra.platformId } },
             data: { contactId: newContact.id, contactName: newName },
           });
 
@@ -214,6 +216,22 @@ export async function mergeBeepDuplicates(userId: string): Promise<{ merged: num
     const [keep, ...rest] = counts;
     for (const victim of rest) {
       if (merged.has(victim.id)) continue;
+      // Display names are NOT unique identities ("Yours truly" can be two different
+      // people). Never merge when the two contacts hold different IDs on the same
+      // platform type — that's two different accounts, i.e. two different people.
+      const [keepPlats, victimPlats] = await Promise.all([
+        prisma.platform.findMany({ where: { contactId: keep.id }, select: { type: true, platformId: true } }),
+        prisma.platform.findMany({ where: { contactId: victim.id }, select: { type: true, platformId: true } }),
+      ]);
+      let conflict = false;
+      for (const kp of keepPlats) {
+        const sameType = victimPlats.filter((vp) => vp.type === kp.type);
+        if (sameType.length > 0 && !sameType.some((vp) => vp.platformId === kp.platformId)) {
+          conflict = true;
+          break;
+        }
+      }
+      if (conflict) continue;
       merged.add(victim.id);
       try {
         await mergeContacts(keep.id, victim.id);

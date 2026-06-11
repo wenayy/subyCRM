@@ -194,7 +194,15 @@ export function CompaniesView() {
               <span className="inline-block size-5 rounded-full border-2 border-current border-t-transparent animate-spin text-muted-foreground" />
             </div>
           ) : selectedFull ? (
-            <CompanyDetailPanel company={selectedFull} onOpenContact={(id) => router.push(`/dashboard/contacts/${id}`)} />
+            <CompanyDetailPanel
+              company={selectedFull}
+              onOpenContact={(id) => router.push(`/dashboard/contacts/${id}`)}
+              onRemoveContact={async (contactId) => {
+                if (!selectedId) return;
+                await companiesApi.removeContact(selectedId, contactId).catch(() => {});
+                companiesApi.getById(selectedId).then(setSelectedFull).catch(() => {});
+              }}
+            />
           ) : selected ? (
             <CompanyDetailPanel company={selected} onOpenContact={(id) => router.push(`/dashboard/contacts/${id}`)} />
           ) : (
@@ -207,7 +215,7 @@ export function CompaniesView() {
   );
 }
 
-function CompanyDetailPanel({ company, onOpenContact }: { company: Company; onOpenContact: (id: string) => void }) {
+function CompanyDetailPanel({ company, onOpenContact, onRemoveContact }: { company: Company; onOpenContact: (id: string) => void; onRemoveContact?: (contactId: string) => void }) {
   const icon = favicon(company.domain || company.website);
   const contacts = company.contacts || [];
 
@@ -291,11 +299,14 @@ function CompanyDetailPanel({ company, onOpenContact }: { company: Company; onOp
         ) : (
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             {contacts.map((c: Contact, idx) => (
-              <button
+              <div
                 key={c.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => onOpenContact(c.id)}
+                onKeyDown={(e) => { if (e.key === "Enter") onOpenContact(c.id); }}
                 className={cn(
-                  "w-full flex items-center gap-3 p-3 px-4 border-0 bg-transparent cursor-pointer text-left transition-colors hover:bg-muted",
+                  "group w-full flex items-center gap-3 p-3 px-4 cursor-pointer text-left transition-colors hover:bg-muted",
                   idx < contacts.length - 1 && "border-b border-border"
                 )}
               >
@@ -310,7 +321,21 @@ function CompanyDetailPanel({ company, onOpenContact }: { company: Company; onOp
                 <span className="font-mono text-[11px] text-muted-foreground text-right min-w-[64px] tabular-nums">
                   {relativeDate(c.lastContactDate)}
                 </span>
-              </button>
+                {onRemoveContact && (
+                  <button
+                    title="Remove from this company"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`Remove ${c.name} from ${company.name}? The contact itself is kept.`)) {
+                        onRemoveContact(c.id);
+                      }
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-red-500 text-sm font-semibold px-1.5 shrink-0"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}
