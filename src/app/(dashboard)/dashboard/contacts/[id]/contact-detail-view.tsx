@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 
 type TimelineItem =
@@ -389,8 +390,8 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
     remindersApi.delete(reminderId).catch(() => loadReminders());
   };
 
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const handleDelete = async () => {
-    if (!confirm("Delete this contact?")) return;
     try { await contactsApi.delete(id); router.push("/dashboard/contacts"); }
     catch {}
   };
@@ -537,7 +538,15 @@ export function ContactDetailView({ paramsPromise }: { paramsPromise: Promise<{ 
           <Button size="sm" variant="green" onClick={handleEnrich} disabled={enriching}>
             {enriching && <Spinner />}{enriching ? "Enriching…" : "Enrich"}
           </Button>
-          <Button size="sm" variant="red" onClick={handleDelete}>Delete</Button>
+          <Button size="sm" variant="red" onClick={() => setConfirmDelete(true)}>Delete</Button>
+          <ConfirmDialog
+            open={confirmDelete}
+            onOpenChange={setConfirmDelete}
+            title={`Delete ${contact?.name ?? "this contact"}?`}
+            description="The contact and all their messages, notes, and timeline entries are permanently removed. This cannot be undone."
+            confirmLabel="Delete"
+            onConfirm={handleDelete}
+          />
         </div>
       </div>
 

@@ -7,6 +7,7 @@ import { companiesApi } from "@/lib/api";
 import type { Company, Contact } from "@/lib/types";
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 
 const CATEGORIES = ["all", "payment", "crypto", "vc", "partner"] as const;
@@ -215,9 +216,10 @@ export function CompaniesView() {
   );
 }
 
-function CompanyDetailPanel({ company, onOpenContact, onRemoveContact }: { company: Company; onOpenContact: (id: string) => void; onRemoveContact?: (contactId: string) => void }) {
+function CompanyDetailPanel({ company, onOpenContact, onRemoveContact }: { company: Company; onOpenContact: (id: string) => void; onRemoveContact?: (contactId: string) => Promise<void> | void }) {
   const icon = favicon(company.domain || company.website);
   const contacts = company.contacts || [];
+  const [removeTarget, setRemoveTarget] = useState<Contact | null>(null);
 
   return (
     <div className="flex flex-col gap-5">
@@ -326,9 +328,7 @@ function CompanyDetailPanel({ company, onOpenContact, onRemoveContact }: { compa
                     title="Remove from this company"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm(`Remove ${c.name} from ${company.name}? The contact itself is kept.`)) {
-                        onRemoveContact(c.id);
-                      }
+                      setRemoveTarget(c);
                     }}
                     className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-red-500 text-sm font-semibold px-1.5 shrink-0"
                   >
@@ -340,6 +340,17 @@ function CompanyDetailPanel({ company, onOpenContact, onRemoveContact }: { compa
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!removeTarget}
+        onOpenChange={(o) => { if (!o) setRemoveTarget(null); }}
+        title={`Remove ${removeTarget?.name ?? "contact"}?`}
+        description={`${removeTarget?.name ?? "This contact"} will be unlinked from ${company.name}. The contact itself is kept and can be re-assigned anytime.`}
+        confirmLabel="Remove"
+        onConfirm={async () => {
+          if (removeTarget && onRemoveContact) await onRemoveContact(removeTarget.id);
+        }}
+      />
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -289,8 +290,8 @@ export function ContactsView() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const handleBulkDelete = async () => {
-    if (!confirm(`Delete ${selected.size} contact${selected.size > 1 ? "s" : ""}? This cannot be undone.`)) return;
     setBulkWorking(true);
     try {
       await contactsApi.bulkDelete(Array.from(selected));
@@ -583,8 +584,16 @@ export function ContactsView() {
         </button>
 
         {/* Delete button */}
+        <ConfirmDialog
+          open={confirmBulkDelete}
+          onOpenChange={setConfirmBulkDelete}
+          title={`Delete ${selected.size} contact${selected.size > 1 ? "s" : ""}?`}
+          description="The selected contacts and all their messages, notes, and timeline entries are permanently removed. This cannot be undone."
+          confirmLabel="Delete"
+          onConfirm={handleBulkDelete}
+        />
         <button
-          onClick={handleBulkDelete}
+          onClick={() => setConfirmBulkDelete(true)}
           disabled={bulkWorking}
           style={{
             display: "flex", alignItems: "center", gap: 5,
