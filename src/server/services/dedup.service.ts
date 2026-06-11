@@ -197,6 +197,9 @@ export async function mergeBeepDuplicates(userId: string): Promise<{ merged: num
   const byTypeAndName = new Map<string, typeof platforms>();
   for (const p of platforms) {
     if (!p.displayName) continue;
+    // Phone-based platforms identify people by number, and display names there are
+    // not unique (multiple "Yogesh" contacts) — never group them by name.
+    if (p.type === "whatsapp" || p.type === "telegram") continue;
     const key = `${p.type}::${p.displayName.toLowerCase().trim()}`;
     if (!byTypeAndName.has(key)) byTypeAndName.set(key, []);
     byTypeAndName.get(key)!.push(p);

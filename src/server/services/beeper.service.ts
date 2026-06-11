@@ -449,14 +449,17 @@ export const beeperService = {
         where: { type: platform as PlatformType, platformId: platformId!, contact: { userId } },
       });
       // Fallback: match by username or displayName (handles case where native integration
-      // stored username as platformId and Beeper now has the numeric ID, or vice versa)
+      // stored username as platformId and Beeper now has the numeric ID, or vice versa).
+      // Never match by displayName on phone-based platforms — numbers are the identity
+      // there and several different people can share one display name ("Yogesh").
       if (!platformRecord && displayName) {
+        const phoneBased = platform === "whatsapp" || platform === "telegram";
         platformRecord = await (prisma as any).platform.findFirst({
           where: {
             type: platform as PlatformType,
             contact: { userId },
             OR: [
-              { displayName: { equals: displayName, mode: "insensitive" } },
+              ...(phoneBased ? [] : [{ displayName: { equals: displayName, mode: "insensitive" } }]),
               { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
             ],
           },
@@ -654,12 +657,14 @@ export const beeperService = {
         where: { type: platform as PlatformType, platformId, contact: { userId } },
       });
       if (!platformRecord && displayName) {
+        // displayName matching is unsafe on phone platforms — see syncSingleChat
+        const phoneBased = platform === "whatsapp" || platform === "telegram";
         platformRecord = await (prisma as any).platform.findFirst({
           where: {
             type: platform as PlatformType,
             contact: { userId },
             OR: [
-              { displayName: { equals: displayName, mode: "insensitive" } },
+              ...(phoneBased ? [] : [{ displayName: { equals: displayName, mode: "insensitive" } }]),
               { platformId: { equals: otherParticipant.username || "", mode: "insensitive" } },
             ],
           },
