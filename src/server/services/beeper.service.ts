@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { inboxService } from "./inbox.service";
+import { broadcastInboxEvent } from "./sse.service";
 import { encrypt, decrypt } from "../lib/encryption";
 import { deduplicateContacts } from "./dedup.service";
 import { cache } from "../lib/cache";
@@ -309,7 +310,9 @@ export const beeperService = {
         const activeRooms = Object.entries(rooms).filter(([, roomData]) => {
           const timelineEvents: any[] = (roomData as any).timeline?.events ?? [];
           return timelineEvents.some((e: any) =>
-            e.type === "m.room.message" || e.type === "m.room.encrypted"
+            // redactions = message deletions — must also trigger a sync so the
+            // isDeleted flag is picked up and the inbox row removed
+            e.type === "m.room.message" || e.type === "m.room.encrypted" || e.type === "m.room.redaction"
           );
         });
 
@@ -505,6 +508,21 @@ export const beeperService = {
     let synced = 0;
 
     for (const msg of messages) {
+      // Deleted on the source platform → remove from the inbox too
+      if (msg.isDeleted) {
+        const deletedRow = await (prisma as any).inboxMessage.findFirst({
+          where: { platform: platform as any, externalId: `bl-${msg.id}`, userId },
+          select: { id: true },
+        });
+        if (deletedRow) {
+          await (prisma as any).inboxMessage.delete({ where: { id: deletedRow.id } }).catch(() => {});
+          broadcastInboxEvent("message_deleted", { id: deletedRow.id });
+          console.log(`[beeper-sync] removed deleted message bl-${msg.id}`);
+          synced++; // counts as processed — stops the long-poll retrying this room
+        }
+        continue;
+      }
+
       const rawText = (msg.text || msg.body || "").trim();
       const attachments: any[] = msg.attachments ?? [];
 
@@ -740,6 +758,19 @@ export const beeperService = {
         const messages: any[] = msgsData.items ?? [];
 
         for (const msg of messages) {
+          // Deleted on the source platform → remove from the inbox too
+          if (msg.isDeleted) {
+            const deletedRow = await (prisma as any).inboxMessage.findFirst({
+              where: { platform: platform as any, externalId: `bl-${msg.id}`, userId },
+              select: { id: true },
+            });
+            if (deletedRow) {
+              await (prisma as any).inboxMessage.delete({ where: { id: deletedRow.id } }).catch(() => {});
+              broadcastInboxEvent("message_deleted", { id: deletedRow.id });
+            }
+            continue;
+          }
+
           const rawText = (msg.text || msg.body || "").trim();
           const attachments: any[] = msg.attachments ?? [];
           let cleanText = stripHtml(rawText);
@@ -1102,7 +1133,7 @@ export const beeperService = {
     return { synced, importedContacts };
   },
 
-  async sendMessage(userId: string, roomId: string, text: string, platform?: string): Promise<string> {
+  async sendMessage(userId: string, roomId: string, text: string, platform?: string, replyToMessageID?: string): Promise<string> {
     const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
     if (!session || !session.connected) throw new Error("Beeper not connected");
 
@@ -1121,11 +1152,11 @@ export const beeperService = {
 
     if (localToken) {
       const localApi = getLocalApi(session);
-      console.log(`[beeper-send] Sending via local API platform=${platform} roomId=${roomId} endpoint=${localApi}`);
+      console.log(`[beeper-send] Sending via local API platform=${platform} roomId=${roomId} endpoint=${localApi} replyTo=${replyToMessageID ?? "-"}`);
       const res = await fetch(`${localApi}/v1/chats/${encodeURIComponent(roomId)}/messages`, {
         method: "POST",
         headers: { Authorization: `Bearer ${localToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, ...(replyToMessageID ? { replyToMessageID } : {}) }),
       });
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
@@ -1148,6 +1179,29 @@ export const beeperService = {
     if (!res.ok) throw new Error(`Matrix send failed: ${res.statusText}`);
     const data = await res.json() as { event_id: string };
     return data.event_id;
+  },
+
+  // React to a message via the Desktop API. messageID is the local API message id
+  // (the bl- prefix already stripped by the caller).
+  async sendReaction(userId: string, roomId: string, messageID: string, emoji: string): Promise<void> {
+    const session = await (prisma as any).beeperSession.findUnique({ where: { userId } });
+    if (!session || !session.connected) throw new Error("Beeper not connected");
+    const localToken = session.localToken || process.env.BEEPER_LOCAL_TOKEN;
+    if (!localToken) throw new Error("No local Beeper token — reactions need the Desktop API");
+
+    const localApi = getLocalApi(session);
+    const res = await fetch(
+      `${localApi}/v1/chats/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageID)}/reactions`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${localToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ reactionKey: emoji }),
+      },
+    );
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Beeper reaction failed (${res.status}): ${errText}`);
+    }
   },
 
   async sendMediaFile(

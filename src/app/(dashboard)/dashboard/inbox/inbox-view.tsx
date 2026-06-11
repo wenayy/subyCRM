@@ -378,7 +378,25 @@ export function InboxView() {
       try {
         const data = JSON.parse((e as MessageEvent).data || "{}");
         if (data.id) {
-          setThread((prev) => prev.filter((m) => m.id !== data.id));
+          // Capture the deleted message's body so the optimistic sent-copy with
+          // the same text doesn't resurface once the DB row disappears (the
+          // overlay dedups against DB bodies — removing the DB row unhides it).
+          let victimBody: string | null = null;
+          setThread((prev) => {
+            victimBody = prev.find((m) => m.id === data.id)?.body ?? null;
+            return prev.filter((m) => m.id !== data.id);
+          });
+          setTimeout(() => {
+            const sel = selectedRef.current;
+            if (!sel || victimBody == null) return;
+            setSentMessages((p) => {
+              const list = p[sel.key] ?? [];
+              const next = list.filter((m) => m.body !== victimBody);
+              return next.length === list.length ? p : { ...p, [sel.key]: next };
+            });
+            // Drop the cached thread too so switching away and back doesn't revive it
+            threadCacheRef.current.delete(sel.key);
+          }, 0);
         } else {
           const sel = selectedRef.current;
           if (sel) {
@@ -503,7 +521,14 @@ export function InboxView() {
         ?.then((msgs) => {
           // Guard: discard if user has already switched away
           if (selectedRef.current?.key !== key) return;
-          setThread((prev) => msgs.length >= prev.length ? msgs : prev);
+          setThread((prev) => {
+            if (msgs.length >= prev.length) return msgs;
+            // Shorter list: accept it when it still contains the newest message
+            // we show (= a mid-thread deletion). Reject only stale snapshots
+            // that are merely missing the latest message.
+            const prevLastId = prev[prev.length - 1]?.id;
+            return prevLastId && msgs.some((m) => m.id === prevLastId) ? msgs : prev;
+          });
           threadCacheRef.current.set(key, { msgs, at: Date.now() });
         })
         .catch(() => {});

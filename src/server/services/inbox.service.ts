@@ -160,6 +160,14 @@ export const inboxService = {
     const msg = await (prisma as any).inboxMessage.findUnique({ where: { id } });
     if (!msg) throw new Error("Message not found");
 
+    // Messages synced via Beeper (bl- ids) react through the Desktop API —
+    // works for every Beeper-bridged platform (WhatsApp, Telegram, X, …)
+    if (msg.externalId?.startsWith("bl-") && msg.matrixRoomId) {
+      const { beeperService } = await import("./beeper.service");
+      await beeperService.sendReaction(userId ?? "default", msg.matrixRoomId, msg.externalId.slice(3), emoji);
+      return;
+    }
+
     if (msg.platform === "whatsapp") {
       let jid: string | null = null;
       if (msg.contactId) {
@@ -347,7 +355,14 @@ export const inboxService = {
 
         if (matrixRoomId) {
           const { beeperService } = await import("./beeper.service");
-          await beeperService.sendMessage(userId ?? "default", matrixRoomId, text, msg.platform);
+          // Thread the reply on the real platform: Beeper message ids are stored
+          // as bl-<id>, the Desktop API wants the bare id
+          let beeperReplyId: string | undefined;
+          if (replyToId) {
+            const orig = await (prisma as any).inboxMessage.findUnique({ where: { id: replyToId } }).catch(() => null);
+            if (orig?.externalId?.startsWith("bl-")) beeperReplyId = orig.externalId.slice(3);
+          }
+          await beeperService.sendMessage(userId ?? "default", matrixRoomId, text, msg.platform, beeperReplyId);
 
           // Immediately fetch the message's local Beeper ID so we store it with the same
           // bl-{id} format the sync uses — this prevents duplicates on the next sync tick.
