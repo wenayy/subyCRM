@@ -240,7 +240,7 @@ export function NetworkView() {
             display: "inline-flex", alignItems: "center", gap: 6,
             padding: "6px 12px", borderRadius: 999,
             background: filter === "all" ? "var(--ac)" : "var(--sf)",
-            color: filter === "all" ? "white" : "var(--t1)",
+            color: filter === "all" ? "var(--ac-fg)" : "var(--t1)",
             border: `1px solid ${filter === "all" ? "var(--ac)" : "var(--bd)"}`,
             fontSize: 12, fontWeight: 600, cursor: "pointer",
             transition: "all 0.12s",
@@ -248,7 +248,7 @@ export function NetworkView() {
         >
           All
           <span style={{
-            background: filter === "all" ? "rgba(255,255,255,0.2)" : "var(--al)",
+            background: filter === "all" ? "color-mix(in srgb, var(--ac-fg) 15%, transparent)" : "var(--al)",
             padding: "1px 6px", borderRadius: 999, fontSize: 10, fontWeight: 700,
             fontVariantNumeric: "tabular-nums",
           }}>
@@ -309,9 +309,9 @@ export function NetworkView() {
                   <circle
                     cx={cl.cx} cy={cl.cy} r={cl.r}
                     fill={meta.color}
-                    fillOpacity={0.04}
+                    fillOpacity={0.07}
                     stroke={meta.color}
-                    strokeOpacity={0.15}
+                    strokeOpacity={0.3}
                     strokeDasharray="4 4"
                     strokeWidth={1}
                   />
@@ -333,7 +333,7 @@ export function NetworkView() {
               <g>
                 <circle cx={cx} cy={cy} r={22} fill="var(--ac)" />
                 <circle cx={cx} cy={cy} r={26} fill="none" stroke="var(--ac)" strokeOpacity={0.2} />
-                <text x={cx} y={cy + 4} textAnchor="middle" fontSize={12} fontWeight={700} fill="white">
+                <text x={cx} y={cy + 4} textAnchor="middle" fontSize={12} fontWeight={700} fill="var(--ac-fg)">
                   you
                 </text>
               </g>
@@ -422,10 +422,10 @@ export function NetworkView() {
                     fill="var(--ac)"
                     fillOpacity={0.95}
                   />
-                  <text x={tx} y={ty + 16} textAnchor="middle" fontSize={12} fontWeight={700} fill="white">
+                  <text x={tx} y={ty + 16} textAnchor="middle" fontSize={12} fontWeight={700} fill="var(--ac-fg)">
                     {n.name}
                   </text>
-                  <text x={tx} y={ty + 32} textAnchor="middle" fontSize={10} fill="rgba(255,255,255,0.7)">
+                  <text x={tx} y={ty + 32} textAnchor="middle" fontSize={10} fill="var(--ac-fg)" fillOpacity={0.7}>
                     {n.company || "—"} · {n.strength}
                   </text>
                 </g>
