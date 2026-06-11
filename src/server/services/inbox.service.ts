@@ -455,6 +455,10 @@ export const inboxService = {
         if (msg.platform === "whatsapp" && jid) {
           const { whatsappService } = await import("./whatsapp.service");
           const media = parseMediaMarkdown(text);
+          if (media) {
+            const { ensureMediaLocal } = await import("../lib/media-store");
+            await ensureMediaLocal(media.filePath);
+          }
           // Build quoted message object for WA reply threading
           let quotedMsg: any;
           if (replyToId) {

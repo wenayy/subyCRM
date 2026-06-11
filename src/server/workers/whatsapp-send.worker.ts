@@ -24,6 +24,8 @@ export function startWhatsAppSendWorker() {
       let keyId: string | undefined;
 
       if (media) {
+        const { ensureMediaLocal } = await import("../lib/media-store");
+        await ensureMediaLocal(media.filePath);
         // Retry as media send — same path as the original attempt
         const result = await whatsappService.sendMediaMessage(jid, media.filePath, media.caption, userId);
         keyId = (result as any)?.key?.id;

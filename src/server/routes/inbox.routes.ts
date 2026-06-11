@@ -178,12 +178,11 @@ router.post("/upload", async (req, res, next) => {
 
     const buffer = Buffer.from(base64Data, "base64");
     const uniqueName = `${Date.now()}_${filename.replace(/\s+/g, "_")}`;
-    const mediaDir = path.join(process.cwd(), "public", "media");
-    await fs.mkdir(mediaDir, { recursive: true });
+    const mimeType = fileData.match(/^data:([^;]+);/)?.[1] ?? "application/octet-stream";
+    const { saveMedia } = await import("../lib/media-store");
+    const url = await saveMedia(buffer, uniqueName, mimeType);
 
-    await fs.writeFile(path.join(mediaDir, uniqueName), buffer);
-
-    res.json({ url: `/media/${uniqueName}` });
+    res.json({ url });
   } catch (err) {
     next(err);
   }

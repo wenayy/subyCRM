@@ -116,7 +116,13 @@ app.use("/media", async (req: express.Request, res: express.Response, next: expr
     const safePath = path.normalize(req.path).replace(/^(\.\.[/\\])+/, "");
     const filePath = path.join(mediaDir, safePath);
     if (!filePath.startsWith(mediaDir)) { res.status(403).end(); return; }
-    if (!fs.existsSync(filePath)) { res.status(404).end(); return; }
+    if (!fs.existsSync(filePath)) {
+      // Not on this machine's disk (synced elsewhere or wiped by a redeploy) —
+      // try restoring it from the Supabase media bucket.
+      const { ensureMediaLocal } = await import("./lib/media-store");
+      const restored = await ensureMediaLocal(filePath);
+      if (!restored) { res.status(404).end(); return; }
+    }
     res.setHeader("Cache-Control", "private, max-age=604800");
     res.sendFile(filePath);
   } catch { next(); }

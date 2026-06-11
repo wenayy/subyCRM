@@ -145,14 +145,11 @@ async function downloadTelegramMedia(client: any, msg: any): Promise<string | nu
     const buffer = await client.downloadMedia(msg, { workers: 1 });
     if (!buffer) return null;
 
-    const fs = await import("fs/promises");
-    const path = await import("path");
-    const dir = path.join(process.cwd(), "public", "media");
-    await fs.mkdir(dir, { recursive: true });
-
     const media = msg.media;
     let ext = "jpg";
+    let mimeType = "image/jpeg";
     if (media?.document?.mimeType) {
+      mimeType = media.document.mimeType;
       const parts = media.document.mimeType.split("/");
       if (parts[1]) ext = parts[1].replace("jpeg", "jpg");
     } else if (media?.photo) {
@@ -160,8 +157,8 @@ async function downloadTelegramMedia(client: any, msg: any): Promise<string | nu
     }
 
     const filename = `tg_${msg.id ?? Date.now()}.${ext}`;
-    await fs.writeFile(path.join(dir, filename), buffer);
-    return `/media/${filename}`;
+    const { saveMedia } = await import("../lib/media-store");
+    return await saveMedia(buffer, filename, mimeType);
   } catch (err) {
     console.error(`[telegram-personal] Failed to download media for msg ${msg.id}:`, err);
     return null;
@@ -732,6 +729,8 @@ export const telegramPersonalService = {
     const media = parseMediaMarkdown(text);
     if (media) {
       const fs = await import("fs/promises");
+      const { ensureMediaLocal } = await import("../lib/media-store");
+      await ensureMediaLocal(media.filePath);
       try {
         await fs.access(media.filePath);
         const sentMediaMsg = await client.sendFile(targetPeer, {
@@ -824,6 +823,8 @@ export const telegramPersonalService = {
     const media = parseMediaMarkdown(text);
     if (media) {
       const fs = await import("fs/promises");
+      const { ensureMediaLocal } = await import("../lib/media-store");
+      await ensureMediaLocal(media.filePath);
       try {
         await fs.access(media.filePath);
         return await client.sendFile(targetPeer, {

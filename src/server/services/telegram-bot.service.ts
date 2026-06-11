@@ -404,6 +404,8 @@ export async function sendBotReply(chatId: string, text: string): Promise<void> 
   if (media) {
     const fs = await import("fs");
     const path = await import("path");
+    const { ensureMediaLocal } = await import("./../lib/media-store");
+    await ensureMediaLocal(media.filePath);
     const ext = path.extname(media.filePath).toLowerCase();
     const imageBuffer = fs.readFileSync(media.filePath);
 

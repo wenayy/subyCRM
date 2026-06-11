@@ -482,10 +482,8 @@ async function downloadAndSaveMedia(msg: any, s: UserState): Promise<string | nu
       ? path.extname(m.documentMessage.fileName) || mimeToExt(mime)
       : mimeToExt(mime);
     const uniqueName = `${Date.now()}_${(msg.key?.id ?? "media").replace(/[^a-zA-Z0-9_-]/g, "")}${ext}`;
-    const mediaDir = path.join(process.cwd(), "public", "media");
-    await fs.promises.mkdir(mediaDir, { recursive: true });
-    await fs.promises.writeFile(path.join(mediaDir, uniqueName), buffer);
-    return `/media/${uniqueName}`;
+    const { saveMedia } = await import("../lib/media-store");
+    return await saveMedia(buffer, uniqueName, mime);
   } catch (e) {
     console.error("[whatsapp] Media download failed:", e);
     return null;

@@ -111,7 +111,6 @@ async function downloadBeeperMedia(
   const ext = path.extname(name) || mimeToExt(mime);
   const safeName = name.endsWith(ext) ? name : `${name}${ext}`;
   const uniqueName = `${Date.now()}_${safeName}`;
-  const mediaDir = path.join(process.cwd(), "public", "media");
 
   let buffer: Buffer | null = null;
 
@@ -159,9 +158,8 @@ async function downloadBeeperMedia(
 
   if (!buffer.length) return null;
 
-  await fs.mkdir(mediaDir, { recursive: true });
-  await fs.writeFile(path.join(mediaDir, uniqueName), buffer);
-  const url = `/media/${uniqueName}`;
+  const { saveMedia } = await import("../lib/media-store");
+  const url = await saveMedia(buffer, uniqueName, mime);
   const isImage = mime.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp)$/i.test(safeName);
   const isVideo = mime.startsWith("video/") || /\.(mp4|mov|webm|avi)$/i.test(safeName);
   console.log(`[beeper-media-rx] saved ${uniqueName} → ${url}`);
@@ -1137,6 +1135,8 @@ export const beeperService = {
     _localToken: string | null, session?: any,
   ): Promise<string> {
     let buffer: Buffer;
+    const { ensureMediaLocal } = await import("../lib/media-store");
+    await ensureMediaLocal(filePath);
     try {
       buffer = await fs.readFile(filePath);
     } catch {
