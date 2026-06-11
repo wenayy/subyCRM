@@ -34,6 +34,35 @@ async function serpSearch(query: string): Promise<SerpCandidate[]> {
     .map((r) => ({ title: r.title!, snippet: r.snippet!, link: r.link! }));
 }
 
+// ── AI: infer a person's likely real name from their handle/bio ───────────────
+// Chat-app names are often nicknames ("Gap | Suby") while the LinkedIn profile
+// lives under the real name — but the handle usually encodes it (gaspardlezin →
+// Gaspard Lezin). Returns null when no confident guess exists.
+async function aiGuessRealName(context: {
+  handle: string; displayName?: string | null; bio?: string | null;
+}): Promise<string | null> {
+  try {
+    const resp = await getOpenAI().chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{
+        role: "user",
+        content: `A person's X/Twitter handle is "@${context.handle}".${context.displayName ? ` Their display name is "${context.displayName}".` : ""}${context.bio ? ` Their bio: "${context.bio}".` : ""}
+
+What is this person's likely real full name (first + last)? Handles often concatenate the real name (e.g. "johnsmith" → "John Smith", "j_doe" → "J Doe").
+
+Return ONLY valid JSON, no markdown: {"realName": "<full name>" or null if the handle gives no usable name}`,
+      }],
+      response_format: { type: "json_object" },
+      temperature: 0,
+    });
+    const out = JSON.parse(resp.choices[0].message.content ?? "{}");
+    const name = typeof out.realName === "string" ? out.realName.trim() : "";
+    return name.includes(" ") ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── AI verification: pick the right result from candidates ────────────────────
 interface AIMatch {
   matched: boolean;
@@ -297,23 +326,53 @@ export const enrichmentService = {
     let linkedinMatch: AIMatch = { matched: false };
     if (!linkedinPlatform) {
       try {
-        // Build a precise query using every signal we have
+        // Build a precise query using every signal we have. CRM names are often
+        // chat nicknames ("Gap | Suby") that match nothing on LinkedIn — prefer
+        // the real identity the X step just discovered.
         const knownHandle = xPlatform?.platformId ?? (twitterMatch.matched ? twitterMatch.profileId : null);
+        const searchName    = twitterMatch.fullName || contact.name;
+        const searchCompany = contact.company ?? twitterMatch.company ?? null;
+        const searchRole    = contact.role ?? twitterMatch.role ?? null;
         let q: string;
-        if (contact.company && contact.role) {
-          q = `site:linkedin.com/in "${contact.name}" "${contact.company}" "${contact.role}"`;
-        } else if (contact.company) {
-          q = `site:linkedin.com/in "${contact.name}" "${contact.company}"`;
+        if (searchCompany && searchRole) {
+          q = `site:linkedin.com/in "${searchName}" "${searchCompany}" "${searchRole}"`;
+        } else if (searchCompany) {
+          q = `site:linkedin.com/in "${searchName}" "${searchCompany}"`;
         } else {
-          q = `site:linkedin.com/in "${contact.name}"`;
+          q = `site:linkedin.com/in "${searchName}"`;
         }
-        const candidates = await serpSearch(q);
+        let candidates = await serpSearch(q);
+        // Quoted multi-term queries can over-restrict — retry on name alone
+        if (candidates.length === 0 && searchCompany) {
+          candidates = await serpSearch(`site:linkedin.com/in "${searchName}"`);
+        }
         linkedinMatch = await aiPickBestMatch("linkedin", candidates, {
-          name: contact.name,
-          company: contact.company,
-          role: contact.role,
+          name: searchName,
+          company: searchCompany,
+          role: searchRole,
           xHandle: knownHandle ?? null,
         });
+
+        // Fallback: nickname-style names ("Gap | Suby") match nothing on
+        // LinkedIn, but the X handle usually encodes the real name — infer it
+        // and search again. aiPickBestMatch still verifies the match.
+        if (!linkedinMatch.matched && knownHandle) {
+          const guessedName = await aiGuessRealName({
+            handle: knownHandle,
+            displayName: twitterMatch.fullName ?? contact.name,
+            bio: twitterMatch.bio ?? null,
+          });
+          if (guessedName && guessedName.toLowerCase() !== searchName.toLowerCase()) {
+            console.log(`[enrichment] LinkedIn retry with handle-derived name: "${guessedName}"`);
+            const retryCandidates = await serpSearch(`site:linkedin.com/in "${guessedName}"`);
+            linkedinMatch = await aiPickBestMatch("linkedin", retryCandidates, {
+              name: guessedName,
+              company: searchCompany,
+              role: searchRole,
+              xHandle: knownHandle,
+            });
+          }
+        }
         if (linkedinMatch.matched) {
           if (linkedinMatch.fullName) enrichedData.fullName = linkedinMatch.fullName;
           if (linkedinMatch.company)  enrichedData.company  = linkedinMatch.company;
